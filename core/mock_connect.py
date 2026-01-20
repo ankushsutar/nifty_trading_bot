@@ -67,6 +67,16 @@ class MockSmartConnect:
             "data": self.orders
         }
 
+    def rmsLimit(self):
+        """Mock Funds"""
+        return {
+            "status": True,
+            "data": {
+                "net": "500000.00", # 5 Lakhs
+                "availableCash": "500000.00"
+            }
+        }
+
 class MockTokenLookup:
     def load_scrip_master(self):
         print(">>> [Mock] Skipping Scrip Master download.")
