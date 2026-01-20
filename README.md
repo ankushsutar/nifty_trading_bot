@@ -40,7 +40,14 @@ python3 main.py --test
 ```
 *   **What it does:** Returns a random Nifty spot price (~23000), calculates the ATM strike, selects the next Thursday expiry, and simulates placing fake orders.
 
-### 2. Live Trading
+
+### 3. Verify Credentials (Safe)
+Before going live, verify your `.env` credentials without placing any trades:
+```bash
+python3 tests/verify_login.py
+```
+
+### 4. Live Trading
 **WARNING:** This will place REAL orders on your Angel One account.
 ```bash
 python3 main.py

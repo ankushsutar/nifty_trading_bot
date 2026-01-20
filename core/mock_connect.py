@@ -4,6 +4,7 @@ import uuid
 class MockSmartConnect:
     def __init__(self, api_key=None):
         self.api_key = api_key
+        self.orders = [] # Mock Order Book
         print(f">>> [Mock] Initialized MockSmartConnect with API Key: {api_key}")
 
     def generateSession(self, clientCode, password, totp):
@@ -37,14 +38,34 @@ class MockSmartConnect:
     def placeOrder(self, orderparams):
         print(f">>> [Mock] placeOrder called")
         print(f"    Symbol: {orderparams.get('tradingsymbol')}")
-        print(f"    Token: {orderparams.get('symboltoken')}")
         print(f"    Action: {orderparams.get('transactiontype')}")
-        print(f"    Qty: {orderparams.get('quantity')}")
+        print(f"    Product: {orderparams.get('producttype')}")
         
         mock_order_id = str(uuid.uuid4())
-        # The user requested to print the order details to the console and return the ID.
-        # I've printed them above.
+        
+        # Simulate a filled order and add to internal book
+        mock_order = {
+            "orderid": mock_order_id,
+            "status": "complete", # Simulate immediate fill
+            "tradingsymbol": orderparams.get('tradingsymbol'),
+            "symboltoken": orderparams.get('symboltoken'),
+            "transactiontype": orderparams.get('transactiontype'),
+            "quantity": orderparams.get('quantity'),
+            "price": orderparams.get('price', 0), # Limit price (if any)
+            # Simulate a filled price (usually close to LTP or limit)
+            "averageprice": 100.0  # Dummy filled price for options
+        }
+        self.orders.append(mock_order)
+        
         return mock_order_id
+        
+    def orderBook(self):
+        """Mock Order Book"""
+        # print(">>> [Mock] fetching orderBook...")
+        return {
+            "status": True,
+            "data": self.orders
+        }
 
 class MockTokenLookup:
     def load_scrip_master(self):
