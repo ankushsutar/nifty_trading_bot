@@ -9,6 +9,7 @@ from utils.expiry_calculator import get_next_weekly_expiry
 def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
+    parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
     args = parser.parse_args()
 
     if args.test:
@@ -18,6 +19,10 @@ def run_bot():
         loader.load_scrip_master() # Just to be consistent with the interface
     else:
         # 1. Initialize Connection
+        if args.dry_run:
+            print("\n>>> [System] STARTING IN DRY RUN MODE 🟡") 
+            print("    (Real Data, No Orders)")
+        
         api = get_angel_session()
         if not api:
             return
@@ -28,7 +33,8 @@ def run_bot():
 
     # 3. Initialize Strategy
     # In test mode, api and loader are mocks. Strategy should work transparently.
-    bot = NiftyStrategy(api, loader)
+    # In dry_run mode, we pass True to dry_run arg of Strategy
+    bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
 
     # 4. Input Trade Parameters
     print("\n--- NIFTY OPTION TRADER ---")

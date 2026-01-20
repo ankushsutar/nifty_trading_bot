@@ -47,7 +47,14 @@ Before going live, verify your `.env` credentials without placing any trades:
 python3 tests/verify_login.py
 ```
 
-### 4. Live Trading
+### 4. Dry Run (Real Data, No Trades) 🟡 
+Use your Real Credentials to fetch live Nifty prices and see which tokens *would* be traded, without placing any orders.
+```bash
+python3 main.py --dry-run
+```
+*   **What it does:** Connects to Angel One, authenticates, fetches **REAL** Nifty LTP, calculates ATM, and logging the potential trade. It skips order placement.
+
+### 5. Live Trading 🔴
 **WARNING:** This will place REAL orders on your Angel One account.
 ```bash
 python3 main.py

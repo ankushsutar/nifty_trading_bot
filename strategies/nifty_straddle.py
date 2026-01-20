@@ -2,9 +2,10 @@ import time
 from config.settings import Config
 
 class NiftyStrategy:
-    def __init__(self, api, token_loader):
+    def __init__(self, api, token_loader, dry_run=False):
         self.api = api
         self.token_loader = token_loader
+        self.dry_run = dry_run
 
     def get_atm_strike(self):
         """
@@ -66,6 +67,10 @@ class NiftyStrategy:
         # Leg 2: PE
         pe_order_id = self.place_order(pe_token, pe_symbol, action)
 
+        if self.dry_run:
+            print(">>> [Dry Run] Skipping Order verification and Stop Loss placement.")
+            return
+
         # 4. Wait for fills and Place Stop Loss
         print(">>> [Strategy] Waiting for fills to place Stop Loss...")
         
@@ -82,6 +87,10 @@ class NiftyStrategy:
                 self.place_stop_loss(pe_token, pe_symbol, pe_fill_price, Config.NIFTY_LOT_SIZE)
 
     def place_order(self, token, symbol, action):
+        if self.dry_run:
+            print(f">>> [Dry Run] Would place {action} MARKET Order for {symbol} (Token: {token})")
+            return "dry_run_id"
+
         try:
             orderparams = {
                 "variety": "NORMAL",
