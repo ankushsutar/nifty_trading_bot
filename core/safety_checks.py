@@ -54,10 +54,23 @@ class SafetyGatekeeper:
                 required_total = required_margin_per_lot * 1.1 # 10% Buffer
                 
                 if available_cash >= required_total:
-                    print(f">>> [Gatekeeper] Funds OK. Available: ₹{available_cash}")
+                    print(f"\n    ------------------------------------")
+                    print(f"    [ GATEKEEPER ] ACCOUNT HEALTH 🛡️")
+                    print(f"    ------------------------------------")
+                    print(f"    Available Cash:   ₹ {available_cash:,.2f}")
+                    print(f"    Required Margin:  ₹ {required_total:,.2f}")
+                    print(f"    Buffer Status:    ✅ ADEQUATE")
+                    print(f"    ------------------------------------\n")
                     return True
                 else:
-                    print(f">>> [Gatekeeper] Insufficient Funds! Available: ₹{available_cash}, Required (with buffer): ₹{required_total}")
+                    print(f"\n    ------------------------------------")
+                    print(f"    [ GATEKEEPER ] ACCOUNT HEALTH 🛡️")
+                    print(f"    ------------------------------------")
+                    print(f"    Available Cash:   ₹ {available_cash:,.2f}")
+                    print(f"    Required Margin:  ₹ {required_total:,.2f}")
+                    print(f"    Buffer Status:    ❌ LOW FUNDS")
+                    print(f"    ------------------------------------\n")
+                    # print(f">>> [Gatekeeper] Insufficient Funds! Available: ₹{available_cash}, Required (with buffer): ₹{required_total}")
                     return False
             else:
                 print(">>> [Gatekeeper] Could not fetch RMS Data.")

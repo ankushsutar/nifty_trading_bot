@@ -13,6 +13,11 @@ class TokenLookup:
             response = requests.get(Config.SCRIP_MASTER_URL)
             data = response.json()
             self.df = pd.DataFrame(data)
+            
+            # Optimization: Convert 'strike' to float once for accurate comparison
+            # Angel One 'strike' is in paise (e.g. 2300000.00)
+            self.df['strike'] = pd.to_numeric(self.df['strike'], errors='coerce')
+            
             print(">>> [Data] Scrip Master Loaded.")
         except Exception as e:
             print(f">>> [Error] Failed to load Scrip Master: {e}")
@@ -27,10 +32,10 @@ class TokenLookup:
         if self.df is None:
             self.load_scrip_master()
 
-        # Angel One stores strike in paise (e.g., 23000 -> 2300000.0)
-        strike_paise = str(float(strike) * 100.0)
+        # Input strike is normal (e.g. 23000). Convert to Paise (2300000)
+        strike_paise = float(strike) * 100.0
         
-        # Filter Logic to find exact match
+        # Filter Logic
         row = self.df[
             (self.df['name'] == 'NIFTY') & 
             (self.df['instrumenttype'] == 'OPTIDX') & 

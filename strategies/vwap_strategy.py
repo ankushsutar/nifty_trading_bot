@@ -39,14 +39,32 @@ class VWAPStrategy:
 
         print(f">>> [Result] High Probability Setup Detected: {trend} ({signal})")
         
-        # 3. Execute Trade
-        if trend == "BULLISH":
-             print(">>> [Trade] Institutional Buying Detected -> GO LONG (CE)")
-             self.place_pro_trade(expiry, "CE", ltp)
+        if trend != "NEUTRAL":
+             # 3. "X-Ray" Vision Check (OI Analysis) 🧠
+             from core.oi_analyzer import OIAnalyzer
+             analyzer = OIAnalyzer(self.api, self.token_loader)
              
-        elif trend == "BEARISH":
-             print(">>> [Trade] Institutional Selling Detected -> GO SHORT (PE)")
-             self.place_pro_trade(expiry, "PE", ltp)
+             # Calculate ATM for OI Check
+             atm = round(ltp / 50) * 50
+             pcr = analyzer.get_pcr(expiry, atm)
+             sentiment = analyzer.analyze_sentiment(pcr)
+             
+             print(f">>> [AI Check] PCR: {pcr} | Sentiment: {sentiment}")
+             
+             # Filter Logic
+             if trend == "BULLISH":
+                 if sentiment == "BEARISH":
+                     print(">>> [AI Filter] REJECTED CE Trade. Price is Bullish but Big Players are Bearish (PCR < 0.8). Trap Detected! 🛡️")
+                     return
+                 print(">>> [Trade] Institutional Buying Detected (Price + OI Confirmed) -> GO LONG (CE)")
+                 self.place_pro_trade(expiry, "CE", ltp)
+                 
+             elif trend == "BEARISH":
+                 if sentiment == "BULLISH":
+                     print(">>> [AI Filter] REJECTED PE Trade. Price is Bearish but Big Players are Bullish (PCR > 1.2). Bear Trap! 🛡️")
+                     return
+                 print(">>> [Trade] Institutional Selling Detected (Price + OI Confirmed) -> GO SHORT (PE)")
+                 self.place_pro_trade(expiry, "PE", ltp)
 
     def analyze_market_structure(self):
         """
@@ -82,6 +100,13 @@ class VWAPStrategy:
         # Decision Logic (Confluence)
         # Buffer: Only trade if Price is at least 0.05% away from VWAP to avoid false breakouts
         
+        print("\n    >>> [DECISION MATRIX] 🧠")
+        print(f"    ------------------------------------")
+        print(f"    Current Price:  {price:.2f}")
+        print(f"    VWAP Level:     {vwap:.2f} ({'ABOVE' if price > vwap else 'BELOW'})")
+        print(f"    EMA(20):        {ema:.2f} ({'ABOVE' if price > ema else 'BELOW'})")
+        print(f"    ------------------------------------")
+
         if price > vwap and price > ema:
              return "BULLISH", "Price > VWAP & EMA", price
         elif price < vwap and price < ema:
