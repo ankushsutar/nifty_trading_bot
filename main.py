@@ -10,12 +10,14 @@ from strategies.momentum_strategy import MomentumStrategy
 from strategies.vwap_strategy import VWAPStrategy
 from strategies.ohl_strategy import OHLStrategy
 from strategies.inside_bar_strategy import InsideBarStrategy
+from core.decision_engine import DecisionEngine
 
 def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
     parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR"], help="Choose Strategy")
+    parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
     if args.test:
@@ -37,7 +39,20 @@ def run_bot():
         loader = TokenLookup()
         loader.load_scrip_master()
 
-    # 3. Initialize Strategy
+    # 3. Smart Auto-Selection (The Brain)
+    if args.auto:
+        print("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
+        engine = DecisionEngine(api)
+        selected_strategy = engine.analyze_and_select()
+        
+        if selected_strategy:
+            print(f">>> [Auto] 🤖 Brain selected: {selected_strategy}")
+            args.strategy = selected_strategy
+        else:
+            print(">>> [Auto] ❌ Brain could not select a strategy (Low Funds or Market Closed). Exiting.")
+            return
+
+    # 4. Initialize Strategy Strategies logic...
     # In test mode, api and loader are mocks. Strategy should work transparently.
     # In dry_run mode, we pass True to dry_run arg of Strategy
     

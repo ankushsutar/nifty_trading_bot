@@ -42,6 +42,8 @@ class NiftyStrategy:
         # if not (datetime.time(9, 15) <= now <= datetime.time(9, 30)):
         #     print(f">>> [Warning] Running 9:20 Strategy at {now}. Ensure this is intended.")
 
+        if not self.gatekeeper.check_funds(required_margin_per_lot=150000):
+             return
         if not self.gatekeeper.check_max_daily_loss(0): # Initialize with 0 loss
              return
         if self.gatekeeper.is_blackout_period():
@@ -49,8 +51,11 @@ class NiftyStrategy:
 
         # 2. VIX Check & Sizing
         quantity_multiplier = self.gatekeeper.get_vix_adjustment()
-        quantity = int(Config.NIFTY_LOT_SIZE * quantity_multiplier)
-        print(f">>> [Setup] Quantity per leg: {quantity} (VIX Multiplier: {quantity_multiplier})")
+        # Fix: Ensure quantity is a multiple of Lot Size (Min 1 Lot)
+        # If multiplier is 0.5, we cannot trade 0.5 lots. Default to 1 lot.
+        adjusted_lots = max(1, int(quantity_multiplier))
+        quantity = int(Config.NIFTY_LOT_SIZE * adjusted_lots)
+        print(f">>> [Setup] Quantity per leg: {quantity} (VIX Multiplier: {quantity_multiplier} -> {adjusted_lots} Lots)")
 
         # 3. ATM Strike
         strike = self.get_atm_strike()
@@ -73,8 +78,11 @@ class NiftyStrategy:
         pe_order = self.place_order(pe_token, pe_symbol, "SELL", quantity)
         
         if self.dry_run:
-             print(">>> [Dry Run] End of execution path.")
-             return
+             print(">>> [Dry Run] End of execution path (Simulated).")
+             # In Dry Run, we proceed to simulate Stop Loss placement if IDs are valid mocks
+             pass
+        else:
+             pass
 
         # 6. Wait for Fills & Capture Prices
         print(">>> [Trade] Waiting for fills to set SL...")
@@ -192,6 +200,10 @@ class NiftyStrategy:
              print(f">>> [Error] Modify SL Failed: {e}")
 
     def place_order(self, token, symbol, action, qty):
+        if self.dry_run:
+            print(f">>> [Dry Run] Would place {action} MARKET Order for {symbol} (Token: {token})")
+            return "dry_run_id"
+
         try:
             orderparams = {
                 "variety": "NORMAL",
@@ -212,6 +224,10 @@ class NiftyStrategy:
             return None
 
     def place_sl_order(self, token, symbol, trigger_price, price, qty):
+        if self.dry_run:
+             print(f">>> [Dry Run] Would place SL for {symbol} | Trig: {trigger_price}")
+             return "dry_run_sl_id"
+
         try:
             # SL for Sell Entry is a BUY Order
             orderparams = {
@@ -236,6 +252,8 @@ class NiftyStrategy:
 
     def wait_for_fill(self, order_id):
         if not order_id: return None
+        if order_id == "dry_run_id": return 100.0 # Fast return
+        
         # Simple polling
         for _ in range(5):
              try:

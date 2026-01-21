@@ -23,6 +23,7 @@ class MomentumStrategy:
         print(f"\n--- EMA CROSSOVER STRATEGY ({expiry}) ---")
 
         # 0. Risk Checks
+        if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
         if self.gatekeeper.is_blackout_period(): return
 
@@ -99,7 +100,8 @@ class MomentumStrategy:
     def enter_position(self, expiry, leg):
         # VIX Sizing
         mult = self.gatekeeper.get_vix_adjustment()
-        qty = int(Config.NIFTY_LOT_SIZE * mult)
+        adjusted_lots = max(1, int(mult))
+        qty = int(Config.NIFTY_LOT_SIZE * adjusted_lots)
         
         # Strike
         ltp = self.get_nifty_ltp()
