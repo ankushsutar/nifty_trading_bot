@@ -54,7 +54,14 @@ def run_bot():
     # 5. Execute Strategy
     # WARNING: This places a REAL order if credentials are valid (and not in test mode).
     # Strike is now calculated dynamically (ATM)
-    bot.execute(expiry=expiry, action="BUY")
+    
+    if args.strategy == "ORB":
+        # ORB is Directional Buying
+        bot.execute(expiry=expiry, action="BUY")
+    else:
+        # Straddle is Non-Directional Buying (Long Straddle)
+        print(">>> [Strategy] Executing Long Straddle (Buying ATM CE & PE)")
+        bot.execute(expiry=expiry, action="BUY")
 
 if __name__ == "__main__":
     run_bot()

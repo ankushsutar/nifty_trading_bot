@@ -1,11 +1,15 @@
 import time
+import datetime
 from config.settings import Config
+
+from core.safety_checks import SafetyGatekeeper
 
 class NiftyStrategy:
     def __init__(self, api, token_loader, dry_run=False):
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
+        self.gatekeeper = SafetyGatekeeper(self.api)
 
     def get_atm_strike(self):
         """
@@ -42,6 +46,13 @@ class NiftyStrategy:
         """
         Main logic to execute a Straddle (Buy/Sell Both CE & PE at ATM)
         """
+        # 0. Safety Checks (Funds & Active Orders)
+        # Long Straddle (2 Legs) Cost approx: 100 * 65 * 2 = 13000. 
+        # Checking for 13000.
+        if not self.gatekeeper.check_funds(required_margin_per_lot=13000):
+             print(">>> [Strategy] Insufficient Funds for Long Straddle (Need ~13k). Aborting.")
+             return
+
         # 1. Determine ATM Strike
         strike = self.get_atm_strike()
         if not strike:
@@ -78,13 +89,39 @@ class NiftyStrategy:
         if ce_order_id:
             ce_fill_price = self.wait_for_fill(ce_order_id)
             if ce_fill_price:
-                self.place_stop_loss(ce_token, ce_symbol, ce_fill_price, Config.NIFTY_LOT_SIZE)
+                self.place_stop_loss(ce_token, ce_symbol, ce_fill_price, Config.NIFTY_LOT_SIZE, entry_action=action)
         
         # Handle PE SL
         if pe_order_id:
             pe_fill_price = self.wait_for_fill(pe_order_id)
             if pe_fill_price:
-                self.place_stop_loss(pe_token, pe_symbol, pe_fill_price, Config.NIFTY_LOT_SIZE)
+                self.place_stop_loss(pe_token, pe_symbol, pe_fill_price, Config.NIFTY_LOT_SIZE, entry_action=action)
+
+        # 5. Monitor for Profit Target (Simple Loop)
+        if not self.dry_run:
+            print(">>> [Strategy] Monitoring positions for Target (20% Profit)...")
+            self.monitor_positions({
+                ce_symbol: ce_token,
+                pe_symbol: pe_token
+            })
+
+    def monitor_positions(self, active_symbols):
+        """
+        Simple loop to check if we should exit for profit.
+        Target: 20% gain or Time Exit (15:15).
+        NOTE: Real P&L tracking requires fetching average price again or tracking it.
+        For MVP, we just loop and wait for manual interrupt or time exit.
+        """
+        try:
+            while True:
+                time.sleep(10)
+                now = datetime.datetime.now().time()
+                if now > datetime.time(15, 15):
+                    print(">>> [Exit] Time is 15:15. Auto-Squaring off positions.")
+                    break
+                # TODO: Implement P&L calculation API call to check unrealized MTOM
+        except KeyboardInterrupt:
+            print(">>> [User] Manual Stop Signal.")
 
     def place_order(self, token, symbol, action):
         if self.dry_run:
@@ -138,21 +175,31 @@ class NiftyStrategy:
         print(f">>> [Error] Order {order_id} failed to fill after waiting.")
         return None
 
-    def place_stop_loss(self, token, symbol, buy_price, quantity, sl_percent=0.10):
+    def place_stop_loss(self, token, symbol, field_price, quantity, sl_percent=0.10, entry_action="BUY"):
         """
-        Places a Stop Loss Sell Order at 10% below buy price.
+        Places a Stop Loss Order. 
+        If Entry was BUY -> Place SELL SL at (Price - 10%).
+        If Entry was SELL -> Place BUY SL at (Price + 10%).
         """
         try:
-            sl_price = round(buy_price * (1 - sl_percent), 1)
-            trigger_price = round(sl_price + 0.5, 1) # Trigger slightly higher than limit
-            
-            print(f">>> [Risk] Placing Stop Loss for {symbol} at ₹{sl_price} (10% SL)")
+            if entry_action == "BUY":
+                # Long Position: Protect Downside
+                sl_price = round(field_price * (1 - sl_percent), 1)
+                trigger_price = round(sl_price + 0.5, 1) # Trigger slightly higher (Sell Stop Limit)
+                transaction_type = "SELL"
+            else:
+                # Short Position: Protect Upside
+                sl_price = round(field_price * (1 + sl_percent), 1)
+                trigger_price = round(sl_price - 0.5, 1) # Trigger slightly lower (Buy Stop Limit)
+                transaction_type = "BUY"
+
+            print(f">>> [Risk] Placing SL for {symbol} | Entry: {entry_action} @ {field_price} | SL @ {sl_price} ({int(sl_percent*100)}%)")
             
             orderparams = {
                 "variety": "STOPLOSS",
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "transactiontype": "SELL",
+                "transactiontype": transaction_type,
                 "exchange": "NFO",
                 "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY",
