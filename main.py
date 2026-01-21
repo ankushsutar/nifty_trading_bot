@@ -8,12 +8,14 @@ from utils.expiry_calculator import get_next_weekly_expiry
 from strategies.orb_strategy import ORBStrategy
 from strategies.momentum_strategy import MomentumStrategy
 from strategies.vwap_strategy import VWAPStrategy
+from strategies.ohl_strategy import OHLStrategy
+from strategies.inside_bar_strategy import InsideBarStrategy
 
 def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR"], help="Choose Strategy")
     args = parser.parse_args()
 
     if args.test:
@@ -48,10 +50,14 @@ def run_bot():
     elif args.strategy == "VWAP":
         print(f"\n>>> [Strategy] Selected: VWAP Institutional Trend (Pro Mode) 🚀")
         bot = VWAPStrategy(api, loader, dry_run=args.dry_run)
+    elif args.strategy == "OHL":
+        print(f"\n>>> [Strategy] Selected: Open High Low (OHL) Scalp 🎯")
+        bot = OHLStrategy(api, loader, dry_run=args.dry_run)
+    elif args.strategy == "INSIDE_BAR":
+        print(f"\n>>> [Strategy] Selected: Inside Bar Breakout 🔥")
+        bot = InsideBarStrategy(api, loader, dry_run=args.dry_run)
     else:
-        print(f"\n>>> [Strategy] Selected: Dynamic Straddle")
-        # Straddle is Non-Directional Buying (Long Straddle)
-        print(">>> [Strategy] Executing Long Straddle (Buying ATM CE & PE)")
+        print(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
 
     # 4. Input Trade Parameters
@@ -65,13 +71,14 @@ def run_bot():
     # WARNING: This places a REAL order if credentials are valid (and not in test mode).
     # Strike is now calculated dynamically (ATM)
     
-    if args.strategy == "ORB":
-        # ORB is Directional Buying
+    if args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
+        # Directional buying
         bot.execute(expiry=expiry, action="BUY")
+    elif args.strategy == "MOMENTUM":
+        bot.execute(expiry=expiry)
     else:
-        # Straddle is Non-Directional Buying (Long Straddle)
-        print(">>> [Strategy] Executing Long Straddle (Buying ATM CE & PE)")
-        bot.execute(expiry=expiry, action="BUY")
+        # Straddle (Short)
+        bot.execute(expiry=expiry, action="SELL")
 
 if __name__ == "__main__":
     run_bot()

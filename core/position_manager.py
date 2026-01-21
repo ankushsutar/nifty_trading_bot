@@ -100,7 +100,7 @@ class PositionManager:
                 return resp['data']['ltp']
             
             # Check for Mock Mode Fallback if API returns None and we are testing
-            if self.dry_run or self.api.api_key is None:
+            if self.dry_run or (hasattr(self.api, 'api_key') and self.api.api_key is None):
                 # Simulte fluctuating price for testing
                 import random
                 return 100.0 + random.uniform(-5, 25) # Simulate slight profit

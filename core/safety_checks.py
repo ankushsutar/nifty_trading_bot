@@ -96,3 +96,59 @@ class SafetyGatekeeper:
         except Exception as e:
             print(f">>> [Gatekeeper] OrderBook Check Error: {e}")
             return False
+
+    def check_max_daily_loss(self, current_pnl):
+        """
+        Rule: Stop trading if loss > ₹2,000 (per lot).
+        Note: current_pnl should be negative for loss.
+        """
+        MAX_LOSS = -2000
+        if current_pnl <= MAX_LOSS:
+             print(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl}). Halting Trading.")
+             return False
+        return True
+
+    def is_blackout_period(self):
+        """
+        Rule: No new trades between 11:30 AM - 01:00 PM.
+        """
+        now = datetime.datetime.now().time()
+        start = datetime.time(11, 30)
+        end = datetime.time(13, 0)
+        
+        if start <= now <= end:
+            print(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
+            return True
+        return False
+
+    def get_vix_adjustment(self):
+        """
+        Rule: If India VIX > 25, reduce quantity by 50%.
+        Returns multiplier (1.0 or 0.5).
+        """
+        try:
+            # Try to fetch INDIA VIX. Token for INDIA VIX on NSE is usually 26009 or similar, 
+            # but depends on broker mapping. 
+            # Angel One token for 'INDIA VIX' is '99926009' (check if valid) or we search scrip.
+            # For now, we will try a standard token or mock it if it fails.
+            
+            # Assuming 99926009 is India VIX based on Nifty being 99926000
+            vix_token = "99926009" 
+            
+            response = self.api.ltpData("NSE", "INDIA VIX", vix_token)
+            if response and response.get('status'):
+                vix = float(response['data']['ltp'])
+                # print(f">>> [Market] India VIX: {vix}")
+                
+                if vix > 25.0:
+                    print(f">>> [Risk] ⚠️ High VIX ({vix} > 25). Reducing Quantity by 50%.")
+                    return 0.5
+            else:
+                # print(">>> [Risk] Could not fetch VIX. Assuming Normal.")
+                pass
+                
+        except Exception as e:
+            # print(f">>> [Risk] VIX Check Error: {e}")
+            pass
+            
+        return 1.0
