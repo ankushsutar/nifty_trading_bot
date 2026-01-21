@@ -7,12 +7,13 @@ from core.mock_connect import MockSmartConnect, MockTokenLookup
 from utils.expiry_calculator import get_next_weekly_expiry
 from strategies.orb_strategy import ORBStrategy
 from strategies.momentum_strategy import MomentumStrategy
+from strategies.vwap_strategy import VWAPStrategy
 
 def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM"], help="Choose Strategy: STRADDLE, ORB, MOMENTUM")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP"], help="Choose Strategy")
     args = parser.parse_args()
 
     if args.test:
@@ -44,8 +45,13 @@ def run_bot():
     elif args.strategy == "MOMENTUM":
         print(f"\n>>> [Strategy] Selected: Momentum (EMA Crossover) ⚡")
         bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
+    elif args.strategy == "VWAP":
+        print(f"\n>>> [Strategy] Selected: VWAP Institutional Trend (Pro Mode) 🚀")
+        bot = VWAPStrategy(api, loader, dry_run=args.dry_run)
     else:
         print(f"\n>>> [Strategy] Selected: Dynamic Straddle")
+        # Straddle is Non-Directional Buying (Long Straddle)
+        print(">>> [Strategy] Executing Long Straddle (Buying ATM CE & PE)")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
 
     # 4. Input Trade Parameters
