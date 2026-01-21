@@ -100,28 +100,28 @@ class NiftyStrategy:
         # 5. Monitor for Profit Target (Simple Loop)
         if not self.dry_run:
             print(">>> [Strategy] Monitoring positions for Target (20% Profit)...")
-            self.monitor_positions({
-                ce_symbol: ce_token,
-                pe_symbol: pe_token
-            })
+            
+            positions = []
+            if ce_order_id and ce_fill_price:
+                positions.append({
+                    'symbol': ce_symbol, 'token': ce_token, 
+                    'entry_price': ce_fill_price, 'qty': Config.NIFTY_LOT_SIZE
+                })
+            if pe_order_id and pe_fill_price:
+                positions.append({
+                    'symbol': pe_symbol, 'token': pe_token, 
+                    'entry_price': pe_fill_price, 'qty': Config.NIFTY_LOT_SIZE
+                })
+                
+            self.monitor_positions(positions)
 
-    def monitor_positions(self, active_symbols):
+    def monitor_positions(self, active_positions):
         """
-        Simple loop to check if we should exit for profit.
-        Target: 20% gain or Time Exit (15:15).
-        NOTE: Real P&L tracking requires fetching average price again or tracking it.
-        For MVP, we just loop and wait for manual interrupt or time exit.
+        Delegates to PositionManager
         """
-        try:
-            while True:
-                time.sleep(10)
-                now = datetime.datetime.now().time()
-                if now > datetime.time(15, 15):
-                    print(">>> [Exit] Time is 15:15. Auto-Squaring off positions.")
-                    break
-                # TODO: Implement P&L calculation API call to check unrealized MTOM
-        except KeyboardInterrupt:
-            print(">>> [User] Manual Stop Signal.")
+        from core.position_manager import PositionManager
+        manager = PositionManager(self.api, self.dry_run)
+        manager.monitor(active_positions)
 
     def place_order(self, token, symbol, action):
         if self.dry_run:

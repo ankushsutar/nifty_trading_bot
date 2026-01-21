@@ -77,15 +77,16 @@ class ORBStrategy:
             if ltp > self.range_high:
                 print(">>> [ORB] Upside Breakout! Buying CE.")
                 print(">>> [ORB] Upside Breakout! Buying CE.")
+                print(">>> [ORB] Upside Breakout! Buying CE.")
                 self.place_entry_order(expiry, "CE")
-                self.monitor_position()
+                # Monitor is called inside place_entry_order now
                 break # Exit loop after trade (or continue to manage)
                 
             # Case B: Downside Breakout -> Buy PE
             elif ltp < self.range_low:
                 print(">>> [ORB] Downside Breakout! Buying PE.")
+                print(">>> [ORB] Downside Breakout! Buying PE.")
                 self.place_entry_order(expiry, "PE")
-                self.monitor_position()
                 break
             
             # Demo Break: Don't loop forever in mock/dry-run if no breakout
@@ -147,6 +148,9 @@ class ORBStrategy:
                  # COMPROMISE: We will safely use the robust 10% Premium SL for now to ensure safety,
                  # as calculating the exact Option Price for the Spot Level is error-prone without Greeks.
                  self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+                 
+                 # START MONITORING
+                 self.monitor_position(symbol, token, fill_price)
              
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
@@ -209,17 +213,19 @@ class ORBStrategy:
             print(f">>> [Error] SL Placement Failed: {e}")
             return None
 
-    def monitor_position(self):
-        print(">>> [ORB] Trade Active. Monitoring Time Exit (15:15)...")
-        try:
-            while True:
-                time.sleep(10)
-                now = datetime.datetime.now().time()
-                if now > datetime.time(15, 15):
-                    print(">>> [Exit] Time is 15:15. Auto-Squaring off positions.")
-                    break
-        except KeyboardInterrupt:
-            print(">>> [User] Manual Stop Signal.")
+    def monitor_position(self, symbol, token, fill_price):
+        if self.dry_run: return
+
+        print(">>> [ORB] Trade Active. Monitoring P&L (Target: 20%)...")
+        from core.position_manager import PositionManager
+        
+        pos = [{
+           'symbol': symbol, 'token': token, 
+           'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE
+        }]
+        
+        manager = PositionManager(self.api, self.dry_run)
+        manager.monitor(pos)
 
     def get_nifty_ltp(self):
         # Helper to get Nifty Index LTP
