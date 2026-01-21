@@ -12,8 +12,15 @@ class PositionManager:
         """
         active_positions: List of dicts [{'symbol': '...', 'token': '...', 'entry_price': 100.0, 'qty': 50}]
         """
-        print(f">>> [Manager] Monitoring {len(active_positions)} positions for {int(self.target_percent*100)}% Profit...")
+        print(f">>> [Manager] Activating Superhuman Trade Management (TSL) 🚀")
+        print(f">>> [TSL] Logic: Initial SL -10%. At +10% Profit, SL moves to Breakeven. Then trails Peak - 10%.")
         
+        # Initialize TSL State
+        for pos in active_positions:
+            pos['highest_pnl'] = -1.0 # Track Peak P&L
+            pos['sl_level'] = -0.10   # Initial Hard SL (-10%)
+            pos['tsl_active'] = False # Flag for Breakeven activation
+
         while True:
             try:
                 # 1. Check Time Exit
@@ -23,7 +30,7 @@ class PositionManager:
                     self.exit_all(active_positions, "TIME_EXIT")
                     break
 
-                # 2. Check P&L
+                # 2. Check P&L & Manage TSL
                 for pos in active_positions:
                     if pos.get('exited'): continue
                     
@@ -33,11 +40,42 @@ class PositionManager:
                     buy_price = pos['entry_price']
                     pnl_pct = (ltp - buy_price) / buy_price
                     
-                    print(f"    {pos['symbol']} | Buy: {buy_price} | CMP: {ltp} | P&L: {pnl_pct*100:.2f}%")
+                    # Track Highest P&L (Peak)
+                    if pnl_pct > pos['highest_pnl']:
+                        pos['highest_pnl'] = pnl_pct
+
+                    # --- TSL LOGIC START ---
                     
-                    if pnl_pct >= self.target_percent:
-                        print(f">>> [Profit] Target Hit for {pos['symbol']}! Exiting...")
-                        self.exit_trade(pos, ltp)
+                    # A. Activate Breakeven (Risk-Free) at +10%
+                    if pnl_pct >= 0.10 and not pos['tsl_active']:
+                        pos['sl_level'] = 0.0
+                        pos['tsl_active'] = True
+                        print(f">>> [TSL] 🔒 Profit Hit +10%. Risk Eliminated! SL moved to BREAKEVEN (0%).")
+
+                    # B. Dynamic Trailing (Keep 10% distance from Peak)
+                    # Only active after Breakeven is triggered
+                    if pos['tsl_active']:
+                        # Example: Peak 15% -> SL 5%. Peak 20% -> SL 10%.
+                        potential_sl = pos['highest_pnl'] - 0.10
+                        
+                        # Optimization: Round to 1 decimal (e.g. 0.05) to avoid noise
+                        potential_sl = round(potential_sl, 2)
+                        
+                        # Only move SL UP, never down
+                        if potential_sl > pos['sl_level']:
+                             pos['sl_level'] = potential_sl
+                             print(f">>> [TSL] 🚀 Rally! Peak: {pos['highest_pnl']*100:.1f}%. Trailing SL moved up to {pos['sl_level']*100:.1f}%")
+
+                    # --- TSL LOGIC END ---
+
+                    tsl_status = f"SL: {pos['sl_level']*100:.1f}%"
+                    print(f"    {pos['symbol']} | CMP: {ltp} | P&L: {pnl_pct*100:.2f}% | {tsl_status}")
+                    
+                    # 3. Check Exit Condition (Price hits SL)
+                    if pnl_pct <= pos['sl_level']:
+                        reason = "TRAILING_SL_HIT" if pos['tsl_active'] else "STOP_LOSS_HIT"
+                        print(f">>> [Exit] {reason} 🔻 P&L: {pnl_pct*100:.2f}% dropped below SL {pos['sl_level']*100:.2f}%")
+                        self.exit_trade(pos, ltp, reason=reason)
                         pos['exited'] = True
 
                 # Check if all exited
