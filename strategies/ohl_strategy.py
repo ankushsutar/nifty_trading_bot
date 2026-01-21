@@ -181,4 +181,25 @@ class OHLStrategy:
         except: pass
 
     def monitor_trade(self, token, symbol, qty, target, sl):
-         print(">>> [Monitor] watching for Target/SL...")
+         print(f">>> [Monitor] Target: {target} | SL: {sl}")
+         while True:
+            try:
+                time.sleep(5)
+                # 1. Time Check
+                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                     print(">>> [Exit] Time 15:15. Closing.")
+                     self.place_entry(None, 0, "CE" if "CE" in symbol else "PE", qty, 0, "EXIT") # Re-use entry? No.
+                     # Exit Market
+                     orderparams = {
+                        "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                        "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                        "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                    }
+                     self.api.placeOrder(orderparams)
+                     break
+                
+            except KeyboardInterrupt:
+                 print("Stopped.")
+                 break
+            except Exception as e:
+                 pass

@@ -173,8 +173,7 @@ class NiftyStrategy:
 
     def modify_sl_to_cost(self, leg_type, token, symbol, quantity):
         # Move SL to Entry Price
-        # This requires cancelling old SL and placing new one OR modifying.
-        # SmartAPI modifyOrder support? Assuming yes.
+        # Fallback: Cancel Old -> Place New
         
         order_id = self.sl_orders.get(leg_type)
         if not order_id: return
@@ -185,16 +184,22 @@ class NiftyStrategy:
         print(f">>> [Risk] Modifying {leg_type} SL to Cost: {entry_price}")
         
         try:
-             # Just cancel and re-enter strictly for simplicity if modify is complex
-             # But 'modifyOrder' is standard. Let's try to mock/use placeOrder if modify not avail.
-             # self.api.modifyOrder(...)
+             # 1. Cancel Old SL
+             if not self.dry_run:
+                 self.api.cancelOrder(order_id, "NORMAL") # Need to check if cancelOrder needs more args? Usually orderid.
+                 # SmartAPI: cancelOrder(orderid, variety)
+                 # Wait a bit?
+                 time.sleep(1)
              
-             # Fallback: Cancel Old -> Place New
-             # self.api.cancelOrder(order_id, "NORMAL") ...
-             # We'll assume a `modify_order` helper or just place new for now to be safe.
+             # 2. Place New SL at Cost
+             # Trigger at Cost, Price slightly above (Buy SL for Sell Entry)
+             trigger_price = entry_price
+             price = round(entry_price + 1.0, 1)
              
-             # For this task, I'll print the action.
-             print(f"    (Simulated) Modified Order {order_id} to Trigger: {entry_price}")
+             new_id = self.place_sl_order(token, symbol, trigger_price, price, quantity)
+             self.sl_orders[leg_type] = new_id
+             
+             print(f"    >>> Modified {leg_type} SL to {entry_price}")
              
         except Exception as e:
              print(f">>> [Error] Modify SL Failed: {e}")

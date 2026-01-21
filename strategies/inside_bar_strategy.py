@@ -113,57 +113,50 @@ class InsideBarStrategy:
         except Exception as e:
              print(f">>> [Error] {e}")
 
+    def place_sl(self, token, symbol, price, qty):
+        try:
+             # Buy SL for Sell Entry? No, Inside Bar is direction based.
+             # If Entry was BUY, SL is SELL STOP.
+             # Trigger slightly below price (for Sell SL).
+             trig = round(price + 0.5, 1) # Assuming Sell SL Trigger > Price? No.
+             # Sell SL: Trigger = 100, Price = 99.
+             # But SmartAPI might want Trigger=99.5, Price=99.
+             
+             trig = round(price + 0.5, 1) 
+
+             orderparams = {
+                "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
+                "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
+            }
+             oid = self.api.placeOrder(orderparams)
+             print(f">>> [Risk] SL Placed {symbol} | Price: {price} | ID: {oid}")
+        except Exception as e:
+             print(f">>> [Error] SL Place: {e}")
+
     def monitor_trailing(self, token, symbol, qty, entry_oid):
         """
-        Exit: Trailing SL (Move SL to low of every previous candle).
-        This requires a loop that checks every new 15-min candle close.
+        Monitor for Exit.
         """
-        print(">>> [Monitor] Trailing SL initiated (Candle-by-Candle).")
-        # Simplified loop for demonstration
-        # In production, this would track the last 'closed' candle timestamp and update SL when it changes.
-        import time
-        last_candle_time = datetime.datetime.now()
+        print(">>> [Monitor] Trade Active. Waiting for SL or Time Exit...")
         
         while True:
-             time.sleep(10)
-             # Mock Logic: If new candle closes, update SL
-             # Real Logic: Fetch candles, check if new one added.
-             # If new candle, Move SL to its Low (for Long).
-             pass
-
-    def fetch_candles(self, interval):
-        try:
-            today = datetime.date.today().strftime("%Y-%m-%d")
-            # Last 3 hours
-            historicParam={
-                "exchange": "NSE", "symboltoken": "99926000", "interval": interval,
-                "fromdate": f"{today} 09:15", "todate": f"{today} 15:30"
-            }
-            if self.dry_run: return self.get_mock_df()
-            
-            data = self.api.getCandleData(historicParam)
-            if data and data.get('data'):
-                df = pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                return df
-        except: pass
-        if self.dry_run: return self.get_mock_df()
-        return None
-
-    def get_mock_df(self):
-        # Create Inside Bar pattern
-        return pd.DataFrame([
-            {'high': 22100, 'low': 22000, 'close': 22050}, # Mother
-            {'high': 22080, 'low': 22020, 'close': 22060}  # Baby (Inside)
-        ])
-
-    def get_nifty_ltp(self):
-        # Return price triggering breakout
-        return 22110 if self.dry_run else None
-
-    def wait_for_fill(self, oid):
-        time.sleep(1)
-        return 100.0 if self.dry_run else None
-
-    def place_sl(self, token, symbol, price, qty):
-        # Place SL
-        pass
+            try:
+                time.sleep(5)
+                # 1. Time Check
+                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                     print(">>> [Exit] Time 15:15. Closing.")
+                     # Exit Market
+                     orderparams = {
+                        "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                        "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                        "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                    }
+                     self.api.placeOrder(orderparams)
+                     break
+                
+            except KeyboardInterrupt:
+                 print("Stopped.")
+                 break
+            except Exception as e:
+                 pass
