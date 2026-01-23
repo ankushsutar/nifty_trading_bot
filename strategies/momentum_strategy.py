@@ -350,7 +350,6 @@ class MomentumStrategy:
             self.data_fetcher.api = new_api # Update data fetcher too
             logger.info("System: ✅ Re-login Successful! Session refreshed.")
             return True
-            return False
         else:
             logger.error("System: ❌ Re-login Failed.")
             return False
