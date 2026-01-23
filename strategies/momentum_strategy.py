@@ -5,14 +5,39 @@ from config.settings import Config
 from core.angel_connect import get_angel_session
 from core.safety_checks import SafetyGatekeeper
 
+import json
+import os
+
 class MomentumStrategy:
+    STATE_FILE = "trade_state.json"
+
     def __init__(self, api, token_loader, dry_run=False):
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api)
-        self.active_position = None # {'leg': 'CE' or 'PE', 'symbol': '', 'qty': 0}
         self.data_failure_count = 0
+        self.active_position = None 
+        self.load_state() # Restore state on startup
+
+    def save_state(self):
+        try:
+            with open(self.STATE_FILE, 'w') as f:
+                json.dump(self.active_position, f)
+            # print(">>> [System] State Saved.") # Too noisy?
+        except Exception as e:
+            print(f">>> [Error] Save State: {e}")
+
+    def load_state(self):
+        if not os.path.exists(self.STATE_FILE): return
+        try:
+            with open(self.STATE_FILE, 'r') as f:
+                data = json.load(f)
+                if data:
+                    self.active_position = data
+                    print(f">>> [System] ♻️ Restored Active Position from State: {data['symbol']}")
+        except Exception as e:
+            print(f">>> [Error] Load State: {e}")
 
     def check_trailing_stop(self):
         """
@@ -68,6 +93,7 @@ class MomentumStrategy:
         if new_sl > current_sl:
             self.active_position['sl_price'] = new_sl
             print(f">>> [Trailing] 📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
+            self.save_state()
             
         return False
 
@@ -225,6 +251,7 @@ class MomentumStrategy:
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
                 'entry_price': quote_ltp, 'sl_price': 0 # No initial SL, relies on trailing
             }
+             self.save_state()
         except Exception as e:
              print(f">>> [Error] Enter: {e}")
 
@@ -249,6 +276,7 @@ class MomentumStrategy:
              oid = self.api.placeOrder(orderparams)
              print(f">>> [Success] Exit Order: {oid}")
              self.active_position = None
+             self.save_state()
         except Exception as e:
              print(f">>> [Error] Exit: {e}")
 

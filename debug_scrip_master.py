@@ -2,30 +2,27 @@ import pandas as pd
 import requests
 from config.settings import Config
 
-def check_expiries():
+def check_vix():
     print(">>> Downloading Scrip Master...")
     try:
         response = requests.get(Config.SCRIP_MASTER_URL)
         data = response.json()
         df = pd.DataFrame(data)
         
-        print(">>> Loaded. Filtering NIFTY OPTIDX...")
-        nifty_opts = df[
-            (df['name'] == 'NIFTY') & 
-            (df['instrumenttype'] == 'OPTIDX')
-        ]
+        print(">>> Loaded. Filtering for INDIA VIX...")
         
-        print("\n>>> Inspecting 27JAN2026 Data:")
-        jan27 = nifty_opts[nifty_opts['expiry'] == '27JAN2026']
-        if not jan27.empty:
-            print(jan27[['symbol', 'strike', 'instrumenttype', 'token']].head(5))
-            print("\nStrike Format Example:", jan27.iloc[0]['strike'])
-            print("Type of Strike:", type(jan27.iloc[0]['strike']))
+        # Searching for INDIA VIX
+        vix_data = df[df['name'] == 'INDIA VIX']
+        
+        if not vix_data.empty:
+            print(vix_data.iloc[0].to_dict())
         else:
-            print("No data for 27JAN2026?")
+            print("Direct 'INDIA VIX' match not found. Searching 'VIX' in symbol...")
+            vix_approx = df[df['symbol'].str.contains('VIX', na=False)]
+            print(vix_approx[['symbol', 'token', 'exch_seg', 'name']].head(10))
 
     except Exception as e:
-        print(e)
+        print(f"Error: {e}")
         
 if __name__ == "__main__":
-    check_expiries()
+    check_vix()

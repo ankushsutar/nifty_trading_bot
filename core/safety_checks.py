@@ -174,7 +174,7 @@ class SafetyGatekeeper:
             # For now, we will try a standard token or mock it if it fails.
             
             # Assuming 99926009 is India VIX based on Nifty being 99926000
-            vix_token = "99926009" 
+            vix_token = "99926017" 
             
             response = self.api.ltpData("NSE", "INDIA VIX", vix_token)
             if response and response.get('status'):
