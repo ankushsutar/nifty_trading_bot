@@ -1,12 +1,15 @@
 import time
 import datetime
 import pandas as pd
+import json
+import os
+import random
+
 from config.settings import Config
 from core.angel_connect import get_angel_session
 from core.safety_checks import SafetyGatekeeper
-
-import json
-import os
+from core.data_fetcher import DataFetcher
+from utils.logger import logger
 
 class MomentumStrategy:
     STATE_FILE = "trade_state.json"
@@ -16,6 +19,7 @@ class MomentumStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api)
+        self.data_fetcher = DataFetcher(self.api)
         self.data_failure_count = 0
         self.active_position = None 
         self.load_state() # Restore state on startup
@@ -24,9 +28,8 @@ class MomentumStrategy:
         try:
             with open(self.STATE_FILE, 'w') as f:
                 json.dump(self.active_position, f)
-            # print(">>> [System] State Saved.") # Too noisy?
         except Exception as e:
-            print(f">>> [Error] Save State: {e}")
+            logger.error(f"Save State Error: {e}")
 
     def load_state(self):
         if not os.path.exists(self.STATE_FILE): return
@@ -35,18 +38,13 @@ class MomentumStrategy:
                 data = json.load(f)
                 if data:
                     self.active_position = data
-                    print(f">>> [System] ♻️ Restored Active Position from State: {data['symbol']}")
+                    logger.info(f"♻️ Restored Active Position from State: {data['symbol']}")
         except Exception as e:
-            print(f">>> [Error] Load State: {e}")
+            logger.error(f"Load State Error: {e}")
 
     def check_trailing_stop(self):
         """
         Manages Step-Trailing Stop Loss.
-        Logic:
-           - If Profit > 20 pts -> SL = Entry + 5
-           - If Profit > 40 pts -> SL = Entry + 25
-           - If Profit > 60 pts -> SL = Entry + 45
-        Returns: True if stopped out, False otherwise
         """
         if not self.active_position: return False
         
@@ -71,7 +69,7 @@ class MomentumStrategy:
         
         # 1. Check if SL Hit
         if current_sl > 0 and ltp <= current_sl:
-            print(f">>> [Exit] 🛑 Trailing Stop Hit! Price: {ltp} <= SL: {current_sl}")
+            logger.info(f"🛑 Trailing Stop Hit! Price: {ltp} <= SL: {current_sl}")
             self.close_position("TRAILING_STOP")
             return True
             
@@ -92,28 +90,28 @@ class MomentumStrategy:
             
         if new_sl > current_sl:
             self.active_position['sl_price'] = new_sl
-            print(f">>> [Trailing] 📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
+            logger.info(f"📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
             self.save_state()
             
         return False
 
     def execute(self, expiry, action="BUY"):
         """
-        Momentum Logic (EMA Crossover):
+        Momentum Logic (EMA Crossover + RSI):
         - Timeframe: 5 Minutes.
-        - Buy Signal: 9 EMA > 21 EMA -> Buy CE.
-        - Sell Signal: 9 EMA < 21 EMA -> Buy PE.
+        - Buy Signal: 9 EMA > 21 EMA AND RSI < 70 -> Buy CE.
+        - Sell Signal: 9 EMA < 21 EMA AND RSI > 30 -> Buy PE.
         - Exit: When crossover reverses.
         """
-        print(f"\n--- EMA CROSSOVER STRATEGY ({expiry}) ---")
+        logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
 
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
         if self.gatekeeper.is_blackout_period(): return
 
-        # 1. Continuous Monitor Loop (since Exit is based on Reversal)
-        print(">>> [Strategy] Starting Continuous Monitor for Crossover...")
+        # 1. Continuous Monitor Loop
+        logger.info("Starting Continuous Monitor for Crossover...")
         
         while True:
             try:
@@ -124,18 +122,18 @@ class MomentumStrategy:
                     break
 
                 # 2. Analyze Trend
-                trend, ema9, ema21 = self.analyze_market_trend()
-                print(f"    [Analysis] Trend: {trend} | EMA9: {ema9:.2f} | EMA21: {ema21:.2f} | Active: {self.active_position['leg'] if self.active_position else 'None'}")
+                trend, ema9, ema21, rsi = self.analyze_market_trend()
+                logger.info(f"[Analysis] Trend: {trend} | EMA9: {ema9:.2f} | EMA21: {ema21:.2f} | RSI: {rsi:.2f} | Active: {self.active_position['leg'] if self.active_position else 'None'}")
                 
-                # Check for Data Failure (Blind Mode)
-                if trend == "NEUTRAL" and self.active_position:
+                # Check for Data Failure
+                if trend == "NEUTRAL" and rsi == 0 and self.active_position:
                     self.data_failure_count += 1
-                    print(f">>> [Warning] ⚠️ Blind Mode Active ({self.data_failure_count}/3). Keeping Position.")
+                    logger.warning(f"⚠️ Blind Mode Active ({self.data_failure_count}/3). Keeping Position.")
                     
                     if self.data_failure_count >= 3:
-                        print(">>> [Safety] 🛑 Max Data Failures Reached. Force Exiting.")
+                        logger.error("🛑 Max Data Failures Reached. Force Exiting.")
                         self.close_position("DATA_LOSS_SAFETY")
-                        break # Or continue searching? Usually if data is gone, we stop.
+                        break 
                     
                     time.sleep(60 if self.dry_run else 60)
                     continue
@@ -143,12 +141,18 @@ class MomentumStrategy:
                     self.data_failure_count = 0 # Reset on success
                 
                 # 3. Logic
-                # If No Position: Enter based on Trend
+                # If No Position: Enter based on Trend & RSI
                 if not self.active_position:
                     if trend == "BULLISH":
-                        self.enter_position(expiry, "CE")
+                        if rsi < 70:
+                            self.enter_position(expiry, "CE")
+                        else:
+                            logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
                     elif trend == "BEARISH":
-                        self.enter_position(expiry, "PE")
+                        if rsi > 30:
+                            self.enter_position(expiry, "PE")
+                        else:
+                            logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
                 
                 # If Active Position: Check for Reversal
                 else:
@@ -160,46 +164,66 @@ class MomentumStrategy:
                     
                     # B. Exit CE if Bearish Crossover happens
                     elif current_leg == "CE" and trend == "BEARISH":
-                         print(">>> [Signal] Trend Reversed to BEARISH. Exiting CE.")
+                         logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
                          self.close_position("REVERSAL")
-                         self.enter_position(expiry, "PE") # Stop & Reverse? Prompt says "Exit". Use judgement. 
-                         # Prompt: "Exit: When the crossover reverses (e.g., long, exit when 9 EMA crosses below 21)"
-                         # It implies Stop. But usually trend followers reverse. 
-                         # I will just Exit as requested. If trend is Strong Bearish, loop will pick it up next iteration (if designed).
-                         # But here I am calling enter immediately to be efficient.
+                         if rsi > 30:
+                             self.enter_position(expiry, "PE") 
+                         else:
+                             logger.info("Reversal Entry Ignored: RSI Oversold.")
 
                     # Exit PE if Bullish Crossover happens
                     elif current_leg == "PE" and trend == "BULLISH":
-                         print(">>> [Signal] Trend Reversed to BULLISH. Exiting PE.")
+                         logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
                          self.close_position("REVERSAL")
-                         self.enter_position(expiry, "CE")
+                         if rsi < 70:
+                             self.enter_position(expiry, "CE")
+                         else:
+                             logger.info("Reversal Entry Ignored: RSI Overbought.")
 
-                time.sleep(60 if self.dry_run else 60) # Reduced wait to 60s for better trailing/LTP tracking
-                # In real bot, we'd schedule or sleep until next :00, :05 mark.
+                time.sleep(60 if self.dry_run else 60)
                 
             except KeyboardInterrupt:
-                print(">>> [User] Manual Stop.")
+                logger.info("User Manual Stop.")
                 break
             except Exception as e:
-                print(f">>> [Error] Loop: {e}")
+                logger.error(f"Loop Error: {e}")
                 time.sleep(10)
 
     def analyze_market_trend(self):
-        # Fetch 5-min candles
-        df = self.fetch_candles()
-        if df is None or df.empty: return "NEUTRAL", 0, 0
+        # Fetch 5-min candles via DataFetcher
+        # Using Index Token or Mock
+        if self.dry_run:
+            df = self.get_mock_df()
+        else:
+             # Nifty 50 Index Token: 99926000
+            df = self.data_fetcher.fetch_latest_candles("99926000")
+            
+        if df is None or df.empty: return "NEUTRAL", 0, 0, 0
         
         # Calc EMA
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
         
+        # Calc RSI
+        df['RSI'] = self.calculate_rsi(df)
+        
         last = df.iloc[-1]
         ema9 = last['EMA9']
         ema21 = last['EMA21']
+        rsi = last['RSI']
         
-        if ema9 > ema21: return "BULLISH", ema9, ema21
-        if ema9 < ema21: return "BEARISH", ema9, ema21
-        return "NEUTRAL", ema9, ema21
+        if ema9 > ema21: return "BULLISH", ema9, ema21, rsi
+        if ema9 < ema21: return "BEARISH", ema9, ema21, rsi
+        return "NEUTRAL", ema9, ema21, rsi
+
+    def calculate_rsi(self, df, period=14):
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
+        
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi.fillna(50) # Return 50 if NaN
 
     def enter_position(self, expiry, leg):
         # VIX Sizing
@@ -209,29 +233,35 @@ class MomentumStrategy:
         
         # Strike
         ltp = self.get_nifty_ltp()
+        if not ltp: 
+            logger.error("Could not fetch Nifty LTP for Strike Selection.")
+            return
+
         strike = round(ltp / 50) * 50
         
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
-        if not token: return
+        if not token: 
+            logger.error(f"Could not find token for {strike} {leg}")
+            return
         
         # Determine actual cost
         quote_ltp = 0
         try:
              # Fetch LTP for the specific option to check margin
-             # exchange "NFO", symbol token
              q_resp = self.api.ltpData("NFO", symbol, token)
              if q_resp and q_resp.get('status'):
                  quote_ltp = float(q_resp['data']['ltp'])
         except Exception as e:
-            print(f">>> [Warning] Could not fetch option LTP for margin check: {e}")
+            logger.warning(f"Could not fetch option LTP for margin check: {e}")
             
         estimated_cost = quote_ltp * qty
         if estimated_cost > 0:
              if not self.gatekeeper.check_trade_margin(estimated_cost):
-                 print(f">>> [Risk] Trade Skipped due to Insufficient Funds (Cost: {estimated_cost})")
+                 logger.warning(f"Risk: Trade Skipped due to Insufficient Funds (Cost: {estimated_cost})")
                  return
         
-        print(f">>> [Trade] Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
+        logger.info(f"Trade: Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
+        
         if self.dry_run:
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
@@ -246,14 +276,14 @@ class MomentumStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
              oid = self.api.placeOrder(orderparams)
-             print(f">>> [Success] Order: {oid}")
+             logger.info(f"Success: Order Placed: {oid}")
              self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': 0 # No initial SL, relies on trailing
+                'entry_price': quote_ltp, 'sl_price': 0 
             }
              self.save_state()
         except Exception as e:
-             print(f">>> [Error] Enter: {e}")
+             logger.error(f"Enter Order Failure: {e}")
 
     def close_position(self, reason):
         if not self.active_position: return
@@ -262,7 +292,7 @@ class MomentumStrategy:
         token = self.active_position['token']
         qty = self.active_position['qty']
         
-        print(f">>> [Exit] Closing {symbol} due to {reason}")
+        logger.info(f"Exit: Closing {symbol} due to {reason}")
         if self.dry_run:
             self.active_position = None
             return
@@ -274,44 +304,11 @@ class MomentumStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
              oid = self.api.placeOrder(orderparams)
-             print(f">>> [Success] Exit Order: {oid}")
+             logger.info(f"Success: Exit Order Placed: {oid}")
              self.active_position = None
              self.save_state()
         except Exception as e:
-             print(f">>> [Error] Exit: {e}")
-
-    def fetch_candles(self):
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                today = datetime.date.today().strftime("%Y-%m-%d")
-                historicParam={
-                    "exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE",
-                    "fromdate": f"{today} 09:15", "todate": f"{today} 15:30"
-                }
-                
-                if self.dry_run: return self.get_mock_df()
-                
-                # Rate limit safety
-                time.sleep(0.5)
-                data = self.api.getCandleData(historicParam)
-                
-                if data and data.get('data'):
-                    return pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                else:
-                    print(f">>> [Warning] Fetch Candles Failed (Attempt {attempt+1}): {data}")
-            except Exception as e:
-                print(f">>> [Error] Fetch Candles (Attempt {attempt+1}): {e}")
-            
-            # If 3rd attempt failed, try Relogin before giving up (or before a 4th final try?)
-            # Let's try Relogin after 2nd failure, so 3rd attempt uses new session.
-            if attempt == 1: 
-                self.relogin()
-            elif attempt < max_retries - 1:
-                time.sleep(2) # Wait before retry
-            
-        if self.dry_run: return self.get_mock_df()
-        return None
+             logger.error(f"Exit Order Failure: {e}")
 
     def get_nifty_ltp(self):
         try:
@@ -322,19 +319,23 @@ class MomentumStrategy:
 
     def get_mock_df(self):
          # Toggle trend based on time? Or just random
-         import random
          close = 22000 + random.randint(-50, 50)
-         return pd.DataFrame([{'close': close}]) # Simplified for mock
+         # Generate enough rows for EMA/RSI
+         data = []
+         for i in range(50):
+             data.append({'close': 22000 + (i * 10) + random.randint(-5, 5)})
+         
+         return pd.DataFrame(data) 
 
     def relogin(self):
-        print(">>> [System] 🔄 Attempting Session Re-login...")
+        logger.info("System: 🔄 Attempting Session Re-login...")
         new_api = get_angel_session()
         if new_api:
             self.api = new_api
-            self.gatekeeper.api = new_api # Important: Update gatekeeper too
-            print(">>> [System] ✅ Re-login Successful! Session refreshed.")
+            self.gatekeeper.api = new_api
+            self.data_fetcher.api = new_api # Update data fetcher too
+            logger.info("System: ✅ Re-login Successful! Session refreshed.")
             return True
         else:
-            print(">>> [System] ❌ Re-login Failed.")
+            logger.error("System: ❌ Re-login Failed.")
             return False
-
