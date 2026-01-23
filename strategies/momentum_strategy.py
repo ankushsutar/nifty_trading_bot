@@ -12,6 +12,63 @@ class MomentumStrategy:
         self.gatekeeper = SafetyGatekeeper(self.api)
         self.active_position = None # {'leg': 'CE' or 'PE', 'symbol': '', 'qty': 0}
 
+    def check_trailing_stop(self):
+        """
+        Manages Step-Trailing Stop Loss.
+        Logic:
+           - If Profit > 20 pts -> SL = Entry + 5
+           - If Profit > 40 pts -> SL = Entry + 25
+           - If Profit > 60 pts -> SL = Entry + 45
+        Returns: True if stopped out, False otherwise
+        """
+        if not self.active_position: return False
+        
+        token = self.active_position['token']
+        symbol = self.active_position['symbol']
+        entry_price = self.active_position.get('entry_price', 0.0)
+        current_sl = self.active_position.get('sl_price', 0.0)
+        
+        if entry_price == 0: return False # Dry run or missing data
+        
+        # Get Current LTP
+        ltp = 0.0
+        try:
+             q_resp = self.api.ltpData("NFO", symbol, token)
+             if q_resp and q_resp.get('status'):
+                 ltp = float(q_resp['data']['ltp'])
+        except: pass
+        
+        if ltp == 0: return False
+        
+        profit_pts = ltp - entry_price
+        
+        # 1. Check if SL Hit
+        if current_sl > 0 and ltp <= current_sl:
+            print(f">>> [Exit] 🛑 Trailing Stop Hit! Price: {ltp} <= SL: {current_sl}")
+            self.close_position("TRAILING_STOP")
+            return True
+            
+        # 2. Update SL (Step Ladder)
+        new_sl = current_sl
+        
+        if profit_pts >= 60:
+            target_sl = entry_price + 45
+            if target_sl > current_sl: new_sl = target_sl
+            
+        elif profit_pts >= 40:
+            target_sl = entry_price + 25
+            if target_sl > current_sl: new_sl = target_sl
+            
+        elif profit_pts >= 20:
+            target_sl = entry_price + 5
+            if target_sl > current_sl: new_sl = target_sl
+            
+        if new_sl > current_sl:
+            self.active_position['sl_price'] = new_sl
+            print(f">>> [Trailing] 📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
+            
+        return False
+
     def execute(self, expiry, action="BUY"):
         """
         Momentum Logic (EMA Crossover):
@@ -53,9 +110,13 @@ class MomentumStrategy:
                 # If Active Position: Check for Reversal
                 else:
                     current_leg = self.active_position['leg']
+
+                    # A. Check Trailing Stop
+                    if self.check_trailing_stop():
+                        pass
                     
-                    # Exit CE if Bearish Crossover happens
-                    if current_leg == "CE" and trend == "BEARISH":
+                    # B. Exit CE if Bearish Crossover happens
+                    elif current_leg == "CE" and trend == "BEARISH":
                          print(">>> [Signal] Trend Reversed to BEARISH. Exiting CE.")
                          self.close_position("REVERSAL")
                          self.enter_position(expiry, "PE") # Stop & Reverse? Prompt says "Exit". Use judgement. 
@@ -70,7 +131,7 @@ class MomentumStrategy:
                          self.close_position("REVERSAL")
                          self.enter_position(expiry, "CE")
 
-                time.sleep(60 if self.dry_run else 300) # Wait for next candle (approx 5 min)
+                time.sleep(60 if self.dry_run else 60) # Reduced wait to 60s for better trailing/LTP tracking
                 # In real bot, we'd schedule or sleep until next :00, :05 mark.
                 
             except KeyboardInterrupt:
@@ -110,9 +171,29 @@ class MomentumStrategy:
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
         if not token: return
         
-        print(f">>> [Trade] Entering {leg} ({symbol}) Qty: {qty}")
+        # Determine actual cost
+        quote_ltp = 0
+        try:
+             # Fetch LTP for the specific option to check margin
+             # exchange "NFO", symbol token
+             q_resp = self.api.ltpData("NFO", symbol, token)
+             if q_resp and q_resp.get('status'):
+                 quote_ltp = float(q_resp['data']['ltp'])
+        except Exception as e:
+            print(f">>> [Warning] Could not fetch option LTP for margin check: {e}")
+            
+        estimated_cost = quote_ltp * qty
+        if estimated_cost > 0:
+             if not self.gatekeeper.check_trade_margin(estimated_cost):
+                 print(f">>> [Risk] Trade Skipped due to Insufficient Funds (Cost: {estimated_cost})")
+                 return
+        
+        print(f">>> [Trade] Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
         if self.dry_run:
-            self.active_position = {'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token}
+            self.active_position = {
+                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
+                'entry_price': quote_ltp, 'sl_price': 0
+            }
             return
 
         try:
@@ -123,7 +204,10 @@ class MomentumStrategy:
             }
              oid = self.api.placeOrder(orderparams)
              print(f">>> [Success] Order: {oid}")
-             self.active_position = {'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token}
+             self.active_position = {
+                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
+                'entry_price': quote_ltp, 'sl_price': 0 # No initial SL, relies on trailing
+            }
         except Exception as e:
              print(f">>> [Error] Enter: {e}")
 
@@ -152,17 +236,30 @@ class MomentumStrategy:
              print(f">>> [Error] Exit: {e}")
 
     def fetch_candles(self):
-        try:
-            today = datetime.date.today().strftime("%Y-%m-%d")
-            historicParam={
-                "exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE",
-                "fromdate": f"{today} 09:15", "todate": f"{today} 15:30"
-            }
-            if self.dry_run: return self.get_mock_df()
-            data = self.api.getCandleData(historicParam)
-            if data and data.get('data'):
-                return pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        except: pass
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                today = datetime.date.today().strftime("%Y-%m-%d")
+                historicParam={
+                    "exchange": "NSE", "symboltoken": "99926000", "interval": "FIVE_MINUTE",
+                    "fromdate": f"{today} 09:15", "todate": f"{today} 15:30"
+                }
+                
+                if self.dry_run: return self.get_mock_df()
+                
+                # Rate limit safety
+                time.sleep(0.5)
+                data = self.api.getCandleData(historicParam)
+                
+                if data and data.get('data'):
+                    return pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                else:
+                    print(f">>> [Warning] Fetch Candles Failed (Attempt {attempt+1}): {data}")
+            except Exception as e:
+                print(f">>> [Error] Fetch Candles (Attempt {attempt+1}): {e}")
+            
+            time.sleep(2) # Wait before retry
+            
         if self.dry_run: return self.get_mock_df()
         return None
 

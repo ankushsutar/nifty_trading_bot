@@ -4,6 +4,8 @@ import time
 class SafetyGatekeeper:
     def __init__(self, api):
         self.api = api
+        self.cached_rms = None
+        self.last_rms_time = 0
 
     def is_market_open(self):
         """
@@ -42,9 +44,16 @@ class SafetyGatekeeper:
         Note: required_margin_per_lot is an estimate.
         """
         try:
-            # SmartAPI rmsLimit fetch
-            # Note: The actual method might vary by library version, usually rmsLimit() returns user funds.
-            limit = self.api.rmsLimit()
+            # Check cache (10 seconds validity)
+            if time.time() - self.last_rms_time < 10 and self.cached_rms:
+                limit = self.cached_rms
+            else:
+                # 0.5s delay to prevent burst rate limit
+                time.sleep(0.5) 
+                # SmartAPI rmsLimit fetch
+                limit = self.api.rmsLimit()
+                self.cached_rms = limit
+                self.last_rms_time = time.time()
             
             if limit and limit.get('status'):
                 # 'net' or 'availableCash' depending on response structure
@@ -79,6 +88,38 @@ class SafetyGatekeeper:
             print(f">>> [Gatekeeper] Fund Check Error: {e}")
             # Fail safe: If we can't verify funds, we arguably should stop.
             # But during Mock/Test, this might differ.
+            return False
+
+    def check_trade_margin(self, estimated_cost):
+        """
+        Rule: Available Cash > Estimated Cost (LTP * Qty)
+        This is a hard check before placing an order.
+        """
+        try:
+            # Reuse cache if available and fresh
+            if time.time() - self.last_rms_time < 10 and self.cached_rms:
+                limit = self.cached_rms
+            else:
+                # Small delay
+                time.sleep(0.5)
+                limit = self.api.rmsLimit()
+                self.cached_rms = limit
+                self.last_rms_time = time.time()
+
+            if limit and limit.get('status'):
+                available_cash = float(limit['data']['net'])
+                
+                if available_cash >= estimated_cost:
+                    print(f">>> [Gatekeeper] Margin Check Passed: ₹{available_cash:,.2f} >= ₹{estimated_cost:,.2f}")
+                    return True
+                else:
+                    print(f">>> [Gatekeeper] ❌ Insufficient Funds for Trade. Available: ₹{available_cash:,.2f}, Required: ₹{estimated_cost:,.2f}")
+                    return False
+            else:
+                print(">>> [Gatekeeper] Error fetching RMS for Trade Check.")
+                return False
+        except Exception as e:
+            print(f">>> [Gatekeeper] Trade Margin Check Error: {e}")
             return False
 
     def check_no_open_orders(self, symbol):
