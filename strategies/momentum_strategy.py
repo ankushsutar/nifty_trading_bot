@@ -22,6 +22,7 @@ class MomentumStrategy:
         self.data_fetcher = DataFetcher(self.api)
         self.data_failure_count = 0
         self.active_position = None 
+        self.stop_requested = False  # Control flag for API
         self.load_state() # Restore state on startup
 
     def save_state(self):
@@ -41,6 +42,11 @@ class MomentumStrategy:
                     logger.info(f"♻️ Restored Active Position from State: {data['symbol']}")
         except Exception as e:
             logger.error(f"Load State Error: {e}")
+
+    def stop(self):
+        """Signals the loop to stop."""
+        self.stop_requested = True
+        logger.info("[Control] Stop Requested from API.")
 
     def check_trailing_stop(self):
         """
@@ -114,10 +120,16 @@ class MomentumStrategy:
         logger.info("Starting Continuous Monitor for Crossover...")
         
         while True:
+            if self.stop_requested:
+                logger.info("[Control] Stopping Strategy Loop.")
+                break
+
             try:
                 # Time Check
                 now = datetime.datetime.now().time()
-                if now >= datetime.time(15, 15):
+                # Only enforce time exit if NOT in dry_run or if explicitly desired
+                if not self.dry_run and now >= datetime.time(15, 15):
+                    logger.info("Market Closed (15:15). Stopping Strategy.")
                     self.close_position("TIME_EXIT")
                     break
 

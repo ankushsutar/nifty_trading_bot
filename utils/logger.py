@@ -1,11 +1,14 @@
 import logging
 import os
-from logging.handlers import RotatingFileHandler
+import queue
+from logging.handlers import RotatingFileHandler, QueueHandler
+
+# Global Queue for Logs (Thread-Safe)
+log_queue = queue.Queue()
 
 def setup_logger(name="TradingBot", log_dir="logs"):
     """
-    Sets up a logger with both Console and File handlers.
-    File logs are rotated (max 5MB, keep 5 backups).
+    Sets up a logger with Console, File, and Queue handlers.
     """
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
@@ -33,6 +36,13 @@ def setup_logger(name="TradingBot", log_dir="logs"):
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+
+    # 3. Queue Handler (For WebSockets)
+    queue_handler = QueueHandler(log_queue)
+    # queue_handler doesn't strictly need a formatter if we format at consumption, 
+    # but let's see if we can attach one or handle it later. 
+    # Actually QueueHandler simply puts the LogRecord into the queue.
+    logger.addHandler(queue_handler)
 
     return logger
 

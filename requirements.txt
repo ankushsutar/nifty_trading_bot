@@ -3,3 +3,6 @@ pyotp
 pandas
 python-dotenv
 requests
+fastapi
+uvicorn
+websockets
