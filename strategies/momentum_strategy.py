@@ -2,6 +2,7 @@ import time
 import datetime
 import pandas as pd
 from config.settings import Config
+from core.angel_connect import get_angel_session
 from core.safety_checks import SafetyGatekeeper
 
 class MomentumStrategy:
@@ -11,6 +12,7 @@ class MomentumStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api)
         self.active_position = None # {'leg': 'CE' or 'PE', 'symbol': '', 'qty': 0}
+        self.data_failure_count = 0
 
     def check_trailing_stop(self):
         """
@@ -98,6 +100,21 @@ class MomentumStrategy:
                 # 2. Analyze Trend
                 trend, ema9, ema21 = self.analyze_market_trend()
                 print(f"    [Analysis] Trend: {trend} | EMA9: {ema9:.2f} | EMA21: {ema21:.2f} | Active: {self.active_position['leg'] if self.active_position else 'None'}")
+                
+                # Check for Data Failure (Blind Mode)
+                if trend == "NEUTRAL" and self.active_position:
+                    self.data_failure_count += 1
+                    print(f">>> [Warning] ⚠️ Blind Mode Active ({self.data_failure_count}/3). Keeping Position.")
+                    
+                    if self.data_failure_count >= 3:
+                        print(">>> [Safety] 🛑 Max Data Failures Reached. Force Exiting.")
+                        self.close_position("DATA_LOSS_SAFETY")
+                        break # Or continue searching? Usually if data is gone, we stop.
+                    
+                    time.sleep(60 if self.dry_run else 60)
+                    continue
+                else:
+                    self.data_failure_count = 0 # Reset on success
                 
                 # 3. Logic
                 # If No Position: Enter based on Trend
@@ -258,7 +275,12 @@ class MomentumStrategy:
             except Exception as e:
                 print(f">>> [Error] Fetch Candles (Attempt {attempt+1}): {e}")
             
-            time.sleep(2) # Wait before retry
+            # If 3rd attempt failed, try Relogin before giving up (or before a 4th final try?)
+            # Let's try Relogin after 2nd failure, so 3rd attempt uses new session.
+            if attempt == 1: 
+                self.relogin()
+            elif attempt < max_retries - 1:
+                time.sleep(2) # Wait before retry
             
         if self.dry_run: return self.get_mock_df()
         return None
@@ -275,4 +297,16 @@ class MomentumStrategy:
          import random
          close = 22000 + random.randint(-50, 50)
          return pd.DataFrame([{'close': close}]) # Simplified for mock
+
+    def relogin(self):
+        print(">>> [System] 🔄 Attempting Session Re-login...")
+        new_api = get_angel_session()
+        if new_api:
+            self.api = new_api
+            self.gatekeeper.api = new_api # Important: Update gatekeeper too
+            print(">>> [System] ✅ Re-login Successful! Session refreshed.")
+            return True
+        else:
+            print(">>> [System] ❌ Re-login Failed.")
+            return False
 
