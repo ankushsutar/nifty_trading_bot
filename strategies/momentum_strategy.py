@@ -112,7 +112,8 @@ class MomentumStrategy:
         logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
 
         # 0. Risk Checks
-        if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
+        if not self.dry_run:
+            if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
         if self.gatekeeper.is_blackout_period(): return
 
@@ -268,7 +269,8 @@ class MomentumStrategy:
             
         estimated_cost = quote_ltp * qty
         if estimated_cost > 0:
-             if not self.gatekeeper.check_trade_margin(estimated_cost):
+             # Only check margin if NOT in dry run
+             if not self.dry_run and not self.gatekeeper.check_trade_margin(estimated_cost):
                  logger.warning(f"Risk: Trade Skipped due to Insufficient Funds (Cost: {estimated_cost})")
                  return
         
@@ -348,6 +350,11 @@ class MomentumStrategy:
             self.data_fetcher.api = new_api # Update data fetcher too
             logger.info("System: ✅ Re-login Successful! Session refreshed.")
             return True
+            return False
         else:
             logger.error("System: ❌ Re-login Failed.")
             return False
+
+    def get_current_position(self):
+        """Returns the active position details for UI."""
+        return self.active_position

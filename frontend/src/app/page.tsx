@@ -1,5 +1,6 @@
 import Terminal from '@/components/Terminal';
 import ControlPanel from '@/components/ControlPanel';
+import TradePanel from '@/components/TradePanel';
 
 export default function Home() {
   return (
@@ -29,6 +30,7 @@ export default function Home() {
         {/* Left Column: Controls & Stats */}
         <div className="lg:col-span-1 space-y-6">
           <ControlPanel />
+          <TradePanel />
           
           {/* Instructions Card for New Users */}
           <div className="bg-gray-900 border border-gray-800 p-6 rounded-xl shadow-lg">

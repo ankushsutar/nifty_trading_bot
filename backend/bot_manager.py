@@ -89,4 +89,15 @@ class BotManager:
             "strategy": "MOMENTUM" if self.is_running else None
         }
 
+    def get_active_trade(self):
+        if self.is_running and self.strategy_instance:
+             pos = self.strategy_instance.get_current_position()
+             if pos:
+                 # Calculate Unrealized PnL (Approximate)
+                 # Note: Real realtime fetching might slow down the loop if shared API object is used unsafely.
+                 # For now, we return static details and maybe last known LTP if strategy tracked it.
+                 # Better approach: Strategy updates 'last_ltp' key in position dict during its loop.
+                 return {"active": True, "details": pos}
+        return {"active": False}
+
 bot_manager = BotManager()

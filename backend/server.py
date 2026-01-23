@@ -102,6 +102,10 @@ def stop_bot():
 def get_status():
     return bot_manager.get_status()
 
+@app.get("/api/trade")
+def get_trade():
+    return bot_manager.get_active_trade()
+
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):
     await socket_manager.connect(websocket)
