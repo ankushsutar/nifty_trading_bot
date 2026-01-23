@@ -4,9 +4,12 @@ A Python-based algorithmic trading bot for Nifty 50 Options, designed to work wi
 
 ## 🚀 Key Features
 
+*   **Smart Strategy (Momentum + RSI):** Uses EMA Crossover (9 vs 21) combined with **RSI** filters to avoid buying at peaks (Overbought > 70) or valleys (Oversold < 30).
+*   **Robust Data Fetching:** Centralized `DataFetcher` with automatic retries and rate-limit handling for reliable market data.
+*   **Professional Logging:** Replaces console spam with structured logging to both Console and File (`logs/trading_bot.log`).
 *   **Dynamic Straddle Strategy:** Automatically calculates the At-The-Money (ATM) strike based on the live Nifty 50 spot price and places dual-leg (CE + PE) orders.
-*   **Auto-Expiry Calculation:** Automatically determines the nearest upcoming Thursday expiry date, so you don't need to manually update dates.
-*   **Mock Mode (`--test`):** A robust local testing mode that simulates market data and order placement without using real API credentials or money.
+*   **Auto-Expiry Calculation:** Automatically determines the nearest upcoming Thursday expiry date.
+*   **Mock Mode (`--test`):** A robust local testing mode that simulates market data and order placement.
 *   **Modular Design:** Clean separation of concerns (Core, Strategies, Utils, Config).
 
 ## 🛠️ Setup & Installation
@@ -61,6 +64,14 @@ python3 main.py
 ```
 *   **What it does:** Connects to Angel One, authenticates using TOTP, downloads the Master Scrip file (first time), fetches live Nifty LTP, and executes the Straddle strategy.
 
+### 6. Strategy Selection 🧠
+By default, the bot now uses the **Momentum Strategy (EMA + RSI)** for intelligent directional entries.
+*   **Timeframe:** 5-minute candles.
+*   **Signals:** 
+    *   **Buy CE:** EMA 9 Crosses Above 21 + RSI < 70
+    *   **Buy PE:** EMA 9 Crosses Below 21 + RSI > 30 
+*   **Trailing Stop:** Automatic step-ladder trailing stop to lock in profits.
+
 ## 📂 Project Structure
 
 ```text
@@ -69,10 +80,14 @@ nifty_trading_bot/
 │   └── settings.py          # Configuration and secrets management
 ├── core/
 │   ├── angel_connect.py     # Real SmartAPI connection logic
+│   ├── data_fetcher.py      # Resilient Candle Data Fetching
+│   ├── safety_checks.py     # Risk Management
 │   └── mock_connect.py      # Mock classes for local testing
 ├── strategies/
-│   └── nifty_straddle.py    # Main Straddle logic (ATM calculation + Execution)
+│   ├── momentum_strategy.py # Main EMA+RSI Logic
+│   └── nifty_straddle.py    # Legacy Straddle logic
 ├── utils/
+│   ├── logger.py            # Centralized Logger
 │   ├── expiry_calculator.py # Logic for finding next Thursday
 │   └── token_lookup.py      # Parsing Scrip Master for token IDs
 ├── main.py                  # Entry point
