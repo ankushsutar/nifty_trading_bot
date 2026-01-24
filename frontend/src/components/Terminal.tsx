@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState, useRef } from 'react';
 import { motion } from 'framer-motion';
+import { Terminal as TerminalIcon, Minimize2, Maximize2 } from 'lucide-react';
+import Card from './ui/Card';
 
 interface LogMessage {
   timestamp: string;
@@ -14,7 +16,6 @@ export default function Terminal() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // Dynamically connect to the same host as the frontend
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
     // Assume backend is on port 8000 of the same host
@@ -24,26 +25,26 @@ export default function Terminal() {
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-      console.log('Connected to Log Stream');
-      addLog('SYSTEM', `Connected to Log Stream (${host}:8000)...`);
+      addLog('SYSTEM', `Uplink Established to ${host}:8000...`);
     };
 
     socket.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        setLogs((prev) => [...prev, data]);
+        if (typeof data === 'object') {
+            setLogs((prev) => [...prev, data].slice(-100)); // Keep last 100 logs
+        }
       } catch (err) {
-        console.error('Log Parse Error', err);
+        // Ignore parse errors from heartbeat
       }
     };
 
     socket.onerror = (error) => {
-      console.error('WebSocket Error', error);
-      addLog('ERROR', 'Connection Failed. Is Backend Running?');
+        // Silent error
     };
 
     socket.onclose = () => {
-      addLog('SYSTEM', 'Disconnected from Stream.');
+      addLog('SYSTEM', 'Uplink Lost. Reconnecting...');
     };
 
     return () => {
@@ -63,44 +64,61 @@ export default function Terminal() {
     setLogs((prev) => [...prev, { timestamp: ts, level, message }]);
   };
 
-  const getLevelColor = (level: string) => {
-    switch (level?.toUpperCase()) {
-      case 'INFO': return 'text-green-400';
-      case 'WARNING': return 'text-yellow-400';
-      case 'ERROR': return 'text-red-500';
-      case 'SYSTEM': return 'text-cyan-400';
-      default: return 'text-gray-300';
-    }
-  };
-
   return (
-    <div className="bg-black/90 border border-gray-800 rounded-lg p-4 h-[500px] flex flex-col font-mono text-sm shadow-2xl backdrop-blur-md">
-      <div className="flex justify-between items-center mb-2 border-b border-gray-800 pb-2">
-        <span className="text-gray-400">⚡ LIVE_TERMINAL_FEED</span>
+    <Card className="h-full flex flex-col p-0 overflow-hidden min-h-[500px]" glow={true}>
+      
+      {/* CRT Scanline Effect Overlay */}
+      <div className="crt-scanline pointer-events-none"></div>
+
+      {/* Terminal Header */}
+      <div className="flex justify-between items-center px-4 py-3 bg-white/5 border-b border-white/5">
+        <div className="flex items-center gap-2 text-cyan-400">
+           <TerminalIcon size={14} />
+           <span className="text-xs font-mono tracking-widest uppercase">Live_Feed_V2.log</span>
+        </div>
         <div className="flex gap-2">
-           <span className="w-3 h-3 rounded-full bg-red-500/20"></span>
-           <span className="w-3 h-3 rounded-full bg-yellow-500/20"></span>
-           <span className="w-3 h-3 rounded-full bg-green-500"></span>
+           <span className="w-2 h-2 rounded-full bg-red-500/50"></span>
+           <span className="w-2 h-2 rounded-full bg-yellow-500/50"></span>
+           <span className="w-2 h-2 rounded-full bg-green-500/50"></span>
         </div>
       </div>
       
-      <div ref={scrollRef} className="flex-1 overflow-y-auto space-y-1 scrollbar-hide">
-        {logs.length === 0 && <span className="text-gray-600">Waiting for signals...</span>}
+      {/* Logs Area */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 font-mono text-xs space-y-1 relative">
+        {logs.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center text-gray-700 uppercase tracking-widest animate-pulse">
+                Waiting for signal transmission...
+            </div>
+        )}
+        
         {logs.map((log, i) => (
-          <motion.div 
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            key={i} 
-            className="flex gap-3 hover:bg-white/5 p-0.5 rounded"
-          >
-            <span className="text-gray-500 shrink-0">[{log.timestamp}]</span>
-            <span className={`font-bold shrink-0 w-20 ${getLevelColor(log.level)}`}>
+          <div key={i} className="flex gap-3 hover:bg-white/5 p-0.5 rounded transition-colors group">
+            <span className="text-gray-600 shrink-0 select-none group-hover:text-gray-400">
+                {log.timestamp}
+            </span>
+            
+            <span className={`font-bold shrink-0 w-16 ${
+                log.level === 'INFO' ? 'text-green-400' :
+                log.level === 'WARNING' ? 'text-yellow-400' :
+                log.level === 'ERROR' ? 'text-red-500' :
+                'text-cyan-400'
+            }`}>
               {log.level}
             </span>
-            <span className="text-gray-300 break-all">{log.message}</span>
-          </motion.div>
+            
+            <span className={`break-all ${
+                log.message.includes("PROFIT") ? "text-green-300 text-glow" : 
+                log.message.includes("LOSS") ? "text-red-300" : 
+                "text-gray-300"
+            }`}>
+                {log.message}
+            </span>
+          </div>
         ))}
+        
+        {/* Blinking Cursor at bottom */}
+        <div className="h-4 w-2 bg-green-400 animate-pulse mt-2"></div>
       </div>
-    </div>
+    </Card>
   );
 }
