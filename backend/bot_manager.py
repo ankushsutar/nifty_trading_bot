@@ -63,14 +63,37 @@ class BotManager:
         # So we can just read that file.
         import json
         import os
+        # Local import to avoid circular dependency issues
+        from backend.market_service import market_service
         
         try:
             if os.path.exists("trade_state.json"):
                 with open("trade_state.json", 'r') as f:
                     data = json.load(f)
                     if data:
+                         # Calculate P&L
+                         token = data.get('token')
+                         symbol = data.get('symbol')
+                         entry_price = float(data.get('entry_price', 0))
+                         qty = int(data.get('qty', 0))
+                         leg = data.get('leg')
+                         
+                         # Fetch Live Price
+                         start_time = time.time()
+                         current_price = market_service.get_ltp("NFO", symbol, token)
+                         
+                         pnl = 0.0
+                         if current_price > 0:
+                             # Assuming Long Option Buy Strategy for now
+                             pnl = (current_price - entry_price) * qty
+                             
+                         data['current_price'] = current_price
+                         data['pnl'] = round(pnl, 2)
+                         
                          return {"active": True, "details": data}
-        except: pass
+        except Exception as e:
+            logger.error(f"Error reading trade/pnl: {e}")
+            pass
         
         return {"active": False}
 

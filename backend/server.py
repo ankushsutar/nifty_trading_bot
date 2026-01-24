@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.bot_manager import bot_manager
 from backend.socket_manager import socket_manager
+from backend.market_service import market_service
 from utils.logger import log_queue, logger
 
 app = FastAPI(title="Nifty Bot API", version="1.0")
@@ -105,6 +106,15 @@ def get_status():
 @app.get("/api/trade")
 def get_trade():
     return bot_manager.get_active_trade()
+
+@app.get("/api/market-data")
+def get_market_data():
+    data = market_service.get_market_data()
+    # Overlay P&L from Active Trade
+    trade = bot_manager.get_active_trade()
+    if trade.get("active") and trade.get("details"):
+        data["pnl"] = trade["details"].get("pnl", 0.0)
+    return data
 
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):
