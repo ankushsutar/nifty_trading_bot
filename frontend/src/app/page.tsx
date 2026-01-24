@@ -1,6 +1,7 @@
 import Terminal from '@/components/Terminal';
 import MissionControl from '@/components/ControlPanel';
 import SignalRadar from '@/components/SignalRadar';
+import NewsFeed from '@/components/NewsFeed';
 import { Cpu } from 'lucide-react';
 
 export default function Home() {
@@ -32,6 +33,7 @@ export default function Home() {
         <div className="lg:col-span-4 space-y-6">
           <MissionControl />
           <SignalRadar />
+          <NewsFeed />
         </div>
 
         {/* Right Col: Terminal (9 cols) */}

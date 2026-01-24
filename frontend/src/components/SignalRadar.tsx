@@ -8,6 +8,7 @@ interface MarketData {
     nifty: number;
     vix: number;
     pnl: number;
+    sentiment?: { score: number };
 }
 
 export default function SignalRadar() {
@@ -18,13 +19,19 @@ export default function SignalRadar() {
   useEffect(() => {
     const fetchData = async () => {
         try {
+            // Fetch Market Data
             const res = await fetch('http://localhost:8000/api/market-data');
             const json = await res.json();
-             // Simple fallback if backend sends partial data
+            
+            // Fetch Sentiment
+            const resSent = await fetch('http://localhost:8000/api/sentiment');
+            const jsonSent = await resSent.json();
+
             setData({
                 nifty: json.nifty || 0,
                 vix: json.vix || 0,
-                pnl: json.pnl || 0
+                pnl: json.pnl || 0,
+                sentiment: jsonSent
             });
             setLoading(false);
         } catch (e) {
@@ -37,10 +44,13 @@ export default function SignalRadar() {
     return () => clearInterval(interval);
   }, []);
 
+  const sentimentScore = data.sentiment?.score || 0;
+
   const metrics = [
     { label: "Daily P&L", value: `₹${data.pnl.toFixed(2)}`, change: "---", icon: <DollarSign size={16}/>, color: data.pnl >= 0 ? "text-green-400" : "text-red-400" },
     { label: "India VIX", value: data.vix.toFixed(2), change: "", icon: <Activity size={16}/>, color: "text-red-400" },
     { label: "Nifty 50", value: data.nifty.toLocaleString('en-IN'), change: "", icon: <TrendingUp size={16}/>, color: "text-cyan-400" },
+    { label: "Sentiment", value: `${(sentimentScore * 100).toFixed(0)}%`, change: sentimentScore > 0 ? "BULLISH" : "BEARISH", icon: <Activity size={16}/>, color: sentimentScore > 0 ? "text-green-400" : "text-red-400" },
   ];
 
   return (
@@ -50,7 +60,7 @@ export default function SignalRadar() {
                  ESTABLISHING SATELLITE LINK...
              </div>
         ) : (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-2 gap-4">
                 {metrics.map((m, i) => (
                     <div key={i} className="bg-black/40 border border-white/5 p-4 rounded-lg flex flex-col items-center justify-center relative overflow-hidden group">
                         <div className={`absolute inset-0 opacity-0 group-hover:opacity-10 bg-gradient-to-t from-${m.color.split('-')[1]}-500 to-transparent transition-opacity`} />

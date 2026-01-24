@@ -116,6 +116,16 @@ def get_market_data():
         data["pnl"] = trade["details"].get("pnl", 0.0)
     return data
 
+from backend.news_service import news_service
+
+@app.get("/api/news")
+def get_news():
+    return news_service.fetch_news()
+
+@app.get("/api/sentiment")
+def get_sentiment():
+    return {"score": news_service.get_sentiment_score()}
+
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):
     await socket_manager.connect(websocket)

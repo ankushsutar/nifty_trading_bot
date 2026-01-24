@@ -1,11 +1,12 @@
 import time
+import threading
+import traceback
 from core.angel_connect import get_angel_session
 from utils.logger import logger
-import traceback
 
 class MarketService:
     _instance = None
-
+    
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(MarketService, cls).__new__(cls)
@@ -13,6 +14,7 @@ class MarketService:
             cls._instance.last_fetch_time = 0
             cls._instance.cache_expiry = 2 # Seconds
             cls._instance.cached_data = None
+            cls._instance._lock = threading.Lock()
         return cls._instance
 
     def _ensure_connection(self):
@@ -29,11 +31,16 @@ class MarketService:
         Fetches Nifty 50 Spot and India VIX.
         Returns dict: { nifty: float, vix: float, pnl: float }
         """
-        # Cache Check
+        # Cache Check (Quick Read)
         if time.time() - self.last_fetch_time < self.cache_expiry and self.cached_data:
             return self.cached_data
+            
+        with self._lock:
+            # Double-Checked Locking
+            if time.time() - self.last_fetch_time < self.cache_expiry and self.cached_data:
+                return self.cached_data
 
-        self._ensure_connection()
+            self._ensure_connection()
         if not self.api:
             # Fallback for UI if connection fails (or dry run without creds)
             return {"nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection"}

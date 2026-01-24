@@ -6,3 +6,5 @@ requests
 fastapi
 uvicorn
 websockets
+feedparser
+vadersentiment

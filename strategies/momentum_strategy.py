@@ -11,6 +11,10 @@ from core.safety_checks import SafetyGatekeeper
 from core.data_fetcher import DataFetcher
 from utils.logger import logger
 
+from utils.file_ops import write_json_atomic
+
+# ... imports ...
+
 class MomentumStrategy:
     STATE_FILE = "trade_state.json"
 
@@ -27,8 +31,7 @@ class MomentumStrategy:
 
     def save_state(self):
         try:
-            with open(self.STATE_FILE, 'w') as f:
-                json.dump(self.active_position, f)
+            write_json_atomic(self.STATE_FILE, self.active_position)
         except Exception as e:
             logger.error(f"Save State Error: {e}")
 
@@ -239,6 +242,12 @@ class MomentumStrategy:
         return rsi.fillna(50) # Return 50 if NaN
 
     def enter_position(self, expiry, leg):
+        # Sentiment Check
+        direction = "LONG" if leg == "CE" else "SHORT"
+        if not self.gatekeeper.check_sentiment_risk(direction):
+             logger.warning(f"Trade Skipped due to Sentiment Risk.")
+             return
+
         # VIX Sizing
         mult = self.gatekeeper.get_vix_adjustment()
         adjusted_lots = max(1, int(mult))

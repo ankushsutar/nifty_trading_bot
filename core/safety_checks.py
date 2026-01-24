@@ -193,3 +193,28 @@ class SafetyGatekeeper:
             pass
             
         return 1.0
+
+    def check_sentiment_risk(self, direction="LONG"):
+        """
+        Rule: 
+        - Block LONG if Sentiment is VERY BEARISH (<-0.5).
+        - Block SHORT if Sentiment is VERY BULLISH (>0.5).
+        """
+        try:
+            from backend.news_service import news_service
+            score = news_service.get_sentiment_score()
+            
+            if direction == "LONG" and score < -0.5:
+                print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is VERY BEARISH ({score}).")
+                return False
+            
+            if direction == "SHORT" and score > 0.5:
+                 print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is VERY BULLISH ({score}).")
+                 return False
+                 
+            # print(f">>> [Gatekeeper] Sentiment Check Passed ({score}).")
+            return True
+            
+        except Exception as e:
+            # print(f">>> [Gatekeeper] Sentiment Check Error: {e}")
+            return True
