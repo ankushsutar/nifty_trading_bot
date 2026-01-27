@@ -1,5 +1,6 @@
 import argparse
 import sys
+import signal
 from core.angel_connect import get_angel_session
 from utils.token_lookup import TokenLookup
 from strategies.nifty_straddle import NiftyStrategy
@@ -10,9 +11,34 @@ from strategies.momentum_strategy import MomentumStrategy
 from strategies.vwap_strategy import VWAPStrategy
 from strategies.ohl_strategy import OHLStrategy
 from strategies.inside_bar_strategy import InsideBarStrategy
+from strategies.inside_bar_strategy import InsideBarStrategy
 from core.decision_engine import DecisionEngine
 
+# Global variable for graceful shutdown
+bot_instance = None
+
+def signal_handler(sig, frame):
+    """Handles Ctrl+C and Termination Signals"""
+    print(f"\n>>> [System] Signal Received ({sig}). Initiating Graceful Shutdown...")
+    
+    if bot_instance:
+        print(">>> [System] Cleaning up Active Positions...")
+        if hasattr(bot_instance, 'stop'):
+             bot_instance.stop()
+        else:
+             print(">>> [Warning] Strategy does not support graceful '.stop()'. Checking if active...")
+             # Fallback for strategies without stop() method (if any)
+             pass
+             
+    sys.exit(0)
+
 def run_bot():
+    global bot_instance
+    
+    # Register Signals
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
@@ -74,6 +100,8 @@ def run_bot():
     else:
         print(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
+        
+    bot_instance = bot # Assign to global for signal handler
 
     # 4. Input Trade Parameters
     print("\n--- NIFTY OPTION TRADER ---")

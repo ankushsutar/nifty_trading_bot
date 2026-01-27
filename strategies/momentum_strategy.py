@@ -1,8 +1,6 @@
 import time
 import datetime
 import pandas as pd
-import json
-import os
 import random
 
 from config.settings import Config
@@ -11,7 +9,7 @@ from core.safety_checks import SafetyGatekeeper
 from core.data_fetcher import DataFetcher
 from utils.logger import logger
 
-from utils.file_ops import write_json_atomic
+# ... imports ...
 
 # ... imports ...
 
@@ -58,7 +56,6 @@ class MomentumStrategy:
                              'leg': "CE" if "CE" in pos['symbolnm'] else "PE", # simplistic
                              'symbol': pos['tradingsymbol'],
                              'token': pos['symboltoken'],
-                             'qty': abs(qty),
                              'qty': abs(qty),
                              'entry_price': float(pos['avgnetprice']),
                              # If we recover, we default SL to entry - 20 or 20% (whichever is closer)
@@ -205,9 +202,14 @@ class MomentumStrategy:
                     except Exception as e:
                         logger.error(f"Active PnL Check Error: {e}")
 
-                # 2. Analyze Trend
+                # 2. Analyze Trend (5-Minute)
                 trend, ema9, ema21, rsi = self.analyze_market_trend()
-                logger.info(f"[Analysis] Trend: {trend} | EMA9: {ema9:.2f} | EMA21: {ema21:.2f} | RSI: {rsi:.2f} | Active: {self.active_position['leg'] if self.active_position else 'None'}")
+                
+                # 2.5 Analyze Higher Timeframe Trend (15-Minute)
+                htf_trend = self.calculate_htf_trend()
+                
+                logger.info(f"[Analysis] 5m Trend: {trend} | 15m Trend: {htf_trend} | EMA9: {ema9:.2f} | RSI: {rsi:.2f}")
+                logger.info(f"[Active] {self.active_position['leg'] if self.active_position else 'None'}")
                 
                 # Check for Data Failure
                 if trend == "NEUTRAL" and rsi == 0 and self.active_position:
@@ -226,14 +228,20 @@ class MomentumStrategy:
                 
                 # 3. Logic
                 # If No Position: Enter based on Trend & RSI
+                # If No Position: Enter based on Trend & RSI & HTF Filter
                 if not self.active_position:
                     if trend == "BULLISH":
-                        if rsi < 70:
+                        if htf_trend == "BEARISH":
+                            logger.info("Signal Ignored: 5m Bullish but 15m is BEARISH (Trend Misalignment).")
+                        elif rsi < 70:
                             self.enter_position(expiry, "CE")
                         else:
                             logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
+                            
                     elif trend == "BEARISH":
-                        if rsi > 30:
+                        if htf_trend == "BULLISH":
+                            logger.info("Signal Ignored: 5m Bearish but 15m is BULLISH (Trend Misalignment).")
+                        elif rsi > 30:
                             self.enter_position(expiry, "PE")
                         else:
                             logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
@@ -316,6 +324,38 @@ class MomentumStrategy:
         if ema9 > ema21: return "BULLISH", ema9, ema21, rsi
         if ema9 < ema21: return "BEARISH", ema9, ema21, rsi
         return "NEUTRAL", ema9, ema21, rsi
+
+    def calculate_htf_trend(self):
+        """
+        Calculates Trend on Higher Timeframe (15 Minutes).
+        Returns: "BULLISH", "BEARISH", "NEUTRAL"
+        """
+        # Nifty 50 Token: 99926000
+        # Check SmartAPI interval key: usually "FIFTEEN_MINUTE"
+        if self.dry_run:
+            # Randomize HTF trend for dry run
+            return random.choice(["BULLISH", "BEARISH", "NEUTRAL"])
+
+        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
+        
+        if df is None or len(df) < 22: # Need enough for EMA21
+            return "NEUTRAL"
+            
+        # Use Closed Candle logic here too? Yes, safer.
+        last_closed = df.iloc[-2]
+        
+        # Calculate recent EMAs locally or on whole DF? 
+        # Calculate on whole DF to get correct values
+        df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
+        df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+        
+        last_closed = df.iloc[-2]
+        ema9 = last_closed['EMA9']
+        ema21 = last_closed['EMA21']
+        
+        if ema9 > ema21: return "BULLISH"
+        if ema9 < ema21: return "BEARISH"
+        return "NEUTRAL"
 
     def calculate_adx(self, df, period=14):
         """
@@ -439,8 +479,8 @@ class MomentumStrategy:
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-            }
-             self.api.placeOrder(orderparams)
+             }
+             oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Order Placed: {oid}")
             
              sl_offset = min(20, quote_ltp * 0.2)
@@ -471,7 +511,6 @@ class MomentumStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
              oid = self.api.placeOrder(orderparams)
-             logger.info(f"Success: Exit Order Placed: {oid}")
              logger.info(f"Success: Exit Order Placed: {oid}")
              self.active_position = None
              # self.save_state()
