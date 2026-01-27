@@ -8,6 +8,7 @@ from core.angel_connect import get_angel_session
 from core.safety_checks import SafetyGatekeeper
 from core.data_fetcher import DataFetcher
 from utils.logger import logger
+from utils.trade_journal import TradeJournal
 
 # ... imports ...
 
@@ -24,6 +25,7 @@ class MomentumStrategy:
         self.active_position = None 
         self.stop_requested = False  # Control flag for API
         self.last_sync_time = 0
+        self.last_analysis = {} # Stores EMA9, RSI, etc for logging
         self.sync_state() # Initial Sync with Broker
 
     def sync_state(self):
@@ -203,10 +205,16 @@ class MomentumStrategy:
                         logger.error(f"Active PnL Check Error: {e}")
 
                 # 2. Analyze Trend (5-Minute)
-                trend, ema9, ema21, rsi = self.analyze_market_trend()
+                trend, ema9, ema21, rsi, adx = self.analyze_market_trend()
                 
                 # 2.5 Analyze Higher Timeframe Trend (15-Minute)
                 htf_trend = self.calculate_htf_trend()
+                
+                # Store analysis for logging
+                self.last_analysis = {
+                    "ema9": ema9, "ema21": ema21, "rsi": rsi, 
+                    "htf_trend": htf_trend, "adx": adx
+                }
                 
                 logger.info(f"[Analysis] 5m Trend: {trend} | 15m Trend: {htf_trend} | EMA9: {ema9:.2f} | RSI: {rsi:.2f}")
                 logger.info(f"[Active] {self.active_position['leg'] if self.active_position else 'None'}")
@@ -290,7 +298,9 @@ class MomentumStrategy:
              # Nifty 50 Index Token: 99926000
             df = self.data_fetcher.fetch_latest_candles("99926000")
             
-        if df is None or df.empty: return "NEUTRAL", 0, 0, 0
+        if df is None or df.empty: return "NEUTRAL", 0, 0, 0, 0
+        
+        # Calc EMA
         
         # Calc EMA
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -304,7 +314,7 @@ class MomentumStrategy:
         
         # PRO TRADER FIX: Use Closed Candle (iloc[-2]) to avoid Repainting
         # iloc[-1] is the currently forming candle, which changes every second.
-        if len(df) < 2: return "NEUTRAL", 0, 0, 0
+        if len(df) < 2: return "NEUTRAL", 0, 0, 0, 0
         
         last_closed = df.iloc[-2] 
         current_forming = df.iloc[-1]
@@ -317,13 +327,20 @@ class MomentumStrategy:
         # Trend Filter: ADX > 20 (Strong Trend)
         trend_strength = "WEAK" if adx < 20 else "STRONG"
         
+        # Store ADX in last_analysis if needed, but return value is cleaner
+        # We will update analyze_market_trend to return adx too
+        # But changing signature breaks unpack in execute loop.
+        # Let's just update self.last_analysis inside here? No, better to stick to return.
+        # Let's update self.last_analysis in execute loop. But we need ADX there.
+        # Quick fix: Add ADX to return tuple.
+        
         if adx < 20:
              # logger.info(f"[Filter] Market Choppy (ADX: {adx:.2f} < 20). Staying Neutral.")
-             return "NEUTRAL", ema9, ema21, rsi
+             return "NEUTRAL", ema9, ema21, rsi, adx
         
-        if ema9 > ema21: return "BULLISH", ema9, ema21, rsi
-        if ema9 < ema21: return "BEARISH", ema9, ema21, rsi
-        return "NEUTRAL", ema9, ema21, rsi
+        if ema9 > ema21: return "BULLISH", ema9, ema21, rsi, adx
+        if ema9 < ema21: return "BEARISH", ema9, ema21, rsi, adx
+        return "NEUTRAL", ema9, ema21, rsi, adx
 
     def calculate_htf_trend(self):
         """
@@ -466,11 +483,21 @@ class MomentumStrategy:
         
         logger.info(f"Trade: Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
         
+        # Capture Context
+        trade_context = {
+            'entry_ema9': self.last_analysis.get('ema9', 0),
+            'entry_ema21': self.last_analysis.get('ema21', 0),
+            'entry_rsi': self.last_analysis.get('rsi', 0),
+            'entry_adx': self.last_analysis.get('adx', 0),
+            'htf_trend': self.last_analysis.get('htf_trend', "N/A")
+        }
+
         if self.dry_run:
             sl_offset = min(20, quote_ltp * 0.2)
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset  # Smart SL
+                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL
+                'context': trade_context
             }
             return
 
@@ -486,7 +513,8 @@ class MomentumStrategy:
              sl_offset = min(20, quote_ltp * 0.2)
              self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset # Smart SL 
+                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL 
+                'context': trade_context
             }
              # self.save_state()
         except Exception as e:
@@ -500,6 +528,47 @@ class MomentumStrategy:
         qty = self.active_position['qty']
         
         logger.info(f"Exit: Closing {symbol} due to {reason}")
+        
+        # Determine Exit Price for Logging
+        exit_price = 0
+        if self.dry_run:
+             exit_price = self.active_position['entry_price'] + 10 # Mock Profit
+        else:
+             # Estimate from LTP
+             try:
+                 q_resp = self.api.ltpData("NFO", symbol, token)
+                 if q_resp and q_resp.get('status'):
+                     exit_price = float(q_resp['data']['ltp'])
+             except: pass
+        
+        if exit_price == 0: exit_price = self.active_position['entry_price'] # Fallback
+
+        # LOGGING
+        try:
+             entry_price = self.active_position['entry_price']
+             pnl = (exit_price - entry_price) * qty
+             pnl_pct = (exit_price - entry_price) / entry_price * 100
+             result = "WIN" if pnl > 0 else "LOSS"
+             
+             trade_record = {
+                 "strategy": "MOMENTUM",
+                 "symbol": symbol,
+                 "action": "SELL",
+                 "qty": qty,
+                 "entry_price": entry_price,
+                 "exit_price": exit_price,
+                 "pnl": round(pnl, 2),
+                 "pnl_percent": round(pnl_pct, 2),
+                 "result": result,
+                 "exit_reason": reason
+             }
+             if 'context' in self.active_position:
+                 trade_record.update(self.active_position['context'])
+                 
+             TradeJournal.log_trade(trade_record)
+        except Exception as e:
+             logger.error(f"Journal Error: {e}")
+
         if self.dry_run:
             self.active_position = None
             return
@@ -509,7 +578,7 @@ class MomentumStrategy:
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-            }
+             }
              oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Exit Order Placed: {oid}")
              self.active_position = None
