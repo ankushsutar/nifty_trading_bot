@@ -529,19 +529,17 @@ class MomentumStrategy:
         
         logger.info(f"Exit: Closing {symbol} due to {reason}")
         
-        # Determine Exit Price for Logging
+        # Determine Exit Price for Logging (Paper Trading uses Real LTP)
         exit_price = 0
-        if self.dry_run:
-             exit_price = self.active_position['entry_price'] + 10 # Mock Profit
-        else:
-             # Estimate from LTP
-             try:
-                 q_resp = self.api.ltpData("NFO", symbol, token)
-                 if q_resp and q_resp.get('status'):
-                     exit_price = float(q_resp['data']['ltp'])
-             except: pass
+        try:
+             q_resp = self.api.ltpData("NFO", symbol, token)
+             if q_resp and q_resp.get('status'):
+                 exit_price = float(q_resp['data']['ltp'])
+        except: pass
         
-        if exit_price == 0: exit_price = self.active_position['entry_price'] # Fallback
+        # Fallback if API fails
+        if exit_price == 0: 
+            exit_price = self.active_position.get('entry_price', 0)
 
         # LOGGING
         try:
