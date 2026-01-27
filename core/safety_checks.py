@@ -204,12 +204,12 @@ class SafetyGatekeeper:
             from backend.news_service import news_service
             score = news_service.get_sentiment_score()
             
-            if direction == "LONG" and score < -0.5:
-                print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is VERY BEARISH ({score}).")
+            if direction == "LONG" and score < -0.2:
+                print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BEARISH ({score}).")
                 return False
             
-            if direction == "SHORT" and score > 0.5:
-                 print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is VERY BULLISH ({score}).")
+            if direction == "SHORT" and score > 0.2:
+                 print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BULLISH ({score}).")
                  return False
                  
             # print(f">>> [Gatekeeper] Sentiment Check Passed ({score}).")

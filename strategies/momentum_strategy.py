@@ -16,8 +16,6 @@ from utils.file_ops import write_json_atomic
 # ... imports ...
 
 class MomentumStrategy:
-    STATE_FILE = "trade_state.json"
-
     def __init__(self, api, token_loader, dry_run=False):
         self.api = api
         self.token_loader = token_loader
@@ -27,29 +25,70 @@ class MomentumStrategy:
         self.data_failure_count = 0
         self.active_position = None 
         self.stop_requested = False  # Control flag for API
-        self.load_state() # Restore state on startup
+        self.last_sync_time = 0
+        self.sync_state() # Initial Sync with Broker
 
-    def save_state(self):
+    def sync_state(self):
+        """
+        Synchronizes active position from Broker API.
+        Current Rule: Looks for the FIRST active NIFTY Intraday position.
+        """
+        if self.dry_run: return # No sync in dry run
+        
         try:
-            write_json_atomic(self.STATE_FILE, self.active_position)
+             # logger.info("System: 🔄 Syncing State with Broker...")
+             pos_resp = self.api.position()
+             
+             if pos_resp and pos_resp.get('status') and pos_resp.get('data'):
+                 found_active = None
+                 
+                 for pos in pos_resp['data']:
+                     # Filter for NIFTY Options, Intraday, and Open (NetQty != 0)
+                     # Note: SmartAPI 'symbolname' handles 'NIFTY', 'BANKNIFTY' etc.
+                     # 'netqty' is the open quantity.
+                     if (pos['symbolname'] == 'NIFTY' and 
+                         pos['producttype'] == 'INTRADAY' and 
+                         int(pos['netqty']) != 0):
+                         
+                         qty = int(pos['netqty'])
+                         # If qty > 0 (LONG), < 0 (SHORT). We usually Buy options so Qty > 0.
+                         # If we sold (Short Strategy), Qty < 0.
+                         
+                         found_active = {
+                             'leg': "CE" if "CE" in pos['symbolnm'] else "PE", # simplistic
+                             'symbol': pos['tradingsymbol'],
+                             'token': pos['symboltoken'],
+                             'qty': abs(qty),
+                             'qty': abs(qty),
+                             'entry_price': float(pos['avgnetprice']),
+                             # If we recover, we default SL to entry - 20 or 20% (whichever is closer)
+                             'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
+                         }
+                         # Log ONLY if we are discovering a new position (Recovery)
+                         if self.active_position is None:
+                             logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                         
+                         break # Handle one position for now
+                 
+                 # Logic for Remote Closure
+                 if found_active:
+                     self.active_position = found_active
+                 elif self.active_position is not None:
+                     # We thought we had a position, but Broker says NO active Nifty Intraday positions.
+                     logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
+                     self.active_position = None
+                     
         except Exception as e:
-            logger.error(f"Save State Error: {e}")
-
-    def load_state(self):
-        if not os.path.exists(self.STATE_FILE): return
-        try:
-            with open(self.STATE_FILE, 'r') as f:
-                data = json.load(f)
-                if data:
-                    self.active_position = data
-                    logger.info(f"♻️ Restored Active Position from State: {data['symbol']}")
-        except Exception as e:
-            logger.error(f"Load State Error: {e}")
+            logger.error(f"Sync State Error: {e}")
 
     def stop(self):
-        """Signals the loop to stop."""
+        """Signals the loop to stop and closes open positions."""
         self.stop_requested = True
         logger.info("[Control] Stop Requested from API.")
+        
+        if self.active_position:
+            logger.warning("[Control] 🛑 Force Closing Open Position due to Stop Signal.")
+            self.close_position("USER_STOPPED")
 
     def check_trailing_stop(self):
         """
@@ -100,7 +139,8 @@ class MomentumStrategy:
         if new_sl > current_sl:
             self.active_position['sl_price'] = new_sl
             logger.info(f"📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
-            self.save_state()
+            logger.info(f"📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
+            # self.save_state() # No more file save
             
         return False
 
@@ -136,6 +176,34 @@ class MomentumStrategy:
                     logger.info("Market Closed (15:15). Stopping Strategy.")
                     self.close_position("TIME_EXIT")
                     break
+
+                # 1.5 ACTIVE PNL & SYNC CHECK
+                # Sync every 15 seconds to detect external closures
+                if not self.dry_run and time.time() - self.last_sync_time > 15:
+                     self.sync_state()
+                     self.last_sync_time = time.time()
+
+                if self.active_position:
+                    # Calculate Real-Time PnL
+                    try:
+                        token = self.active_position['token']
+                        symbol = self.active_position['symbol']
+                        entry_price = self.active_position['entry_price']
+                        qty = self.active_position['qty']
+                        
+                        # Get LTP
+                        ltp_check = self.api.ltpData("NFO", symbol, token)
+                        if ltp_check and ltp_check.get('status'):
+                            curr_ltp = float(ltp_check['data']['ltp'])
+                            curr_pnl = (curr_ltp - entry_price) * qty
+                            
+                            # Check against Max Daily Loss
+                            if not self.gatekeeper.check_max_daily_loss(curr_pnl):
+                                logger.error(f"🛑 ACTIVE MAX LOSS HIT (PnL: {curr_pnl}). Force Closing!")
+                                self.close_position("MAX_DAILY_LOSS")
+                                break # Stop strategy completely
+                    except Exception as e:
+                        logger.error(f"Active PnL Check Error: {e}")
 
                 # 2. Analyze Trend
                 trend, ema9, ema21, rsi = self.analyze_market_trend()
@@ -222,15 +290,76 @@ class MomentumStrategy:
         
         # Calc RSI
         df['RSI'] = self.calculate_rsi(df)
+
+        # Calc ADX (Trend Strength)
+        df['ADX'] = self.calculate_adx(df)
         
-        last = df.iloc[-1]
-        ema9 = last['EMA9']
-        ema21 = last['EMA21']
-        rsi = last['RSI']
+        # PRO TRADER FIX: Use Closed Candle (iloc[-2]) to avoid Repainting
+        # iloc[-1] is the currently forming candle, which changes every second.
+        if len(df) < 2: return "NEUTRAL", 0, 0, 0
+        
+        last_closed = df.iloc[-2] 
+        current_forming = df.iloc[-1]
+        
+        ema9 = last_closed['EMA9']
+        ema21 = last_closed['EMA21']
+        rsi = last_closed['RSI']
+        adx = last_closed['ADX']
+        
+        # Trend Filter: ADX > 20 (Strong Trend)
+        trend_strength = "WEAK" if adx < 20 else "STRONG"
+        
+        if adx < 20:
+             # logger.info(f"[Filter] Market Choppy (ADX: {adx:.2f} < 20). Staying Neutral.")
+             return "NEUTRAL", ema9, ema21, rsi
         
         if ema9 > ema21: return "BULLISH", ema9, ema21, rsi
         if ema9 < ema21: return "BEARISH", ema9, ema21, rsi
         return "NEUTRAL", ema9, ema21, rsi
+
+    def calculate_adx(self, df, period=14):
+        """
+        Calculates Average Directional Index (ADX).
+        """
+        try:
+            df = df.copy()
+            df['up_move'] = df['high'] - df['high'].shift(1)
+            df['down_move'] = df['low'].shift(1) - df['low']
+            
+            df['pdm'] = 0.0
+            df['ndm'] = 0.0
+            
+            # DM Logic
+            df.loc[(df['up_move'] > df['down_move']) & (df['up_move'] > 0), 'pdm'] = df['up_move']
+            df.loc[(df['down_move'] > df['up_move']) & (df['down_move'] > 0), 'ndm'] = df['down_move']
+            
+            # TR (True Range)
+            df['tr1'] = df['high'] - df['low']
+            df['tr2'] = abs(df['high'] - df['close'].shift(1))
+            df['tr3'] = abs(df['low'] - df['close'].shift(1))
+            df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+            
+            # Smoothing
+            # ATR
+            df['atr'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+            
+            # Smoothed DM
+            df['pdm_s'] = df['pdm'].ewm(alpha=1/period, adjust=False).mean()
+            df['ndm_s'] = df['ndm'].ewm(alpha=1/period, adjust=False).mean()
+            
+            # DI
+            df['pdi'] = 100 * (df['pdm_s'] / df['atr'])
+            df['ndi'] = 100 * (df['ndm_s'] / df['atr'])
+            
+            # DX
+            df['dx'] = 100 * abs(df['pdi'] - df['ndi']) / (df['pdi'] + df['ndi'])
+            
+            # ADX
+            return df['dx'].ewm(alpha=1/period, adjust=False).mean().fillna(0)
+            
+        except Exception as e:
+            logger.error(f"ADX Calc Error: {e}")
+            return pd.Series([0]*len(df))
 
     def calculate_rsi(self, df, period=14):
         delta = df['close'].diff()
@@ -247,6 +376,18 @@ class MomentumStrategy:
         if not self.gatekeeper.check_sentiment_risk(direction):
              logger.warning(f"Trade Skipped due to Sentiment Risk.")
              return
+
+        # EXPIRY GUARD: No new trades after 1:30 PM on Expiry Day
+        # Expiry Format: 27JAN2026
+        try:
+             today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+             if expiry == today_str:
+                 now = datetime.datetime.now().time()
+                 if now >= datetime.time(13, 30):
+                     logger.warning("⛔ Expiry Day Safety: Blocking new entries after 1:30 PM.")
+                     return
+        except Exception as e:
+             logger.error(f"Expiry Guard Check Error: {e}")
 
         # VIX Sizing
         mult = self.gatekeeper.get_vix_adjustment()
@@ -286,9 +427,10 @@ class MomentumStrategy:
         logger.info(f"Trade: Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
         
         if self.dry_run:
+            sl_offset = min(20, quote_ltp * 0.2)
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': 0
+                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset  # Smart SL
             }
             return
 
@@ -298,13 +440,15 @@ class MomentumStrategy:
                 "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-             oid = self.api.placeOrder(orderparams)
+             self.api.placeOrder(orderparams)
              logger.info(f"Success: Order Placed: {oid}")
+            
+             sl_offset = min(20, quote_ltp * 0.2)
              self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': 0 
+                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset # Smart SL 
             }
-             self.save_state()
+             # self.save_state()
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
 
@@ -328,8 +472,9 @@ class MomentumStrategy:
             }
              oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Exit Order Placed: {oid}")
+             logger.info(f"Success: Exit Order Placed: {oid}")
              self.active_position = None
-             self.save_state()
+             # self.save_state()
         except Exception as e:
              logger.error(f"Exit Order Failure: {e}")
 
