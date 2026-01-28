@@ -46,4 +46,6 @@ class TokenLookup:
 
         if not row.empty:
             return row.iloc[0]['token'], row.iloc[0]['symbol']
+        
+        print(f">>> [Warning] Token NOT FOUND for NIFTY {expiry} {strike} {option_type}")
         return None, None

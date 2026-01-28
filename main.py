@@ -110,6 +110,18 @@ def run_bot():
     expiry = get_next_weekly_expiry()
     print(f">>> [Setup] Target Expiry: {expiry}")
     
+    # SAFEGUARD: Prevent using past expiry (stale process check)
+    import datetime
+    try:
+        exp_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
+        if exp_date < datetime.date.today():
+             print(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
+             print(">>> Check system time or 'get_next_weekly_expiry' logic.")
+             return
+    except Exception as e:
+        print(f">>> [Warning] Expiry Date Parsing Failed: {e}")
+
+    
     # 5. Execute Strategy
     # WARNING: This places a REAL order if credentials are valid (and not in test mode).
     # Strike is now calculated dynamically (ATM)

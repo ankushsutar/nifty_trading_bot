@@ -85,7 +85,14 @@ class LifecycleManager:
         if self.current_process:
             self.log("Sending Kill Signal to Child Process...")
             self.current_process.terminate()
-            self.current_process.wait()
+            try:
+                self.current_process.wait(timeout=5)
+                self.log("Child Process terminated gracefully.")
+            except subprocess.TimeoutExpired:
+                self.log("Child Process stuck. Force Killing...")
+                self.current_process.kill()
+                self.current_process.wait()
+                self.log("Child Process Force Killed.")
             self.current_process = None
         if self.thread:
             self.thread.join(timeout=2)
