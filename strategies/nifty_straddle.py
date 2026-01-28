@@ -2,6 +2,7 @@ import time
 import datetime
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.trade_repo import trade_repo
 
 class NiftyStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -92,9 +93,22 @@ class NiftyStrategy:
         if ce_price: 
             self.entry_prices['CE'] = ce_price
             self.legs_active['CE'] = True
-        if pe_price: 
             self.entry_prices['PE'] = pe_price
             self.legs_active['PE'] = True
+            
+        # Update Entry Prices in DB (since we saved with 0.0)
+        # We need a way to update entry price in DB?
+        # TradeRepo doesn't have update_entry_price.
+        # Alternative: Save trade AFTER fill?
+        # Strategy flow: place_order -> wait_for_fill.
+        # Currently I put save_trade inside place_order (unknown price).
+        # Better: Save trade here after known price.
+        
+        # Retroactive Fix: Don't save in place_order. Save HERE.
+        if ce_price:
+             trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL")
+        if pe_price:
+             trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL")
 
         # 7. Place Initial Stop Loss (25%)
         # For Sell Order, SL is Buy Stop Limit at (Price * 1.25)
@@ -222,7 +236,14 @@ class NiftyStrategy:
                 "quantity": qty
             }
             order_id = self.api.placeOrder(orderparams)
+            order_id = self.api.placeOrder(orderparams)
             print(f">>> [Order] {action} {symbol} | ID: {order_id}")
+            
+            # Save to DB if Opening Trade
+            if action == "BUY" and qty > 0:
+                 # Closing Short Straddle
+                 trade_repo.close_trade(symbol=symbol)
+            
             return order_id
         except Exception as e:
             print(f">>> [Error] Place Order: {e}")

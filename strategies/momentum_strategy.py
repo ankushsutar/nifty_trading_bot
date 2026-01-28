@@ -9,6 +9,7 @@ from core.safety_checks import SafetyGatekeeper
 from core.data_fetcher import DataFetcher
 from utils.logger import logger
 from utils.trade_journal import TradeJournal
+from core.trade_repo import trade_repo
 
 # ... imports ...
 
@@ -75,7 +76,15 @@ class MomentumStrategy:
                  elif self.active_position is not None:
                      # We thought we had a position, but Broker says NO active Nifty Intraday positions.
                      logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
+                     trade_repo.close_trade(symbol=self.active_position['symbol'])
                      self.active_position = None
+                 
+                 # Attempt to link DB ID if we found a position
+                 if self.active_position and 'id' not in self.active_position:
+                     db_trade = trade_repo.get_active_trade()
+                     if db_trade and db_trade['symbol'] == self.active_position['symbol']:
+                         self.active_position['id'] = db_trade['id']
+                         logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']}")
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
@@ -138,8 +147,10 @@ class MomentumStrategy:
         if new_sl > current_sl:
             self.active_position['sl_price'] = new_sl
             logger.info(f"📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
-            logger.info(f"📈 SL Moved Up to {new_sl} (Profit: {profit_pts:.2f})")
-            # self.save_state() # No more file save
+            
+            # Update DB
+            if 'id' in self.active_position:
+                trade_repo.update_sl(self.active_position['id'], new_sl)
             
         return False
 
@@ -516,7 +527,10 @@ class MomentumStrategy:
                 'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL 
                 'context': trade_context
             }
-             # self.save_state()
+             
+             # Save to DB
+             tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, quote_ltp - sl_offset)
+             if tid: self.active_position['id'] = tid
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
 
@@ -579,8 +593,10 @@ class MomentumStrategy:
              }
              oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Exit Order Placed: {oid}")
+             
+             # Close in DB
+             trade_repo.close_trade(symbol=symbol)
              self.active_position = None
-             # self.save_state()
         except Exception as e:
              logger.error(f"Exit Order Failure: {e}")
 
@@ -596,8 +612,14 @@ class MomentumStrategy:
          close = 22000 + random.randint(-50, 50)
          # Generate enough rows for EMA/RSI
          data = []
-         for i in range(50):
-             data.append({'close': 22000 + (i * 10) + random.randint(-5, 5)})
+         for i in range(100): # More data for Indicators
+             c = 22000 + (i * 10) + random.randint(-5, 5)
+             data.append({
+                 'open': c - 2,
+                 'high': c + 5,
+                 'low': c - 5,
+                 'close': c
+             })
          
          return pd.DataFrame(data) 
 

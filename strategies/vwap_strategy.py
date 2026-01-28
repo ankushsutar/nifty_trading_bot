@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.trade_repo import trade_repo
 
 class VWAPStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -198,7 +199,11 @@ class VWAPStrategy:
              fill_price = self.wait_for_fill(order_id)
              if fill_price:
                  self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
-                 self.monitor_position(symbol, token, fill_price)
+                 
+                 # Save
+                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+                 
+                 self.monitor_position(symbol, token, fill_price, tid)
 
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
@@ -213,12 +218,13 @@ class VWAPStrategy:
         print(f">>> [Risk] Placing Protective SL for {symbol}")
         # API call...
 
-    def monitor_position(self, symbol, token, fill_price):
+    def monitor_position(self, symbol, token, fill_price, trade_id=None):
         if self.dry_run: return
         print(">>> [Manager] Monitoring Trade (Target: 20%)...")
         from core.position_manager import PositionManager
         manager = PositionManager(self.api, self.dry_run)
         manager.monitor([{
            'symbol': symbol, 'token': token, 
-           'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE
+           'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE,
+           'id': trade_id
         }])

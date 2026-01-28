@@ -2,6 +2,7 @@ import time
 import datetime
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.trade_repo import trade_repo
 
 class ORBStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -149,8 +150,11 @@ class ORBStrategy:
                  # as calculating the exact Option Price for the Spot Level is error-prone without Greeks.
                  self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
                  
+                 # Save to DB
+                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+                 
                  # START MONITORING
-                 self.monitor_position(symbol, token, fill_price)
+                 self.monitor_position(symbol, token, fill_price, tid)
              
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
@@ -213,7 +217,7 @@ class ORBStrategy:
             print(f">>> [Error] SL Placement Failed: {e}")
             return None
 
-    def monitor_position(self, symbol, token, fill_price):
+    def monitor_position(self, symbol, token, fill_price, trade_id=None):
         if self.dry_run: return
 
         print(">>> [ORB] Trade Active. Monitoring P&L (Target: 20%)...")
@@ -221,7 +225,8 @@ class ORBStrategy:
         
         pos = [{
            'symbol': symbol, 'token': token, 
-           'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE
+           'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE,
+           'id': trade_id
         }]
         
         manager = PositionManager(self.api, self.dry_run)

@@ -2,6 +2,7 @@ import datetime
 import time
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.trade_repo import trade_repo
 
 class OHLStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -116,8 +117,12 @@ class OHLStrategy:
              # 5. Place SL Order
              self.place_sl_order(token, symbol, sl_price, qty)
              
+             
+             # Save
+             tid = trade_repo.save_trade(symbol, token, "OHL", qty, fill_price, sl_price)
+
              # 6. Monitor
-             self.monitor_trade(token, symbol, qty, target_price, sl_price)
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid)
 
         except Exception as e:
              print(f">>> [Error] Entry Failed: {e}")
@@ -180,7 +185,7 @@ class OHLStrategy:
              print(f">>> [Risk] SL Placed: {oid}")
         except: pass
 
-    def monitor_trade(self, token, symbol, qty, target, sl):
+    def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None):
          print(f">>> [Monitor] Target: {target} | SL: {sl}")
          while True:
             try:
@@ -196,6 +201,7 @@ class OHLStrategy:
                         "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
                     }
                      self.api.placeOrder(orderparams)
+                     if trade_id: trade_repo.close_trade(trade_id=trade_id)
                      break
                 
             except KeyboardInterrupt:

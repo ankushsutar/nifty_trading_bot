@@ -1,6 +1,7 @@
 import time
 import datetime
 from config.settings import Config
+from core.trade_repo import trade_repo
 
 class PositionManager:
     def __init__(self, api, dry_run=False):
@@ -139,3 +140,9 @@ class PositionManager:
             
         except Exception as e:
             print(f">>> [Error] Exit Failed: {e}")
+
+        # Update DB
+        if 'id' in pos:
+             trade_repo.close_trade(trade_id=pos['id'])
+        else:
+             trade_repo.close_trade(symbol=pos['symbol'])

@@ -3,6 +3,7 @@ import time
 import pandas as pd
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.trade_repo import trade_repo
 
 class InsideBarStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -107,8 +108,12 @@ class InsideBarStrategy:
              
              self.place_sl(token, symbol, sl_price, qty)
              
+             
+             # Save
+             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price)
+
              # Trailing Logic
-             self.monitor_trailing(token, symbol, qty, oid)
+             self.monitor_trailing(token, symbol, qty, oid, tid)
              
         except Exception as e:
              print(f">>> [Error] {e}")
@@ -134,7 +139,7 @@ class InsideBarStrategy:
         except Exception as e:
              print(f">>> [Error] SL Place: {e}")
 
-    def monitor_trailing(self, token, symbol, qty, entry_oid):
+    def monitor_trailing(self, token, symbol, qty, entry_oid, trade_id=None):
         """
         Monitor for Exit.
         """
@@ -153,6 +158,7 @@ class InsideBarStrategy:
                         "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
                     }
                      self.api.placeOrder(orderparams)
+                     if trade_id: trade_repo.close_trade(trade_id=trade_id)
                      break
                 
             except KeyboardInterrupt:

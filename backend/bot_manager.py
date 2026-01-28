@@ -61,38 +61,48 @@ class BotManager:
         # (like 'trade_state.json') which we already implemented in MomentumStrategy!
         
         # So we can just read that file.
-        import json
-        import os
-        # Local import to avoid circular dependency issues
+        # Use SQLite Repository
+        from core.trade_repo import trade_repo
         from backend.market_service import market_service
         
         try:
-            if os.path.exists("trade_state.json"):
-                with open("trade_state.json", 'r') as f:
-                    data = json.load(f)
-                    if data:
-                         # Calculate P&L
-                         token = data.get('token')
-                         symbol = data.get('symbol')
-                         entry_price = float(data.get('entry_price', 0))
-                         qty = int(data.get('qty', 0))
-                         leg = data.get('leg')
-                         
-                         # Fetch Live Price
-                         start_time = time.time()
-                         current_price = market_service.get_ltp("NFO", symbol, token)
-                         
-                         pnl = 0.0
-                         if current_price > 0:
-                             # Assuming Long Option Buy Strategy for now
-                             pnl = (current_price - entry_price) * qty
-                             
-                         data['current_price'] = current_price
-                         data['pnl'] = round(pnl, 2)
-                         
-                         return {"active": True, "details": data}
+            open_trades = trade_repo.get_open_trades()
+            
+            if open_trades:
+                 total_pnl = 0.0
+                 primary_trade = open_trades[0] # Use first trade for display details
+                 
+                 for trade in open_trades:
+                     token = trade['token']
+                     symbol = trade['symbol']
+                     entry_price = float(trade['entry_price'])
+                     qty = int(trade['qty'])
+                     leg = trade['leg']
+                     
+                     # Fetch Live Price
+                     current_price = market_service.get_ltp("NFO", symbol, token)
+                     
+                     trade_pnl = 0.0
+                     
+                     # PnL Calculation based on Side (BUY vs SELL)
+                     trade_side = trade.get('side', 'BUY')
+                     
+                     if current_price > 0:
+                         if trade_side == 'SELL':
+                              # Short: Profit if Price Falls
+                              trade_pnl = (entry_price - current_price) * qty
+                         else:
+                              # Long: Profit if Price Rises
+                              trade_pnl = (current_price - entry_price) * qty
+                     
+                     total_pnl += trade_pnl
+                 
+                 primary_trade['pnl'] = round(total_pnl, 2)
+                 # We mark it as 'active' logic
+                 return {"active": True, "details": primary_trade}
+                 
         except Exception as e:
-            logger.error(f"Error reading trade/pnl: {e}")
+            logger.error(f"Error reading trade/pnl from DB: {e}")
             pass
         
         return {"active": False}
