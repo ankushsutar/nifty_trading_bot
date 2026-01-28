@@ -10,6 +10,7 @@ A Python-based algorithmic trading bot for Nifty 50 Options, designed to work wi
 *   **Dynamic Straddle Strategy:** Automatically calculates the At-The-Money (ATM) strike based on the live Nifty 50 spot price and places dual-leg (CE + PE) orders.
 *   **Auto-Expiry Calculation:** Automatically determines the nearest upcoming Thursday expiry date.
 *   **Mock Mode (`--test`):** A robust local testing mode that simulates market data and order placement.
+*   **Robust State Persistence:** Uses **SQLite** (`trades.db`) to safely store active trades, verifying P&L and preventing data loss during restarts.
 *   **Modular Design:** Clean separation of concerns (Core, Strategies, Utils, Config).
 
 ## 🛠️ Setup & Installation
@@ -96,20 +97,43 @@ By default, the bot now uses the **Momentum Strategy (EMA + RSI)** for intellige
 nifty_trading_bot/
 ├── config/
 │   └── settings.py          # Configuration and secrets management
+├── backend/
+│   ├── bot_manager.py     # Central Bot Logic (Multi-Strategy, PnL Aggregation)
+│   ├── market_service.py  # Market Data Service
+│   ├── news_service.py    # News Sentiment Analysis
+│   ├── server.py          # FastAPI Server Endpoints
+│   └── socket_manager.py  # WebSocket Management
+├── config/
+│   └── settings.py        # Global Configuration
 ├── core/
-│   ├── angel_connect.py     # Real SmartAPI connection logic
-│   ├── data_fetcher.py      # Resilient Candle Data Fetching
-│   ├── safety_checks.py     # Risk Management
-│   └── mock_connect.py      # Mock classes for local testing
+│   ├── angel_connect.py   # Real SmartAPI Connection
+│   ├── data_fetcher.py    # Resilient Candle Data Fetching
+│   ├── decision_engine.py # Smart Strategy Selection
+│   ├── mock_connect.py    # Mock SmartAPI for Testing
+│   ├── oi_analyzer.py     # Option Chain Analysis
+│   ├── position_manager.py # Trade Execution & Management
+│   ├── safety_checks.py   # Risk Management & RMS
+│   └── trade_repo.py      # SQLite Trade Repository 🗄️
 ├── strategies/
-│   ├── momentum_strategy.py # Main EMA+RSI Logic
-│   └── nifty_straddle.py    # Legacy Straddle logic
+│   ├── inside_bar_strategy.py
+│   ├── momentum_strategy.py
+│   ├── nifty_straddle.py
+│   ├── ohl_strategy.py
+│   ├── orb_strategy.py
+│   └── vwap_strategy.py
 ├── utils/
-│   ├── logger.py            # Centralized Logger
-│   ├── expiry_calculator.py # Logic for finding next Thursday
-│   └── token_lookup.py      # Parsing Scrip Master for token IDs
-├── main.py                  # Entry point
-├── .env                     # Secrets (Not committed)
+│   ├── expiry_calculator.py
+│   ├── file_ops.py
+│   ├── logger.py
+│   ├── token_lookup.py
+│   └── trade_journal.py
+├── debug_expiry.py        # Debug Script
+├── debug_nifty_index.py   # Debug Script
+├── debug_vix.py           # Debug Script
+├── lifecycle_manager.py   # Process & Crash Management
+├── main.py                # Application Entry Point
+├── trades.db              # SQLite Database
+├── .env                   # Secrets (Not committed)
 └── requirements.txt         # Python dependencies
 ```
 
