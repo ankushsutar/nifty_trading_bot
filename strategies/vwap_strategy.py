@@ -11,7 +11,7 @@ class VWAPStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -138,11 +138,13 @@ class VWAPStrategy:
                 df['volume'] = df['volume'].astype(float)
                 return df
             else:
-                 # Mock Data Fallback
-                 if self.dry_run or self.api.api_key is None:
+                 # Mock Data Fallback ONLY if strictly testing
+                 is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+                 if is_mock_api:
                      return self.generate_mock_data()
         except:
-            if self.dry_run: return self.generate_mock_data()
+            is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+            if is_mock_api: return self.generate_mock_data()
             
         return None
 
@@ -173,6 +175,10 @@ class VWAPStrategy:
 
         if self.dry_run:
              print(f">>> [Dry Run] Would Buy {symbol} at Market.")
+             # Save
+             fill_price = ltp
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+             self.monitor_position(symbol, token, fill_price, tid)
              return
              
         if not self.gatekeeper.check_no_open_orders(symbol): return
@@ -219,7 +225,7 @@ class VWAPStrategy:
         # API call...
 
     def monitor_position(self, symbol, token, fill_price, trade_id=None):
-        if self.dry_run: return
+        # if self.dry_run: return
         print(">>> [Manager] Monitoring Trade (Target: 20%)...")
         from core.position_manager import PositionManager
         manager = PositionManager(self.api, self.dry_run)

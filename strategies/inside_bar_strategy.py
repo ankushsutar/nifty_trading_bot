@@ -10,7 +10,7 @@ class InsideBarStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -86,7 +86,13 @@ class InsideBarStrategy:
         
         # Place Buy Order
         print(f">>> [Trade] Entering {symbol} (Qty: {qty})")
-        if self.dry_run: return
+        if self.dry_run:
+             # Save Dry Run
+             fill = self.get_nifty_ltp()
+             sl_price = fill * 0.9
+             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price)
+             self.monitor_trailing(token, symbol, qty, "dry_run_oid", tid)
+             return
         
         try:
              # Basic Entry Logic

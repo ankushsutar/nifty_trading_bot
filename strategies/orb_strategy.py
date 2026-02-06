@@ -9,7 +9,7 @@ class ORBStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         
         # State
         self.range_high = -1
@@ -91,8 +91,10 @@ class ORBStrategy:
                 break
             
             # Demo Break: Don't loop forever in mock/dry-run if no breakout
-            if self.dry_run or self.api.api_key is None: # Mock check
-                print(">>> [Only for Demo] Breaking loop to avoid infinite wait.")
+            # ONLY break if truly Mock API
+            is_mock_api = hasattr(self.api, 'generateSession') and self.api.__class__.__name__ == 'MockSmartConnect'
+            if is_mock_api: 
+                print(">>> [Only for Mock] Breaking loop to avoid infinite wait.")
                 break
                 
             time.sleep(2)
@@ -112,6 +114,12 @@ class ORBStrategy:
 
         if self.dry_run:
              print(f">>> [Dry Run] Would Buy {symbol} at Market.")
+             # Save Dry Run Trade
+             # Assume filled at LTP
+             fill_price = current_ltp
+             sl_price = round(fill_price * 0.9, 1) # 10% SL assumption
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, sl_price)
+             self.monitor_position(symbol, token, fill_price, tid)
              return
 
         # Pre-Trade Check: Open Orders
@@ -218,7 +226,8 @@ class ORBStrategy:
             return None
 
     def monitor_position(self, symbol, token, fill_price, trade_id=None):
-        if self.dry_run: return
+        # if self.dry_run: return # Already supported in Manager 
+
 
         print(">>> [ORB] Trade Active. Monitoring P&L (Target: 20%)...")
         from core.position_manager import PositionManager

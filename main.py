@@ -68,7 +68,7 @@ def run_bot():
     # 3. Smart Auto-Selection (The Brain)
     if args.auto:
         print("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
-        engine = DecisionEngine(api)
+        engine = DecisionEngine(api, dry_run=args.dry_run)
         selected_strategy = engine.analyze_and_select()
         
         if selected_strategy:

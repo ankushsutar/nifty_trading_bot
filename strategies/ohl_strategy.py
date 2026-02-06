@@ -9,7 +9,7 @@ class OHLStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -81,6 +81,19 @@ class OHLStrategy:
 
         if self.dry_run:
              print(f">>> [Dry Run] Buy {symbol} | Index SL: {index_sl_level}")
+             # Save
+             fill_price = self.get_nifty_ltp() or 22000.0
+             sl_price = fill_price * 0.9
+             tid = trade_repo.save_trade(symbol, token, "OHL", qty, fill_price, sl_price)
+             
+             # Calculate Target for Monitor
+             # Logic copied from real trade block generally
+             curr_index = self.get_nifty_ltp() or 22000.0
+             points_risk = abs(curr_index - index_sl_level)
+             option_risk = points_risk * 0.5 
+             target_price = round(fill_price + (option_risk * 2), 1)
+
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid)
              return
 
         # 2. Buy Order
@@ -141,7 +154,8 @@ class OHLStrategy:
                 "fromdate": from_time, "todate": to_time
             }
              # Mock support
-             if self.dry_run: return self.get_mock_candle()
+             is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+             if is_mock_api: return self.get_mock_candle()
 
              resp = self.api.getCandleData(historicParam)
              if resp and resp.get('data'):
@@ -153,7 +167,9 @@ class OHLStrategy:
                  # If not found (delayed), return last?
                  return None
         except: pass
-        if self.dry_run: return self.get_mock_candle()
+        
+        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+        if is_mock_api: return self.get_mock_candle()
         return None
 
     def get_mock_candle(self):
@@ -169,7 +185,10 @@ class OHLStrategy:
             resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
             if resp: return resp['data']['ltp']
         except: pass
-        return 22040.0 if self.dry_run else None
+        
+        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+        if is_mock_api: return 22040.0 
+        return None
 
     def place_sl_order(self, token, symbol, price, qty):
         # SL for Buy is SELL STOP

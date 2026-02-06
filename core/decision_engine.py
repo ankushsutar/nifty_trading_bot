@@ -4,9 +4,10 @@ from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
 
 class DecisionEngine:
-    def __init__(self, api):
+    def __init__(self, api, dry_run=False):
         self.api = api
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.dry_run = dry_run
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
 
     def analyze_and_select(self):
         """

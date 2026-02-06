@@ -14,3 +14,6 @@ class Config:
     NIFTY_LOT_SIZE = 65
     # URL to fetch token IDs for all stocks
     SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    
+    # Simulation Settings
+    SIMULATION_CAPITAL = 500000.0 # 5 Lakhs default for Paper Trading

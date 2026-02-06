@@ -9,7 +9,7 @@ class NiftyStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.sl_orders = {} # { 'CE': order_id, 'PE': order_id }
         self.entry_prices = {} # { 'CE': price, 'PE': price }
         self.legs_active = {'CE': False, 'PE': False}

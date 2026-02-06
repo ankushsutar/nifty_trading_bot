@@ -41,6 +41,7 @@ class MarketService:
                 return self.cached_data
 
             self._ensure_connection()
+        
         if not self.api:
             # Fallback for UI if connection fails (or dry run without creds)
             return {"nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection"}
@@ -84,12 +85,18 @@ class MarketService:
         self._ensure_connection()
         if not self.api: return 0.0
         
+        # Simple Rate Limiter / Cache could go here
+        # For now, just a try-except wrapper
+        
         try:
+            time.sleep(0.34) # Ensure max 3 req/sec (~333ms gap)
             resp = self.api.ltpData(exchange, symbol, token)
             if resp and resp.get('status'):
                 return float(resp['data']['ltp'])
         except Exception as e:
-            logger.error(f"LTP Fetch Error ({symbol}): {e}")
+            # logger.error(f"LTP Fetch Error ({symbol}): {e}")
+            pass # Suppress log spam
+            
         return 0.0
 
 market_service = MarketService()

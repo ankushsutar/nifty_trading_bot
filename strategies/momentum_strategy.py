@@ -20,7 +20,7 @@ class MomentumStrategy:
         self.api = api
         self.token_loader = token_loader
         self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api)
+        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.data_fetcher = DataFetcher(self.api)
         self.data_failure_count = 0
         self.active_position = None 
@@ -165,13 +165,26 @@ class MomentumStrategy:
         logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
 
         # 0. Risk Checks
-        if not self.dry_run:
-            if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
+        if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
         if self.gatekeeper.is_blackout_period(): return
 
         # 1. Continuous Monitor Loop
-        logger.info("Starting Continuous Monitor for Crossover...")
+        logger.info("Starting Smart Monitor Loop (Safety: 1s | Trend: 5m Sync)...")
+        
+        # Initialize Next Candle Check Time (e.g., next 5-min mark + 5s buffer)
+        # e.g., if now is 09:12:30 -> next is 09:15:05
+        # Sync logic:
+        now = datetime.datetime.now()
+        minute = now.minute
+        remainder = minute % 5
+        # Minutes to add to reach next 5-min mark
+        minutes_to_add = 5 - remainder
+        next_check = now + datetime.timedelta(minutes=minutes_to_add)
+        # Reset seconds/micro to 0 and add buffer
+        next_check = next_check.replace(second=5, microsecond=0)
+        
+        logger.info(f"⏳ Next Trend Check scheduled for: {next_check.strftime('%H:%M:%S')}")
         
         while True:
             if self.stop_requested:
@@ -179,22 +192,20 @@ class MomentumStrategy:
                 break
 
             try:
-                # Time Check
-                now = datetime.datetime.now().time()
-                # Only enforce time exit if NOT in dry_run or if explicitly desired
-                if not self.dry_run and now >= datetime.time(15, 15):
-                    logger.info("Market Closed (15:15). Stopping Strategy.")
-                    self.close_position("TIME_EXIT")
-                    break
-
-                # 1.5 ACTIVE PNL & SYNC CHECK
-                # Sync every 15 seconds to detect external closures
+                # --- FAST LOOP (Safety & Management) ---
+                # Runs every iteration (~1 second)
+                
+                # 1. Active PnL & Sync Check
                 if not self.dry_run and time.time() - self.last_sync_time > 15:
                      self.sync_state()
                      self.last_sync_time = time.time()
 
                 if self.active_position:
-                    # Calculate Real-Time PnL
+                    # Check Trailing Stop
+                    if self.check_trailing_stop():
+                        pass # Triggered
+                    
+                    # Calculate Real-Time PnL & Max Loss
                     try:
                         token = self.active_position['token']
                         symbol = self.active_position['symbol']
@@ -215,95 +226,116 @@ class MomentumStrategy:
                     except Exception as e:
                         logger.error(f"Active PnL Check Error: {e}")
 
-                # 2. Analyze Trend (5-Minute)
-                trend, ema9, ema21, rsi, adx = self.analyze_market_trend()
-                
-                # 2.5 Analyze Higher Timeframe Trend (15-Minute)
-                htf_trend = self.calculate_htf_trend()
-                
-                # Store analysis for logging
-                self.last_analysis = {
-                    "ema9": ema9, "ema21": ema21, "rsi": rsi, 
-                    "htf_trend": htf_trend, "adx": adx
-                }
-                
-                logger.info(f"[Analysis] 5m Trend: {trend} | 15m Trend: {htf_trend} | EMA9: {ema9:.2f} | RSI: {rsi:.2f}")
-                logger.info(f"[Active] {self.active_position['leg'] if self.active_position else 'None'}")
-                
-                # Check for Data Failure
-                if trend == "NEUTRAL" and rsi == 0 and self.active_position:
-                    self.data_failure_count += 1
-                    logger.warning(f"⚠️ Blind Mode Active ({self.data_failure_count}/3). Keeping Position.")
-                    
-                    if self.data_failure_count >= 3:
-                        logger.error("🛑 Max Data Failures Reached. Force Exiting.")
-                        self.close_position("DATA_LOSS_SAFETY")
-                        break 
-                    
-                    time.sleep(60 if self.dry_run else 60)
-                    continue
-                else:
-                    self.data_failure_count = 0 # Reset on success
-                
-                # 3. Logic
-                # If No Position: Enter based on Trend & RSI
-                # If No Position: Enter based on Trend & RSI & HTF Filter
-                if not self.active_position:
-                    if trend == "BULLISH":
-                        if htf_trend == "BEARISH":
-                            logger.info("Signal Ignored: 5m Bullish but 15m is BEARISH (Trend Misalignment).")
-                        elif rsi < 70:
-                            self.enter_position(expiry, "CE")
-                        else:
-                            logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
-                            
-                    elif trend == "BEARISH":
-                        if htf_trend == "BULLISH":
-                            logger.info("Signal Ignored: 5m Bearish but 15m is BULLISH (Trend Misalignment).")
-                        elif rsi > 30:
-                            self.enter_position(expiry, "PE")
-                        else:
-                            logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
-                
-                # If Active Position: Check for Reversal
-                else:
-                    current_leg = self.active_position['leg']
+                # 2. Time Exit
+                now_time = datetime.datetime.now().time()
+                if not self.dry_run and now_time >= datetime.time(15, 15):
+                    logger.info("Market Closed (15:15). Stopping Strategy.")
+                    if self.active_position:
+                        self.close_position("TIME_EXIT")
+                    break
 
-                    # A. Check Trailing Stop
-                    if self.check_trailing_stop():
-                        pass
+                # --- SLOW LOOP (Trend Analysis) ---
+                # Only run if current time >= next_check
+                if datetime.datetime.now() >= next_check:
+                    logger.info(f"⏰ Candle Closed. Running Trend Analysis...")
                     
-                    # B. Exit CE if Bearish Crossover happens
-                    elif current_leg == "CE" and trend == "BEARISH":
-                         logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
-                         self.close_position("REVERSAL")
-                         if rsi > 30:
-                             self.enter_position(expiry, "PE") 
-                         else:
-                             logger.info("Reversal Entry Ignored: RSI Oversold.")
+                    # 3. Analyze Trend (5-Minute)
+                    trend, ema9, ema21, rsi, adx = self.analyze_market_trend()
+                    
+                    # 3.5 Analyze Higher Timeframe Trend (15-Minute)
+                    htf_trend = self.calculate_htf_trend()
+                    
+                    # Store analysis for logging
+                    self.last_analysis = {
+                        "ema9": ema9, "ema21": ema21, "rsi": rsi, 
+                        "htf_trend": htf_trend, "adx": adx
+                    }
+                    
+                    logger.info(f"[Analysis] 5m Trend: {trend} | 15m Trend: {htf_trend} | EMA9: {ema9:.2f} | RSI: {rsi:.2f}")
+                    logger.info(f"[Active] {self.active_position['leg'] if self.active_position else 'None'}")
+                    
+                    # Check for Data Failure
+                    if trend == "NEUTRAL" and rsi == 0 and self.active_position:
+                        self.data_failure_count += 1
+                        logger.warning(f"⚠️ Blind Mode Active ({self.data_failure_count}/3). Keeping Position.")
+                        
+                        if self.data_failure_count >= 3:
+                            logger.error("🛑 Max Data Failures Reached. Force Exiting.")
+                            self.close_position("DATA_LOSS_SAFETY")
+                            break 
+                    else:
+                        self.data_failure_count = 0 # Reset on success
+                    
+                    # 4. Signal Logic
+                    # If No Position: Enter based on Trend & RSI
+                    if not self.active_position:
+                        if trend == "BULLISH":
+                            if htf_trend == "BEARISH":
+                                logger.info("Signal Ignored: 5m Bullish but 15m is BEARISH (Trend Misalignment).")
+                            elif rsi < 70:
+                                self.enter_position(expiry, "CE")
+                            else:
+                                logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
+                                
+                        elif trend == "BEARISH":
+                            if htf_trend == "BULLISH":
+                                logger.info("Signal Ignored: 5m Bearish but 15m is BULLISH (Trend Misalignment).")
+                            elif rsi > 30:
+                                self.enter_position(expiry, "PE")
+                            else:
+                                logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
+                    
+                    # If Active Position: Check for Reversal
+                    else:
+                        current_leg = self.active_position['leg']
 
-                    # Exit PE if Bullish Crossover happens
-                    elif current_leg == "PE" and trend == "BULLISH":
-                         logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
-                         self.close_position("REVERSAL")
-                         if rsi < 70:
-                             self.enter_position(expiry, "CE")
-                         else:
-                             logger.info("Reversal Entry Ignored: RSI Overbought.")
+                        # Alignment Check (Optional: Exit if trend reverses?)
+                        # Exit CE if Bearish Crossover happens
+                        if current_leg == "CE" and trend == "BEARISH":
+                             logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
+                             self.close_position("REVERSAL")
+                             if rsi > 30:
+                                 self.enter_position(expiry, "PE") 
+                             else:
+                                 logger.info("Reversal Entry Ignored: RSI Oversold.")
 
-                time.sleep(60 if self.dry_run else 60)
+                        # Exit PE if Bullish Crossover happens
+                        elif current_leg == "PE" and trend == "BULLISH":
+                             logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
+                             self.close_position("REVERSAL")
+                             if rsi < 70:
+                                 self.enter_position(expiry, "CE")
+                             else:
+                                 logger.info("Reversal Entry Ignored: RSI Overbought.")
+
+                    # Schedule NEXT check
+                    # Recalculate to stay in sync (avoid drift)
+                    now = datetime.datetime.now()
+                    minute = now.minute
+                    remainder = minute % 5
+                    minutes_to_add = 5 - remainder
+                    next_check = now + datetime.timedelta(minutes=minutes_to_add)
+                    next_check = next_check.replace(second=5, microsecond=0)
+                    logger.info(f"⏳ Next Trend Check scheduled for: {next_check.strftime('%H:%M:%S')}")
+
+                # Sleep significantly less for safety checks
+                time.sleep(1)
                 
             except KeyboardInterrupt:
                 logger.info("User Manual Stop.")
                 break
             except Exception as e:
                 logger.error(f"Loop Error: {e}")
-                time.sleep(10)
+                time.sleep(1)
 
     def analyze_market_trend(self):
         # Fetch 5-min candles via DataFetcher
         # Using Index Token or Mock
-        if self.dry_run:
+        
+        # Check if we are truly in Mock Mode (API is MockSmartConnect)
+        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+        
+        if is_mock_api:
             df = self.get_mock_df()
         else:
              # Nifty 50 Index Token: 99926000
@@ -510,6 +542,9 @@ class MomentumStrategy:
                 'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL
                 'context': trade_context
             }
+            # Save Dry Run Trade to DB
+            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, quote_ltp - sl_offset)
+            if tid: self.active_position['id'] = tid
             return
 
         try:
