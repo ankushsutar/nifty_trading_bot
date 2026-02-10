@@ -76,3 +76,51 @@ body {
   z-index: 10;
   opacity: 0.15;
 }
+
+/* Resizable Panel Styles */
+[data-panel-resize-handle-enabled="true"] {
+  @apply bg-transparent transition-all duration-200 relative shrink-0 z-50 flex items-center justify-center;
+}
+
+/* Vertical Handle (Horizontal Split) */
+[data-panel-group-direction="horizontal"]
+  > [data-panel-resize-handle-enabled="true"] {
+  @apply w-2 cursor-col-resize;
+}
+
+[data-panel-group-direction="horizontal"]
+  > [data-panel-resize-handle-enabled="true"]::after {
+  content: "";
+  @apply w-0.5 h-8 bg-white/20 rounded-full transition-all group-hover:bg-cyan-500/50;
+}
+
+[data-panel-group-direction="horizontal"]
+  > [data-panel-resize-handle-enabled="true"]:hover::after,
+[data-panel-group-direction="horizontal"]
+  > [data-panel-resize-handle-enabled="true"][data-panel-resize-handle-active="true"]::after {
+  @apply h-12 bg-cyan-500 w-1;
+}
+
+/* Horizontal Handle (Vertical Split) */
+[data-panel-group-direction="vertical"]
+  > [data-panel-resize-handle-enabled="true"] {
+  @apply h-2 cursor-row-resize;
+}
+
+[data-panel-group-direction="vertical"]
+  > [data-panel-resize-handle-enabled="true"]::after {
+  content: "";
+  @apply h-0.5 w-8 bg-white/20 rounded-full transition-all group-hover:bg-cyan-500/50;
+}
+
+[data-panel-group-direction="vertical"]
+  > [data-panel-resize-handle-enabled="true"]:hover::after,
+[data-panel-group-direction="vertical"]
+  > [data-panel-resize-handle-enabled="true"][data-panel-resize-handle-active="true"]::after {
+  @apply w-12 bg-cyan-500 h-1;
+}
+
+/* Hover overlay for the whole handle area */
+[data-panel-resize-handle-enabled="true"]:hover {
+  @apply bg-cyan-500/5;
+}
