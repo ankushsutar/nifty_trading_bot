@@ -1,13 +1,20 @@
 import datetime
 import time
-from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
+from core.regime_classifier import RegimeClassifier
+from core.oi_analyzer import OIAnalyzer
+from core.data_fetcher import DataFetcher
+from utils.logger import logger
 
 class DecisionEngine:
-    def __init__(self, api, dry_run=False):
+    def __init__(self, api, token_loader, dry_run=False):
         self.api = api
         self.dry_run = dry_run
+        self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        self.regime_engine = RegimeClassifier()
+        self.oi_engine = OIAnalyzer(self.api, self.loader)
+        self.data_fetcher = DataFetcher(self.api)
 
     def analyze_and_select(self):
         """
@@ -44,26 +51,50 @@ class DecisionEngine:
             pass
         except: pass
 
-        # 3. Strategy Selection Matrix
+        # 3. Market Regime Analysis
+        print(">>> [Brain] 📊 Fetching Market Data for Regime Classification...")
+        df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+        regime_data = self.regime_engine.classify(df)
+        regime = regime_data['regime']
+        trend = regime_data['trend']
         
-        # Scenario: Low Capital (< 1.5L)
-        if not funds_for_straddle:
-             print(">>> [Brain] 💰 Low Capital Detected. Restricting to Buying Strategies.")
-             # If Morning passed, use Momentum or Inside Bar
-             # Let's Prefer Momentum for general purpose
-             if now >= datetime.time(9, 20):
-                 print(">>> [Brain] ⚡ Intraday Trend Phase. Selected: Momentum")
-                 return "MOMENTUM"
-             
-        # Scenario: High Capital (> 1.5L)
-        else:
-             print(">>> [Brain] 💰 High Capital Available.")
-             # If Morning passed
-             if now >= datetime.time(9, 20):
-                 # If VIX is very low (< 12), Straddle is good (Premium decay).
-                 # If VIX is high (> 15), Momentum might be safer? 
-                 # For now, let's default to STRADDLE as the "Premium" strategy if funds allow.
-                 print(">>> [Brain] 📉 Standard Phase. Selected: Straddle (Premium Capture)")
-                 return "STRADDLE"
+        print(f">>> [Brain] Detected Regime: {regime} | Trend: {trend} | ADX: {regime_data['adx']}")
 
-        return "MOMENTUM" # Fallback
+        # 4. Sentiment Analysis (OI/PCR)
+        print(">>> [Brain] 🔍 Analyzing Option Chain Sentiment...")
+        # Get ATM Spot to know where to scan
+        nifty_ltp = df.iloc[-1]['close'] if df is not None else 0
+        atm_strike = round(nifty_ltp / 50) * 50
+        
+        from utils.expiry_calculator import get_next_weekly_expiry
+        expiry = get_next_weekly_expiry()
+        
+        sentiment = self.oi_engine.get_market_sentiment(expiry, atm_strike)
+        bias = sentiment['bias']
+
+        # 5. Smart Selection Matrix
+        
+        # RULE: If Volatile, STAY CASH
+        if regime == "VOLATILE":
+            print(">>> [Brain] ⚠️ Market is VOLATILE. Staying in CASH to avoid whipsaws.")
+            return None
+
+        # Scenario: Trending Market
+        if regime == "TRENDING":
+            if trend == "BULLISH" and bias != "BEARISH":
+                print(">>> [Brain] 📈 Bullish Trend Confirmed by OI. Selected: Momentum (Buy CE)")
+                return "MOMENTUM"
+            elif trend == "BEARISH" and bias != "BULLISH":
+                print(">>> [Brain] 📉 Bearish Trend Confirmed by OI. Selected: Momentum (Buy PE)")
+                return "MOMENTUM"
+
+        # Scenario: Rangebound / Sideways Market
+        if regime in ["SIDEWAYS", "CHOP"]:
+            if funds_for_straddle and bias == "NEUTRAL":
+                print(">>> [Brain] 💠 Rangebound Market + Neutral OI. Selected: Straddle (Premium Capture)")
+                return "STRADDLE"
+            elif bias != "NEUTRAL":
+                print(f">>> [Brain] 🎯 Rangebound but OI has {bias} bias. Selected: Inside Bar Scalp")
+                return "INSIDE_BAR"
+
+        return "MOMENTUM"

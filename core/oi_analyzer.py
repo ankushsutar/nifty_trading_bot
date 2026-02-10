@@ -1,108 +1,99 @@
 import logging
 import time
+import datetime
+from utils.logger import logger
 
 class OIAnalyzer:
     def __init__(self, api, token_loader):
         self.api = api
         self.loader = token_loader
         
-    def get_pcr(self, expiry, atm_strike):
+    def get_market_sentiment(self, expiry, atm_strike):
         """
-        Calculates Put-Call Ratio (PCR) based on Open Interest (OI) 
-        of 5 Strikes around ATM (ATM, +1, +2, -1, -2).
-        
-        PCR = Total Put OI / Total Call OI
-        PCR > 1.0 => Bullish (More Puts writen/sold -> Support)
-        PCR < 1.0 => Bearish (More Calls written/sold -> Resistance)
+        Comprehensive Market Sentiment analysis using PCR and Delta OI.
+        Returns: { 'pcr': float, 'sentiment': str, 'confidence': float, 'bias': str }
         """
-        print(f">>> [AI] Scanning Option Chain (Live Volume/OI) for {expiry} around {atm_strike}...")
+        logger.info(f">>> [Analysis] 🔍 Scanning Option Chain Sentiment (ATM: {atm_strike})")
         
-        strikes = [atm_strike, atm_strike+50, atm_strike+100, atm_strike-50, atm_strike-100]
+        # 5 Strikes around ATM
+        strikes = [atm_strike - 100, atm_strike - 50, atm_strike, atm_strike + 50, atm_strike + 100]
         
         total_ce_oi = 0
         total_pe_oi = 0
+        total_ce_delta = 0
+        total_pe_delta = 0
         
         for strike in strikes:
-            # 1. Get Tokens
             ce_token, ce_symbol = self.loader.get_token("NIFTY", expiry, strike, "CE")
             pe_token, pe_symbol = self.loader.get_token("NIFTY", expiry, strike, "PE")
-            
-        for strike in strikes:
-            # 1. Get Tokens
-            ce_token, _ = self.loader.get_token("NIFTY", expiry, strike, "CE")
-            pe_token, _ = self.loader.get_token("NIFTY", expiry, strike, "PE")
             
             if not ce_token or not pe_token:
                 continue
 
-            # 2. Fetch OI/Volume Data
-            time.sleep(0.4) # Rate Limit Protection
-            ce_vol = self.fetch_oi_value(ce_token)
+            # Fetch Intraday Data for Delta OI
+            # Rate limit protection: angel usually allows 3 req/sec
+            time.sleep(0.34) 
+            ce_oi, ce_delta = self._fetch_oi_and_delta(ce_token)
             
-            time.sleep(0.4) # Rate Limit Protection
-            pe_vol = self.fetch_oi_value(pe_token)
+            time.sleep(0.34)
+            pe_oi, pe_delta = self._fetch_oi_and_delta(pe_token)
             
-            total_ce_oi += ce_vol
-            total_pe_oi += pe_vol
+            total_ce_oi += ce_oi
+            total_pe_oi += pe_oi
+            total_ce_delta += ce_delta
+            total_pe_delta += pe_delta
             
-            # Print row for user visibility
-            print(f"    Strike: {strike} | CE Vol: {int(ce_vol):,} | PE Vol: {int(pe_vol):,}")
+            logger.debug(f"    Strike {strike} | CE-OI: {ce_oi}, Δ: {ce_delta} | PE-OI: {pe_oi}, Δ: {pe_delta}")
 
-        print(f"    ------------------------------------------------")
-        print(f"    [Aggregated] CE Vol: {int(total_ce_oi):,} | PE Vol: {int(total_pe_oi):,}")
+        # 1. PCR Calculation
+        pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
+        pcr = round(pcr, 2)
         
-        if total_ce_oi == 0: return 1.0 # Avoid DivByZero
+        # 2. Delta Sentiment (The "Pressure")
+        # If PE Delta > CE Delta -> Put Writing is heavier -> Bullish Pressure
+        delta_ratio = total_pe_delta / total_ce_delta if total_ce_delta > 0 else 1.0
         
-        pcr = total_pe_oi / total_ce_oi
-        return round(pcr, 2)
+        # 3. Overall Bias
+        bias = "NEUTRAL"
+        if pcr > 1.2 or delta_ratio > 1.5:
+            bias = "BULLISH"
+        elif pcr < 0.8 or delta_ratio < 0.6:
+            bias = "BEARISH"
+            
+        logger.info(f">>> [Sentiment] PCR: {pcr} | DeltaPressure: {round(delta_ratio, 2)} | Bias: {bias}")
+        
+        return {
+            "pcr": pcr,
+            "delta_ratio": round(delta_ratio, 2),
+            "bias": bias,
+            "total_ce_oi": total_ce_oi,
+            "total_pe_oi": total_pe_oi
+        }
 
-    def fetch_oi_value(self, token):
+    def _fetch_oi_and_delta(self, token):
+        """Fetches current OI and the change since the first intraday candle."""
         try:
-            # REAL API LOGIC:
-            # Fetch Daily Candle to get the latest Open Interest (OI)
-            import datetime
-            today = datetime.datetime.now()
-            # Look back 3 days to ensure we get at least one candle even after weekends
-            from_date = (today - datetime.timedelta(days=3)).strftime("%Y-%m-%d %H:%M")
-            to_date = today.strftime("%Y-%m-%d %H:%M")
+            today = datetime.datetime.now().strftime("%Y-%m-%d 09:15")
+            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
             
-            historicParam = {
+            param = {
                 "exchange": "NFO",
                 "symboltoken": token,
-                "interval": "ONE_DAY",
-                "fromdate": from_date,
-                "todate": to_date
+                "interval": "FIVE_MINUTE",
+                "fromdate": today,
+                "todate": now
             }
             
-            data = self.api.getCandleData(historicParam)
-            
-            # Response format: [timestamp, open, high, low, close, volume]
-            if data and data.get('data'):
-                latest = data['data'][-1]
+            data = self.api.getCandleData(param)
+            if data and data.get('data') and len(data['data']) > 0:
+                candles = data['data']
+                # [timestamp, open, high, low, close, volume, oi]
+                latest_oi = float(candles[-1][6]) if len(candles[-1]) > 6 else float(candles[-1][5])
+                initial_oi = float(candles[0][6]) if len(candles[0]) > 6 else float(candles[0][5])
                 
-                # Check for OI (Index 6) first
-                if len(latest) > 6:
-                     return float(latest[6])
-                
-                # Fallback: Use VOLUME (Index 5)
-                # Volume PCR is a valid intraday sentiment indicator
-                if len(latest) > 5:
-                    return float(latest[5])
-                    
-                return 0
+                delta_oi = latest_oi - initial_oi
+                return latest_oi, delta_oi
             
-            return 0
-            
+            return 0, 0
         except Exception as e:
-            # print(f">>> [Scan Error] {e}") 
-            return 0
-
-    def analyze_sentiment(self, pcr):
-        """
-        Returns: BULLISH, BEARISH, or NEUTRAL
-        """
-        if pcr > 1.2:
-            return "BULLISH" # Strong Support
-        elif pcr < 0.8:
-            return "BEARISH" # Strong Resistance
-        return "NEUTRAL"
+            return 0, 0

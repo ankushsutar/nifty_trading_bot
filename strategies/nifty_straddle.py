@@ -3,6 +3,7 @@ import datetime
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
 from core.trade_repo import trade_repo
+from core.oi_analyzer import OIAnalyzer
 
 class NiftyStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -14,6 +15,7 @@ class NiftyStrategy:
         self.entry_prices = {} # { 'CE': price, 'PE': price }
         self.legs_active = {'CE': False, 'PE': False}
         self.leg_metadata = {'CE': None, 'PE': None} # { 'CE': {'token': ..., 'symbol': ..., 'qty': ...} }
+        self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
 
     def get_atm_strike(self):
         """
@@ -51,7 +53,21 @@ class NiftyStrategy:
         if self.gatekeeper.is_blackout_period():
              return
 
-        # 2. VIX Check & Sizing
+        # 2. Market Sentiment Guard (Professional Enhancement)
+        print(">>> [Market] Running Pre-Entry Sentiment Analysis...")
+        atm_strike = self.get_atm_strike()
+        if not atm_strike:
+            print(">>> [Error] Could not fetch ATM Strike for entry. Aborting.")
+            return
+
+        sentiment = self.oi_analyzer.get_market_sentiment(expiry, atm_strike)
+        if sentiment['bias'] != "NEUTRAL":
+            print(f">>> [Risk] ⚠️ Sentiment Bias is {sentiment['bias']}. Straddle entry postponed (Neutral preferred).")
+            return
+        else:
+            print(">>> [Market] ✅ Sentiment is Neutral. Proceeding with Straddle.")
+
+        # 3. VIX Check & Sizing
         quantity_multiplier = self.gatekeeper.get_vix_adjustment()
         # Fix: Ensure quantity is a multiple of Lot Size (Min 1 Lot)
         # If multiplier is 0.5, we cannot trade 0.5 lots. Default to 1 lot.
