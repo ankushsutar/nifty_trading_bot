@@ -723,20 +723,22 @@ class MomentumStrategy:
         except Exception as e:
              logger.error(f"Journal Error: {e}")
 
-        if self.dry_run:
-            self.active_position = None
-            return
+        if not self.dry_run:
+            try:
+                orderparams = {
+                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                    "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                }
+                oid = self.api.placeOrder(orderparams)
+                logger.info(f"Success: Exit Order Placed: {oid}")
+            except Exception as e:
+                logger.error(f"Exit Order Failure: {e}")
+        else:
+            logger.info(f"Dry Run: Simulated Exit for {symbol}")
 
+        # Close in DB: ALWAYS do this (Dry Run or Real)
         try:
-             orderparams = {
-                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
-                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-             }
-             oid = self.api.placeOrder(orderparams)
-             logger.info(f"Success: Exit Order Placed: {oid}")
-             
-             # Close in DB
              trade_repo.close_trade(
                  symbol=symbol, 
                  exit_price=exit_price, 
@@ -745,7 +747,7 @@ class MomentumStrategy:
              )
              self.active_position = None
         except Exception as e:
-             logger.error(f"Exit Order Failure: {e}")
+             logger.error(f"DB Close Error: {e}")
 
     def check_trailing_stop(self):
         """
@@ -855,3 +857,11 @@ class MomentumStrategy:
     def get_current_position(self):
         """Returns the active position details for UI."""
         return self.active_position
+
+    def stop(self):
+        """Graceful Square-off on Shutdown"""
+        if self.active_position:
+            logger.info(f">>> [Strategy] Stop Signal Received. Squaring off {self.active_position['symbol']}...")
+            self.close_position("MANUAL_STOP")
+        else:
+            logger.info(">>> [Strategy] Stop Signal Received. No active position to close.")

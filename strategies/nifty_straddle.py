@@ -13,6 +13,7 @@ class NiftyStrategy:
         self.sl_orders = {} # { 'CE': order_id, 'PE': order_id }
         self.entry_prices = {} # { 'CE': price, 'PE': price }
         self.legs_active = {'CE': False, 'PE': False}
+        self.leg_metadata = {'CE': None, 'PE': None} # { 'CE': {'token': ..., 'symbol': ..., 'qty': ...} }
 
     def get_atm_strike(self):
         """
@@ -93,11 +94,13 @@ class NiftyStrategy:
         if ce_price:
              self.entry_prices['CE'] = ce_price
              self.legs_active['CE'] = True
+             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity}
              trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
              
         if pe_price:
              self.entry_prices['PE'] = pe_price
              self.legs_active['PE'] = True
+             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity}
              trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
 
         # 7. Place Initial Stop Loss (25%)
@@ -208,9 +211,12 @@ class NiftyStrategy:
         except Exception as e:
              print(f">>> [Error] Modify SL Failed: {e}")
 
-    def place_order(self, token, symbol, action, qty):
+    def place_order(self, token, symbol, action, qty, exit_price=0.0, pnl=0.0, reason="TIME"):
         if self.dry_run:
-            print(f">>> [Dry Run] Would place {action} MARKET Order for {symbol} (Token: {token})")
+            print(f">>> [Dry Run] Simulated {action} MARKET Order for {symbol}")
+            if action == "BUY" and qty > 0:
+                 # Closing Short Straddle
+                 trade_repo.close_trade(symbol=symbol, exit_price=exit_price, pnl=pnl, exit_reason=reason)
             return "dry_run_id"
 
         try:
@@ -226,13 +232,12 @@ class NiftyStrategy:
                 "quantity": qty
             }
             order_id = self.api.placeOrder(orderparams)
-            order_id = self.api.placeOrder(orderparams)
             print(f">>> [Order] {action} {symbol} | ID: {order_id}")
             
-            # Save to DB if Opening Trade
+            # Save to DB if Closing Trade
             if action == "BUY" and qty > 0:
                  # Closing Short Straddle
-                 trade_repo.close_trade(symbol=symbol)
+                 trade_repo.close_trade(symbol=symbol, exit_price=exit_price, pnl=pnl, exit_reason=reason)
             
             return order_id
         except Exception as e:
@@ -305,9 +310,35 @@ class NiftyStrategy:
 
     def exit_at_market(self, token, symbol, qty, reason):
         if self.active_position_exists(symbol): # Check if open
-             self.place_order(token, symbol, "BUY", qty) # Buy to Cover
-             print(f">>> [Exit] Covered {symbol} ({reason})")
+             # Fetch Current LTP for P&L recording
+             current_price = 0.0
+             pnl = 0.0
+             try:
+                 resp = self.api.ltpData("NFO", symbol, token)
+                 if resp and resp.get('status'):
+                     current_price = float(resp['data']['ltp'])
+                     # Calculate P&L for Short Position (Entry - Exit)
+                     leg_type = 'CE' if 'CE' in symbol else 'PE'
+                     entry = self.entry_prices.get(leg_type, 0)
+                     if entry > 0:
+                         pnl = (entry - current_price) * qty
+             except: pass
+
+             self.place_order(token, symbol, "BUY", qty, exit_price=current_price, pnl=pnl, reason=reason) # Buy to Cover
+             print(f">>> [Exit] Covered {symbol} ({reason}) | PnL: {pnl}")
 
     def active_position_exists(self, symbol):
         # Implementation to check net qty or rely on internal flag
         return True # Simplified
+
+    def stop(self):
+        """Graceful Square-off on Shutdown"""
+        print("\n>>> [Strategy] Stop Signal Received. Squaring off positions...")
+        for leg in ['CE', 'PE']:
+            if self.legs_active[leg]:
+                meta = self.leg_metadata[leg]
+                if meta:
+                    print(f">>> [Stop] Closing {meta['symbol']}...")
+                    self.exit_at_market(meta['token'], meta['symbol'], meta['qty'], "MANUAL_STOP")
+                    self.legs_active[leg] = False
+        print(">>> [Strategy] Shutdown Cleanup Complete.")

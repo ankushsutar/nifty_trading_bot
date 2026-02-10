@@ -188,4 +188,31 @@ class TradeRepository:
             logger.error(f"TradeRepository Fetch Today Error: {e}")
             return []
 
+    def cleanup_stale_trades(self):
+        """
+        Closes any trades currently marked as 'OPEN' that were not created today.
+        This ensures the bot starts each day with a clean slate.
+        """
+        with self._lock:
+            try:
+                conn = self._get_connection()
+                cursor = conn.cursor()
+                
+                # Close trades where date is NOT today
+                cursor.execute("""
+                    UPDATE trades 
+                    SET status = 'CLOSED', exit_reason = 'STALE_OVERNIGHT', pnl = 0.0
+                    WHERE status = 'OPEN' AND date(created_at) != date('now', 'localtime')
+                """)
+                
+                conn.commit()
+                count = cursor.rowcount
+                conn.close()
+                if count > 0:
+                    logger.info(f"TradeRepository: Cleaned up {count} stale trades from previous sessions.")
+                return count
+            except Exception as e:
+                logger.error(f"TradeRepository Cleanup Error: {e}")
+                return 0
+
 trade_repo = TradeRepository()

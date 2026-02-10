@@ -12,6 +12,14 @@ class BotManager:
             cls._instance.manager = None
             cls._instance.is_running = False
             cls._instance.current_mode = "PAPER" # Default to PAPER
+            
+            # Startup Cleanup: Flush any stale trades from previous days
+            try:
+                from core.trade_repo import trade_repo
+                trade_repo.cleanup_stale_trades()
+            except Exception as e:
+                print(f"BotManager Startup Cleanup Error: {e}")
+                
         return cls._instance
 
     def start_bot(self, strategy_type="AUTO", dry_run=True):
@@ -109,6 +117,26 @@ class BotManager:
         
         return {"active": False}
 
+    def _get_intrinsic_value(self, symbol, spot_price):
+        """
+        Calculates intrinsic value of an option symbol based on Nifty Spot.
+        Symbol Format: NIFTY10FEB2625950PE
+        """
+        try:
+            import re
+            # Extract strike (5 digits before CE/PE)
+            match = re.search(r'(\d{5})([CP]E)$', symbol)
+            if match:
+                strike = float(match.group(1))
+                opt_type = match.group(2)
+                if opt_type == 'CE':
+                    return max(0.0, spot_price - strike)
+                else:
+                    return max(0.0, strike - spot_price)
+        except:
+            pass
+        return 0.0
+
     def get_daily_summary(self):
         """
         Returns {
@@ -148,7 +176,18 @@ class BotManager:
                         side = trade.get('side', 'BUY')
                         
                         current_price = market_service.get_ltp("NFO", symbol, token)
-                        if current_price > 0:
+                        
+                        # Expiry Guard: If LTP is lower than intrinsic, use intrinsic
+                        # (Market spreads can be huge at expiry close)
+                        nifty_data = market_service.get_market_data()
+                        spot = nifty_data.get('nifty', 0)
+                        if spot > 0:
+                            intrinsic = self._get_intrinsic_value(symbol, spot)
+                            if current_price < intrinsic:
+                                # logger.info(f"Expiry Guard: Adjusting {symbol} price {current_price} -> {intrinsic} (Intrinsic)")
+                                current_price = intrinsic
+
+                        if current_price >= 0:
                             if side == 'SELL':
                                 trade_pnl = (entry_price - current_price) * qty
                             else:
