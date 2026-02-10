@@ -9,19 +9,15 @@ export default function MissionControl() {
   const [isRunning, setIsRunning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isDryRun, setIsDryRun] = useState(true);
-  const [strategy, setStrategy] = useState("AUTO"); // AUTO or MANUAL
+  const [strategy, setStrategy] = useState("AUTO");
 
-  // Sync state on load
   useEffect(() => {
     fetch("http://localhost:8000/api/status")
       .then((res) => res.json())
       .then((data) => {
-        if (data.status === "RUNNING") {
-          setIsRunning(true);
-          // Assume lifecycle manager handles strategy
-        }
+        if (data.status === "RUNNING") setIsRunning(true);
       })
-      .catch((err) => console.error("Failed to fetch status:", err));
+      .catch(console.error);
   }, []);
 
   const handleStart = async () => {
@@ -30,16 +26,13 @@ export default function MissionControl() {
       const res = await fetch("http://localhost:8000/api/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ strategy: strategy, dry_run: isDryRun }),
+        body: JSON.stringify({ strategy, dry_run: isDryRun }),
       });
       const data = await res.json();
-      if (data.status === "success") {
-        setIsRunning(true);
-      } else {
-        alert("Error: " + data.message);
-      }
+      if (data.status === "success") setIsRunning(true);
+      else alert(data.message);
     } catch (e) {
-      alert("API Error: " + e);
+      alert(e);
     }
     setLoading(false);
   };
@@ -47,113 +40,127 @@ export default function MissionControl() {
   const handleStop = async () => {
     if (
       !confirm(
-        "⚠️ Confirm Emergency Shutdown? \nThis will kill the trading process immediately.",
+        "⚠️ Confirm Emergency Shutdown?\nThis will terminate live execution immediately.",
       )
     )
       return;
     setLoading(true);
     try {
       await fetch("http://localhost:8000/api/stop", { method: "POST" });
-      // Poll a few times to confirm stop
-      setTimeout(() => setIsRunning(false), 2000);
+      setTimeout(() => setIsRunning(false), 1500);
     } catch (e) {
-      alert("API Error: " + e);
+      alert(e);
     }
     setLoading(false);
   };
 
   return (
-    <Card title="Mission Control" icon={<Radio size={18} />} glow={isRunning}>
-      {/* 1. Safety Switch (Dry Run vs Live) */}
-      <div className="mb-4">
-        <label className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 block">
-          Safety Protocol
+    <Card
+      title="Mission Control"
+      icon={<Radio size={16} />}
+      glow={isRunning}
+    >
+      {/* SAFETY MODE */}
+      <section className="mb-5">
+        <label className="block text-[10px] text-gray-500 tracking-widest uppercase mb-2">
+          Execution Mode
         </label>
-        <div className="bg-black/40 p-0.5 rounded border border-white/10 flex relative">
-          {/* Slider Background */}
+
+        <div className="relative flex rounded-lg bg-black/50 border border-white/10 p-1">
           <motion.div
-            className={`absolute top-1 bottom-1 w-[48%] rounded-md z-0 ${isDryRun ? "bg-yellow-500/20" : "bg-red-500/20 left-[50%]"}`}
             layout
-            transition={{ type: "spring", stiffness: 500, damping: 30 }}
+            transition={{ type: "spring", stiffness: 400, damping: 30 }}
+            className={`absolute inset-y-1 w-1/2 rounded-md ${
+              isDryRun
+                ? "bg-yellow-500/15 left-1"
+                : "bg-red-500/20 left-[50%]"
+            }`}
           />
 
           <button
             onClick={() => setIsDryRun(true)}
-            className={`flex-1 relative z-10 py-3 flex items-center justify-center gap-2 text-sm font-bold transition-all ${isDryRun ? "text-yellow-400" : "text-gray-600"}`}
+            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 ${
+              isDryRun ? "text-yellow-400" : "text-gray-600"
+            }`}
           >
-            <Shield size={16} /> SIMULATION
+            <Shield size={14} /> SIMULATION
           </button>
 
           <button
             onClick={() => setIsDryRun(false)}
-            className={`flex-1 relative z-10 py-3 flex items-center justify-center gap-2 text-sm font-bold transition-all ${!isDryRun ? "text-red-500 text-glow" : "text-gray-600"}`}
+            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 ${
+              !isDryRun
+                ? "text-red-500 drop-shadow-[0_0_6px_rgba(239,68,68,0.6)]"
+                : "text-gray-600"
+            }`}
           >
-            <Zap size={16} /> LIVE EXECUTION
+            <Zap size={14} /> LIVE
           </button>
         </div>
-      </div>
+      </section>
 
-      {/* 2. Strategy Selector */}
-      <div className="mb-4">
-        <label className="text-[10px] text-gray-500 uppercase tracking-widest mb-1 block">
-          Strategy Logic
+      {/* STRATEGY */}
+      <section className="mb-5">
+        <label className="block text-[10px] text-gray-500 tracking-widest uppercase mb-2">
+          Strategy Engine
         </label>
+
         <select
+          disabled={isRunning}
           value={strategy}
           onChange={(e) => setStrategy(e.target.value)}
-          className="w-full bg-black/40 border border-white/10 text-cyan-400 font-mono text-xs p-2 rounded focus:outline-none focus:border-cyan-500/50"
-          disabled={isRunning}
+          className="w-full rounded-md bg-black/60 border border-white/10 px-3 py-2 text-xs font-mono text-cyan-400 focus:outline-none focus:border-cyan-500/50 disabled:opacity-40"
         >
-          <option value="AUTO">🤖 AUTO-PILOT (Lifecycle Manager)</option>
-          <option value="MOMENTUM">⚡ MOMENTUM (Trend Follow)</option>
-          <option value="STRADDLE">📉 STRADDLE (Delta Neutral)</option>
-          <option value="OHL">🎯 OHL SCALP (Morning)</option>
+          <option value="AUTO">🤖 AUTO-PILOT</option>
+          <option value="MOMENTUM">⚡ MOMENTUM</option>
+          <option value="STRADDLE">📉 STRADDLE</option>
+          <option value="OHL">🎯 OHL SCALP</option>
         </select>
-      </div>
+      </section>
 
-      {/* 3. ARM / DISARM Buttons */}
-      <div className="grid grid-cols-1 gap-2">
+      {/* ACTION */}
+      <section>
         {!isRunning ? (
           <motion.button
             whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.95 }}
-            onClick={handleStart}
+            whileTap={{ scale: 0.96 }}
             disabled={loading}
-            className="group relative w-full h-10 bg-cyan-900/20 border border-cyan-500/30 overflow-hidden rounded flex items-center justify-center gap-2 text-cyan-400 font-bold tracking-widest text-sm transition-all hover:bg-cyan-500/10 hover:border-cyan-400"
+            onClick={handleStart}
+            className="w-full h-11 rounded-md border border-cyan-500/30 bg-cyan-900/20 text-cyan-400 font-semibold tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-cyan-500/10 hover:border-cyan-400 disabled:opacity-40"
           >
-            <div className="absolute inset-x-0 h-[1px] bg-cyan-400 top-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <Power
-              size={14}
-              className="group-hover:drop-shadow-[0_0_8px_rgba(0,240,255,0.8)]"
-            />
-            INITIALIZE SYSTEM
+            <Power size={14} />
+            ARM SYSTEM
           </motion.button>
         ) : (
           <motion.button
             whileHover={{ scale: 1.02 }}
-            whileTap={{ scale: 0.95 }}
+            whileTap={{ scale: 0.96 }}
             onClick={handleStop}
-            className="group relative w-full h-10 bg-red-900/20 border border-red-500/30 overflow-hidden rounded flex items-center justify-center gap-2 text-red-500 font-bold tracking-widest text-sm transition-all hover:bg-red-500/10 hover:border-red-400 hover:text-red-400"
+            className="w-full h-11 rounded-md border border-red-500/30 bg-red-900/20 text-red-500 font-semibold tracking-widest text-xs flex items-center justify-center gap-2 hover:bg-red-500/10 hover:border-red-400"
           >
-            <div className="absolute inset-x-0 h-[1px] bg-red-500 top-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <motion.div
-              animate={{ opacity: [1, 0.5, 1] }}
+            <motion.span
+              animate={{ opacity: [1, 0.4, 1] }}
               transition={{ repeat: Infinity, duration: 1 }}
             >
               <AlertTriangle size={14} />
-            </motion.div>
-            EMERGENCY CUTOFF
+            </motion.span>
+            EMERGENCY STOP
           </motion.button>
         )}
-      </div>
+      </section>
 
-      {/* Status Footer */}
-      <div className="mt-6 flex justify-between items-center text-[10px] text-gray-500 font-mono uppercase">
-        <span>Latency: 24ms</span>
-        <span className={isRunning ? "text-green-500" : "text-gray-600"}>
-          {isRunning ? "● SYSTEM ACTIVE" : "○ SYSTEM IDLE"}
+      {/* FOOTER */}
+      <footer className="mt-6 flex items-center justify-between text-[10px] font-mono uppercase">
+        <span className="text-gray-600">Latency · 24ms</span>
+        <span
+          className={`flex items-center gap-1 ${
+            isRunning ? "text-green-500" : "text-gray-600"
+          }`}
+        >
+          <span className="text-xs">●</span>
+          {isRunning ? "System Active" : "System Idle"}
         </span>
-      </div>
+      </footer>
     </Card>
   );
 }

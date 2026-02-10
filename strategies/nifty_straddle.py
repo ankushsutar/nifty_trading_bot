@@ -87,28 +87,18 @@ class NiftyStrategy:
 
         # 6. Wait for Fills & Capture Prices
         print(">>> [Trade] Waiting for fills to set SL...")
-        ce_price = self.wait_for_fill(ce_order)
-        pe_price = self.wait_for_fill(pe_order)
+        ce_price = self.wait_for_fill(ce_order, symbol=ce_symbol, token=ce_token)
+        pe_price = self.wait_for_fill(pe_order, symbol=pe_symbol, token=pe_token)
 
-        if ce_price: 
-            self.entry_prices['CE'] = ce_price
-            self.legs_active['CE'] = True
-            self.entry_prices['PE'] = pe_price
-            self.legs_active['PE'] = True
-            
-        # Update Entry Prices in DB (since we saved with 0.0)
-        # We need a way to update entry price in DB?
-        # TradeRepo doesn't have update_entry_price.
-        # Alternative: Save trade AFTER fill?
-        # Strategy flow: place_order -> wait_for_fill.
-        # Currently I put save_trade inside place_order (unknown price).
-        # Better: Save trade here after known price.
-        
-        # Retroactive Fix: Don't save in place_order. Save HERE.
         if ce_price:
-             trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL")
+             self.entry_prices['CE'] = ce_price
+             self.legs_active['CE'] = True
+             trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
+             
         if pe_price:
-             trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL")
+             self.entry_prices['PE'] = pe_price
+             self.legs_active['PE'] = True
+             trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
 
         # 7. Place Initial Stop Loss (25%)
         # For Sell Order, SL is Buy Stop Limit at (Price * 1.25)
@@ -276,20 +266,17 @@ class NiftyStrategy:
             print(f">>> [Error] SL Place: {e}")
             return None
 
-    def wait_for_fill(self, order_id):
+    def wait_for_fill(self, order_id, exchange="NFO", symbol=None, token=None):
         if not order_id: return None
-        if order_id == "dry_run_id": 
-            # In Dry Run, we assume fill at current Market Price
-            # Context: We don't have the symbol here easily without refactoring place_order to return it
-            # But wait, wait_for_fill is called with order_id.
-            # In dry run, we returned "dry_run_id", so we rely on the caller to know the symbol?
-            # actually wait_for_fill doesn't take symbol...
-            
-            # Since we can't easily get the symbol here to fetch LTP without major refactoring,
-            # we will fix it by adding symbol to wait_for_fill signature in the next step.
-            # For now, let's return a realistic mock default if we can't fetch LTP.
-            return 150.0 # Better default than 100.0
-
+        if self.dry_run:
+            # In Dry Run, we use REAL Market Price at time of "entry"
+            if symbol and token:
+                try:
+                    resp = self.api.ltpData(exchange, symbol, token)
+                    if resp and resp.get('status'):
+                        return float(resp['data']['ltp'])
+                except: pass
+            return 150.0 # Fallback
         
         # Simple polling
         for _ in range(5):
@@ -301,7 +288,7 @@ class NiftyStrategy:
                              return float(o['averageprice'])
              except: pass
              time.sleep(1)
-        return 100.0 if self.dry_run else None # Mock
+        return None
 
     def get_order_status(self, order_id):
         if not order_id: return None

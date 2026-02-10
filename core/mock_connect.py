@@ -21,24 +21,25 @@ class MockSmartConnect:
         }
 
     def ltpData(self, exchange, tradingsymbol, symboltoken):
-        print(f">>> [Mock] ltpData called for {tradingsymbol} ({symboltoken})")
-        
         # Determine if it's an Option or Index based on Symbol Name
-        # Nifty Options usually have "CE" or "PE" at the end, Index is "Nifty 50"
-        
         is_option = "CE" in tradingsymbol or "PE" in tradingsymbol
         
+        # Modern Nifty Level (Approx 25000 in 2026)
+        base_nifty = 25000.0
+        
         if is_option:
-            # Realistic Option Price: 100 - 300
-            mock_ltp = 150.0 + random.uniform(-10, 10)
+            # Generate a price that fluctuates but stays in a realistic range (50-250)
+            # We can use a hash of the symbol to keep it relatively stable per session
+            seed = sum(ord(c) for c in tradingsymbol)
+            random.seed(seed + int(time.time() / 10)) # Changes every 10s
+            mock_ltp = 120.0 + random.uniform(-40, 40)
         else:
-            # Realistic Nifty Index Price
-            mock_ltp = 23000.0 + random.uniform(-50, 50)
+            mock_ltp = base_nifty + random.uniform(-30, 30)
 
         return {
             "status": True,
             "data": {
-                "ltp": round(mock_ltp, 2),
+                "ltp": round(float(mock_ltp), 2),
                 "exchange": exchange,
                 "tradingsymbol": tradingsymbol,
                 "symboltoken": symboltoken
