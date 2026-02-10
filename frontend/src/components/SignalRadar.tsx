@@ -20,12 +20,19 @@ interface Analysis {
   htf_trend: string;
 }
 
+interface OiData {
+  pcr: number;
+  delta_ratio: number;
+  bias: string;
+}
+
 interface MarketData {
   nifty: number;
   vix: number;
   pnl: number;
   sentiment?: { score: number };
   analysis?: Analysis;
+  oi_data?: OiData;
 }
 
 export default function SignalRadar() {
@@ -48,6 +55,7 @@ export default function SignalRadar() {
           pnl: json.pnl || 0,
           sentiment: jsonSent,
           analysis: json.analysis,
+          oi_data: json.oi_data,
         });
         setLoading(false);
       } catch (e) {
@@ -93,11 +101,16 @@ export default function SignalRadar() {
       color: "text-cyan-400",
     },
     {
-      label: "Sentiment",
-      value: `${(sentimentScore * 100).toFixed(0)}%`,
-      change: sentimentScore > 0 ? "BULLISH" : "BEARISH",
+      label: "OI Bias",
+      value: data.oi_data?.bias || "NEUTRAL",
+      change: data.oi_data ? `PCR: ${data.oi_data.pcr}` : "---",
       icon: <Activity size={16} />,
-      color: sentimentScore > 0 ? "text-green-400" : "text-red-400",
+      color:
+        data.oi_data?.bias === "BULLISH"
+          ? "text-green-400"
+          : data.oi_data?.bias === "BEARISH"
+            ? "text-red-400"
+            : "text-yellow-400",
     },
   ];
 
@@ -189,10 +202,10 @@ export default function SignalRadar() {
               </div>
               <div className="mt-2 flex gap-1">
                 <span className="text-[8px] px-1 py-0.5 rounded bg-white/5 border border-white/5 text-gray-400">
-                  ATR: {analysis?.atr?.toFixed(1) || "-"}
+                  PCR: {data.oi_data?.pcr?.toFixed(2) || "-"}
                 </span>
                 <span className="text-[8px] px-1 py-0.5 rounded bg-white/5 border border-white/5 text-gray-400">
-                  HTF: {analysis?.htf_trend || "-"}
+                  Δ Press: {data.oi_data?.delta_ratio?.toFixed(2) || "-"}
                 </span>
               </div>
             </div>

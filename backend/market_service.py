@@ -1,8 +1,13 @@
 import time
 import threading
-import traceback
 from core.angel_connect import get_angel_session
+from core.regime_classifier import RegimeClassifier
+from core.oi_analyzer import OIAnalyzer
+from core.data_fetcher import DataFetcher
+from utils.token_lookup import TokenLookup
 from utils.logger import logger
+import json
+import os
 
 class MarketService:
     _instance = None
@@ -15,6 +20,21 @@ class MarketService:
             cls._instance.cache_expiry = 2 # Seconds
             cls._instance.cached_data = None
             cls._instance._lock = threading.Lock()
+            
+            # Intelligence Components
+            cls._instance.token_lookup = TokenLookup()
+            cls._instance.token_lookup.load_scrip_master()
+            cls._instance.regime_engine = RegimeClassifier()
+            cls._instance.oi_engine = None # Initialize after API connect
+            cls._instance.data_fetcher = None
+            
+            cls._instance.analysis_data = {}
+            cls._instance.oi_data = {}
+            cls._instance.last_analysis_time = 0
+            
+            # Start Background Analysis Thread
+            threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
+            
         return cls._instance
 
     def _ensure_connection(self):
@@ -65,7 +85,9 @@ class MarketService:
             data = {
                 "nifty": nifty_ltp,
                 "vix": vix_ltp,
-                "pnl": 0.0 # TODO: connect to PositionManager for real PnL
+                "pnl": 0.0,
+                "analysis": self.analysis_data,
+                "oi_data": self.oi_data
             }
             
             # Update Cache
@@ -98,5 +120,34 @@ class MarketService:
             pass # Suppress log spam
             
         return 0.0
+
+    def _analysis_loop(self):
+        """Background loop to refresh Regime and OI analysis every 3 minutes."""
+        while True:
+            try:
+                self._ensure_connection()
+                if self.api:
+                    if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
+                    if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
+
+                    # 1. Regime Analysis
+                    df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+                    if df is not None:
+                        self.analysis_data = self.regime_engine.classify(df)
+                        
+                        # 2. OI Sentiment Analysis
+                        ltp = df.iloc[-1]['close']
+                        strike = int(round(ltp / 50) * 50)
+                        from utils.expiry_calculator import get_next_weekly_expiry
+                        expiry = get_next_weekly_expiry()
+                        
+                        self.oi_data = self.oi_engine.get_market_sentiment(expiry, strike)
+                        
+                    logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
+                
+                time.sleep(180) # Run every 3 minutes
+            except Exception as e:
+                logger.error(f"MarketService Analysis Loop Error: {e}")
+                time.sleep(60) # Retry after 1 minute
 
 market_service = MarketService()

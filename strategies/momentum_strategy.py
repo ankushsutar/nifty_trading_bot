@@ -9,7 +9,10 @@ from config.settings import Config
 from core.angel_connect import get_angel_session
 from core.safety_checks import SafetyGatekeeper
 from core.data_fetcher import DataFetcher
+from core.regime_classifier import RegimeClassifier
+from core.oi_analyzer import OIAnalyzer
 from utils.logger import logger
+from utils.expiry_calculator import get_next_weekly_expiry
 from utils.trade_journal import TradeJournal
 from core.trade_repo import trade_repo
 
@@ -24,11 +27,17 @@ class MomentumStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.data_fetcher = DataFetcher(self.api)
+        self.regime_classifier = RegimeClassifier()
+        self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
+        
         self.data_failure_count = 0
         self.active_position = None 
         self.stop_requested = False  # Control flag for API
         self.last_sync_time = 0
         self.last_analysis = {} # Stores EMA9, RSI, etc for logging
+        self.last_oi_scan = 0
+        self.oi_data = {}
+        
         self.sync_state() # Initial Sync with Broker
 
     def export_state(self):
@@ -44,6 +53,7 @@ class MomentumStrategy:
             state = {
                 "timestamp": datetime.datetime.now().isoformat(),
                 "analysis": self.last_analysis,
+                "oi_data": self.oi_data,
                 "active_position": self.active_position,
                 "dry_run": self.dry_run
             }
@@ -76,7 +86,7 @@ class MomentumStrategy:
                          int(pos['netqty']) != 0):
                          
                          qty = int(pos['netqty'])
-                         # If qty > 0 (LONG), < 0 (SHORT). We usually Buy options so Qty > 0.
+                         # If qty > 0 (LONG), < 0 (SHORt). We usually Buy options so Qty > 0.
                          # If we sold (Short Strategy), Qty < 0.
                          
                          found_active = {
@@ -208,8 +218,25 @@ class MomentumStrategy:
         # Reset seconds/micro to 0 and add buffer
         next_check = next_check.replace(second=5, microsecond=0)
         
-        logger.info(f"⏳ Next Trend Check scheduled for: {next_check.strftime('%H:%M:%S')}")
-        
+        if self.stop_requested:
+            logger.info("[Control] Stopping Strategy Loop.")
+            return
+
+        # --- INITIAL PULSE (Populate UI immediately) ---
+        try:
+            logger.info("📡 Performing Initial Market Analysis Pulse...")
+            trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
+            htf_trend = self.calculate_htf_trend()
+            self.last_analysis = {
+                "ema9": ema9, "ema21": ema21, "rsi": rsi, 
+                "htf_trend": htf_trend, "adx": adx,
+                "atr": atr, "regime": regime
+            }
+            self.export_state()
+            logger.info(f"✅ Initial Pulse Complete. Regime: {regime}")
+        except Exception as e:
+            logger.error(f"Initial Pulse Error: {e}")
+
         while True:
             if self.stop_requested:
                 logger.info("[Control] Stopping Strategy Loop.")
@@ -358,9 +385,6 @@ class MomentumStrategy:
 
     def analyze_market_trend(self):
         # Fetch 5-min candles via DataFetcher
-        # Using Index Token or Mock
-        
-        # Check if we are truly in Mock Mode (API is MockSmartConnect)
         is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
         
         if is_mock_api:
@@ -369,53 +393,42 @@ class MomentumStrategy:
              # Nifty 50 Index Token: 99926000
             df = self.data_fetcher.fetch_latest_candles("99926000")
             
-        # Return 7 values (Signal, EMA9, EMA21, RSI, ADX, ATR, Regime)
-        if df is None or df.empty: return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
+        if df is None or df.empty: 
+            return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
         
-        # Calc EMA
-        df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+        # 1. Regime Classification
+        regime_meta = self.regime_classifier.classify(df)
         
-        # Calc RSI
-        df['RSI'] = self.calculate_rsi(df)
+        # 2. Periodic OI Sentiment Scan (Every 5 minutes)
+        now = time.time()
+        if now - self.last_oi_scan > 300: # 5 Minutes
+            try:
+                # Get Strike
+                ltp = df.iloc[-1]['close']
+                strike = int(round(ltp / 50) * 50)
+                
+                expiry = get_next_weekly_expiry()
+                
+                self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike)
+                self.last_oi_scan = now
+            except Exception as e:
+                logger.error(f"Periodic OI Scan Error: {e}")
 
-        # Calc ADX (Trend Strength)
-        df['ADX'] = self.calculate_adx(df)
-        
-        # Calc ATR (Volatility)
-        df['ATR'] = self.calculate_atr(df)
-        
-        # Calc BBW (Expansion/Contraction)
-        df['BBW'] = self.calculate_bbw(df)
-        
-        if len(df) < 22: return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
-        
-        last_closed = df.iloc[-2] 
-        
-        ema9 = last_closed['EMA9']
-        ema21 = last_closed['EMA21']
-        rsi = last_closed['RSI']
-        adx = last_closed['ADX']
-        atr = last_closed['ATR']
-        bbw = last_closed['BBW']
-        
-        # REGIME CLASSIFICATION
-        regime = "CHOP"
-        if adx > 25:
-            regime = "TRENDING"
-        elif bbw > 0.0015: 
-            regime = "VOLATILE"
-        else:
-            regime = "CHOP"
-
-        # Signal Generation
+        # Signal Generation logic preserved for strategy
         signal = "NEUTRAL"
+        if regime_meta['regime'] == "TRENDING":
+            signal = regime_meta['trend']
+            if signal == "BULLISH": signal = "BULLISH" # redundant but for clarity
         
-        if regime == "TRENDING":
-            if ema9 > ema21: signal = "BULLISH"
-            if ema9 < ema21: signal = "BEARISH"
-        
-        return signal, ema9, ema21, rsi, adx, atr, regime
+        return (
+            signal, 
+            regime_meta['ema9'], 
+            regime_meta['ema21'], 
+            regime_meta['rsi'], 
+            regime_meta['adx'], 
+            regime_meta['atr'], 
+            regime_meta['regime']
+        )
 
     def calculate_htf_trend(self):
         """

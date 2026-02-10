@@ -118,19 +118,6 @@ def get_market_data():
     daily_summary = bot_manager.get_daily_summary()
     data["pnl"] = daily_summary.get("daily_pnl", 0.0)
     
-    # Read Strategy State (IPC)
-    try:
-        import json
-        import os
-        if os.path.exists("data/market_status.json"):
-            with open("data/market_status.json", "r") as f:
-                 state = json.load(f)
-                 data["analysis"] = state.get("analysis", {})
-                 # We could also use active_position from here if we trust it more than DB? 
-                 # For now just expose analysis.
-    except Exception as e:
-        print(f"Error reading market status: {e}")
-
     return data
 
 from backend.news_service import news_service

@@ -1,10 +1,5 @@
-import datetime
-import time
 from core.safety_checks import SafetyGatekeeper
-from core.regime_classifier import RegimeClassifier
-from core.oi_analyzer import OIAnalyzer
-from core.data_fetcher import DataFetcher
-from utils.logger import logger
+from backend.market_service import market_service
 
 class DecisionEngine:
     def __init__(self, api, token_loader, dry_run=False):
@@ -12,9 +7,6 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.regime_engine = RegimeClassifier()
-        self.oi_engine = OIAnalyzer(self.api, self.loader)
-        self.data_fetcher = DataFetcher(self.api)
 
     def analyze_and_select(self):
         """
@@ -52,27 +44,22 @@ class DecisionEngine:
         except: pass
 
         # 3. Market Regime Analysis
-        print(">>> [Brain] 📊 Fetching Market Data for Regime Classification...")
-        df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
-        regime_data = self.regime_engine.classify(df)
-        regime = regime_data['regime']
-        trend = regime_data['trend']
+        print(">>> [Brain] 📊 Fetching Market Data from Service Layer...")
+        market_data = market_service.get_market_data()
+        regime_data = market_data.get('analysis', {})
+        regime = regime_data.get('regime', 'UNKNOWN')
+        trend = regime_data.get('trend', 'NEUTRAL')
         
-        print(f">>> [Brain] Detected Regime: {regime} | Trend: {trend} | ADX: {regime_data['adx']}")
+        print(f">>> [Brain] Detected Regime: {regime} | Trend: {trend} | ADX: {regime_data.get('adx', 0)}")
 
         # 4. Sentiment Analysis (OI/PCR)
-        print(">>> [Brain] 🔍 Analyzing Option Chain Sentiment...")
-        # Get ATM Spot to know where to scan
-        nifty_ltp = df.iloc[-1]['close'] if df is not None else 0
-        atm_strike = round(nifty_ltp / 50) * 50
-        
-        from utils.expiry_calculator import get_next_weekly_expiry
-        expiry = get_next_weekly_expiry()
-        
-        sentiment = self.oi_engine.get_market_sentiment(expiry, atm_strike)
-        bias = sentiment['bias']
+        sentiment = market_data.get('oi_data', {})
+        bias = sentiment.get('bias', 'NEUTRAL')
+        print(f">>> [Brain] Option Chain Bias: {bias} (PCR: {sentiment.get('pcr', 0)})")
 
         # 5. Smart Selection Matrix
+        
+        # ... (rest of the rules) ...
         
         # RULE: If Volatile, STAY CASH
         if regime == "VOLATILE":
