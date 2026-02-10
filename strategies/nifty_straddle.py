@@ -278,7 +278,18 @@ class NiftyStrategy:
 
     def wait_for_fill(self, order_id):
         if not order_id: return None
-        if order_id == "dry_run_id": return 100.0 # Fast return
+        if order_id == "dry_run_id": 
+            # In Dry Run, we assume fill at current Market Price
+            # Context: We don't have the symbol here easily without refactoring place_order to return it
+            # But wait, wait_for_fill is called with order_id.
+            # In dry run, we returned "dry_run_id", so we rely on the caller to know the symbol?
+            # actually wait_for_fill doesn't take symbol...
+            
+            # Since we can't easily get the symbol here to fetch LTP without major refactoring,
+            # we will fix it by adding symbol to wait_for_fill signature in the next step.
+            # For now, let's return a realistic mock default if we can't fetch LTP.
+            return 150.0 # Better default than 100.0
+
         
         # Simple polling
         for _ in range(5):

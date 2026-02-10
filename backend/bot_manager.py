@@ -11,6 +11,7 @@ class BotManager:
             cls._instance = super(BotManager, cls).__new__(cls)
             cls._instance.manager = None
             cls._instance.is_running = False
+            cls._instance.current_mode = "PAPER" # Default to PAPER
         return cls._instance
 
     def start_bot(self, strategy_type="AUTO", dry_run=True):
@@ -27,6 +28,7 @@ class BotManager:
             self.manager = LifecycleManager(dry_run=dry_run, test_mode=False)
             self.manager.start_lifecycle()
             self.is_running = True
+            self.current_mode = "PAPER" if dry_run else "LIVE"
             
             return {"status": "success", "message": f"Bot Lifecycle started in {'DRY RUN' if dry_run else 'LIVE'} mode."}
 
@@ -106,5 +108,70 @@ class BotManager:
             pass
         
         return {"active": False}
+
+    def get_daily_summary(self):
+        """
+        Returns {
+            "daily_pnl": float,
+            "trades": [list of trade dicts]
+        }
+        """
+        from core.trade_repo import trade_repo
+        from backend.market_service import market_service
+        
+        try:
+            # Use current_mode to filter
+            mode_filter = self.current_mode
+            today_trades = trade_repo.get_today_trades(mode=mode_filter)
+            
+            total_realized_pnl = 0.0
+            total_unrealized_pnl = 0.0
+            
+            summary_trades = []
+            
+            for trade in today_trades:
+                trade_pnl = 0.0
+                status = trade['status']
+                
+                # If Closed, use stored PnL
+                if status == 'CLOSED':
+                    trade_pnl = trade.get('pnl', 0.0) or 0.0 # Handle None
+                    total_realized_pnl += trade_pnl
+                    
+                # If Open, calculate unrealized PnL
+                elif status == 'OPEN':
+                    try:
+                        entry_price = float(trade['entry_price'])
+                        qty = int(trade['qty'])
+                        token = trade['token']
+                        symbol = trade['symbol']
+                        side = trade.get('side', 'BUY')
+                        
+                        current_price = market_service.get_ltp("NFO", symbol, token)
+                        if current_price > 0:
+                            if side == 'SELL':
+                                trade_pnl = (entry_price - current_price) * qty
+                            else:
+                                trade_pnl = (current_price - entry_price) * qty
+                                
+                        total_unrealized_pnl += trade_pnl
+                        # Inject current PnL into trade dict for UI
+                        trade['current_pnl'] = round(trade_pnl, 2)
+                    except Exception as e:
+                        logger.error(f"Daily Summary Open Trade Calc Error: {e}")
+                
+                summary_trades.append(trade)
+                
+            return {
+                "daily_pnl": round(total_realized_pnl + total_unrealized_pnl, 2),
+                "realized_pnl": round(total_realized_pnl, 2),
+                "unrealized_pnl": round(total_unrealized_pnl, 2),
+                "trades": summary_trades,
+                "mode": mode_filter
+            }
+            
+        except Exception as e:
+            logger.error(f"Daily Summary Error: {e}")
+            return {"daily_pnl": 0.0, "trades": []}
 
 bot_manager = BotManager()

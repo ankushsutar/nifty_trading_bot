@@ -22,13 +22,23 @@ class MockSmartConnect:
 
     def ltpData(self, exchange, tradingsymbol, symboltoken):
         print(f">>> [Mock] ltpData called for {tradingsymbol} ({symboltoken})")
-        # Return a hardcoded/random Nifty spot price so the strategy believes the market is open.
-        # Nifty is typically around 23000 these days (as per user request example).
-        mock_ltp = 23000.0 + random.uniform(-50, 50)
+        
+        # Determine if it's an Option or Index based on Symbol Name
+        # Nifty Options usually have "CE" or "PE" at the end, Index is "Nifty 50"
+        
+        is_option = "CE" in tradingsymbol or "PE" in tradingsymbol
+        
+        if is_option:
+            # Realistic Option Price: 100 - 300
+            mock_ltp = 150.0 + random.uniform(-10, 10)
+        else:
+            # Realistic Nifty Index Price
+            mock_ltp = 23000.0 + random.uniform(-50, 50)
+
         return {
             "status": True,
             "data": {
-                "ltp": mock_ltp,
+                "ltp": round(mock_ltp, 2),
                 "exchange": exchange,
                 "tradingsymbol": tradingsymbol,
                 "symboltoken": symboltoken

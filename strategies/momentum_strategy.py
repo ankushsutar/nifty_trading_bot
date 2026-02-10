@@ -2,6 +2,8 @@ import time
 import datetime
 import pandas as pd
 import random
+import json
+import os
 
 from config.settings import Config
 from core.angel_connect import get_angel_session
@@ -28,6 +30,28 @@ class MomentumStrategy:
         self.last_sync_time = 0
         self.last_analysis = {} # Stores EMA9, RSI, etc for logging
         self.sync_state() # Initial Sync with Broker
+
+    def export_state(self):
+        """Exports current strategy state to JSON for UI consumption."""
+        try:
+            data_dir = "data"
+            if not os.path.exists(data_dir):
+                os.makedirs(data_dir)
+            
+            # Serialize datetime objects if any (active_position might have them?)
+            # Usually active_position is dict of primitives.
+            
+            state = {
+                "timestamp": datetime.datetime.now().isoformat(),
+                "analysis": self.last_analysis,
+                "active_position": self.active_position,
+                "dry_run": self.dry_run
+            }
+            
+            with open(os.path.join(data_dir, "market_status.json"), "w") as f:
+                json.dump(state, f, default=str) # Use default=str for safety
+        except Exception as e:
+            logger.error(f"State Export Error: {e}")
 
     def sync_state(self):
         """
@@ -240,7 +264,7 @@ class MomentumStrategy:
                     logger.info(f"⏰ Candle Closed. Running Trend Analysis...")
                     
                     # 3. Analyze Trend (5-Minute)
-                    trend, ema9, ema21, rsi, adx = self.analyze_market_trend()
+                    trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
                     
                     # 3.5 Analyze Higher Timeframe Trend (15-Minute)
                     htf_trend = self.calculate_htf_trend()
@@ -248,8 +272,12 @@ class MomentumStrategy:
                     # Store analysis for logging
                     self.last_analysis = {
                         "ema9": ema9, "ema21": ema21, "rsi": rsi, 
-                        "htf_trend": htf_trend, "adx": adx
+                        "htf_trend": htf_trend, "adx": adx,
+                        "atr": atr, "regime": regime
                     }
+                    self.export_state() # Export to UI
+                    
+                    logger.info(f"[Analysis] {trend} | Regime: {regime} | EMA9: {ema9:.2f} | RSI: {rsi:.2f} | ATR: {atr:.2f}")
                     
                     logger.info(f"[Analysis] 5m Trend: {trend} | 15m Trend: {htf_trend} | EMA9: {ema9:.2f} | RSI: {rsi:.2f}")
                     logger.info(f"[Active] {self.active_position['leg'] if self.active_position else 'None'}")
@@ -341,9 +369,8 @@ class MomentumStrategy:
              # Nifty 50 Index Token: 99926000
             df = self.data_fetcher.fetch_latest_candles("99926000")
             
-        if df is None or df.empty: return "NEUTRAL", 0, 0, 0, 0
-        
-        # Calc EMA
+        # Return 7 values (Signal, EMA9, EMA21, RSI, ADX, ATR, Regime)
+        if df is None or df.empty: return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
         
         # Calc EMA
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
@@ -355,35 +382,40 @@ class MomentumStrategy:
         # Calc ADX (Trend Strength)
         df['ADX'] = self.calculate_adx(df)
         
-        # PRO TRADER FIX: Use Closed Candle (iloc[-2]) to avoid Repainting
-        # iloc[-1] is the currently forming candle, which changes every second.
-        if len(df) < 2: return "NEUTRAL", 0, 0, 0, 0
+        # Calc ATR (Volatility)
+        df['ATR'] = self.calculate_atr(df)
+        
+        # Calc BBW (Expansion/Contraction)
+        df['BBW'] = self.calculate_bbw(df)
+        
+        if len(df) < 22: return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
         
         last_closed = df.iloc[-2] 
-        current_forming = df.iloc[-1]
         
         ema9 = last_closed['EMA9']
         ema21 = last_closed['EMA21']
         rsi = last_closed['RSI']
         adx = last_closed['ADX']
+        atr = last_closed['ATR']
+        bbw = last_closed['BBW']
         
-        # Trend Filter: ADX > 20 (Strong Trend)
-        trend_strength = "WEAK" if adx < 20 else "STRONG"
+        # REGIME CLASSIFICATION
+        regime = "CHOP"
+        if adx > 25:
+            regime = "TRENDING"
+        elif bbw > 0.0015: 
+            regime = "VOLATILE"
+        else:
+            regime = "CHOP"
+
+        # Signal Generation
+        signal = "NEUTRAL"
         
-        # Store ADX in last_analysis if needed, but return value is cleaner
-        # We will update analyze_market_trend to return adx too
-        # But changing signature breaks unpack in execute loop.
-        # Let's just update self.last_analysis inside here? No, better to stick to return.
-        # Let's update self.last_analysis in execute loop. But we need ADX there.
-        # Quick fix: Add ADX to return tuple.
+        if regime == "TRENDING":
+            if ema9 > ema21: signal = "BULLISH"
+            if ema9 < ema21: signal = "BEARISH"
         
-        if adx < 20:
-             # logger.info(f"[Filter] Market Choppy (ADX: {adx:.2f} < 20). Staying Neutral.")
-             return "NEUTRAL", ema9, ema21, rsi, adx
-        
-        if ema9 > ema21: return "BULLISH", ema9, ema21, rsi, adx
-        if ema9 < ema21: return "BEARISH", ema9, ema21, rsi, adx
-        return "NEUTRAL", ema9, ema21, rsi, adx
+        return signal, ema9, ema21, rsi, adx, atr, regime
 
     def calculate_htf_trend(self):
         """
@@ -416,6 +448,38 @@ class MomentumStrategy:
         if ema9 > ema21: return "BULLISH"
         if ema9 < ema21: return "BEARISH"
         return "NEUTRAL"
+
+    def calculate_atr(self, df, period=14):
+        """
+        Calculates Average True Range (ATR).
+        """
+        try:
+            df = df.copy()
+            df['tr1'] = df['high'] - df['low']
+            df['tr2'] = abs(df['high'] - df['close'].shift(1))
+            df['tr3'] = abs(df['low'] - df['close'].shift(1))
+            df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+            atr = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+            return atr.fillna(0)
+        except Exception as e:
+            logger.error(f"ATR Calc Error: {e}")
+            return pd.Series([0]*len(df))
+
+    def calculate_bbw(self, df, period=20, std=2):
+        """
+        Calculates Bollinger Bandwidth.
+        """
+        try:
+            sma = df['close'].rolling(window=period).mean()
+            std_dev = df['close'].rolling(window=period).std()
+            upper = sma + (std * std_dev)
+            lower = sma - (std * std_dev)
+            
+            bbw = (upper - lower) / sma
+            return bbw.fillna(0)
+        except Exception as e:
+            logger.error(f"BBW Calc Error: {e}")
+            return pd.Series([0]*len(df))
 
     def calculate_adx(self, df, period=14):
         """
@@ -471,14 +535,62 @@ class MomentumStrategy:
         return rsi.fillna(50) # Return 50 if NaN
 
     def enter_position(self, expiry, leg):
+        # 1. RISK CALCULATION (Volatility Based)
+        # Fetch Nifty LTP for Strike Logic
+        nifty_ltp = self.get_nifty_ltp()
+        if not nifty_ltp:
+            logger.error("Could not fetch Nifty LTP for Entry.")
+            return
+
+        # Context from Analysis
+        atr = self.last_analysis.get('atr', 20.0) # Default to 20 if missing
+        if atr == 0: atr = 20.0
+        
+        # SL Distance = 2 * ATR
+        sl_points = 2 * atr
+        
+        # Risk Per Trade (Fixed Dollar Amount)
+        RISK_PER_TRADE = 2000.0 # Configurable
+        
+        # Effective Risk per Qty ? 
+        # Option Delta is roughly 0.5 (ATM). So Option moves 0.5 * Index.
+        # Option SL Points = Index SL Points * Delta = (2 * ATR) * 0.5 = ATR
+        # So Risk per Qty = ATR * LotSize? No.
+        # Risk = Qty * Option_SL_Points
+        # Qty = Risk / Option_SL_Points
+        # Option_SL_Points approx ATR (since 2*ATR index ~ 1*ATR option price? Roughly)
+        # Let's be safer: Assume Option moves 1:1 in worst case or just use Index ATR directly for sizing logic?
+        # Better: Option Price SL = Option Entry - Option SL.
+        # We don't know Option Entry yet.
+        # Estimation: Option ATR approx Index ATR * 0.5. 
+        # Let's use Index ATR based Stop.
+        # Stop Loss in Index = 2 * ATR.
+        # Stop Loss in Option Premium ~= 1 * ATR (assuming Delta 0.5).
+        
+        option_sl_points = atr # Approx
+        
+        # Quantity Calculation
+        # Qty = Risk / Loss_Per_Qty
+        if option_sl_points < 5: option_sl_points = 5 # Min Protection
+        
+        calc_qty = int(RISK_PER_TRADE / option_sl_points)
+        
+        # Round to Lot Size (25)
+        lot_size = Config.NIFTY_LOT_SIZE
+        # Lots = calc_qty // lot_size
+        lots = max(1, int(calc_qty / lot_size))
+        
+        qty = lots * lot_size
+        
+        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Risk=₹{RISK_PER_TRADE} | Est. Option SL={option_sl_points:.1f} pts | Qty={qty} ({lots} lots)")
+
         # Sentiment Check
         direction = "LONG" if leg == "CE" else "SHORT"
         if not self.gatekeeper.check_sentiment_risk(direction):
              logger.warning(f"Trade Skipped due to Sentiment Risk.")
              return
 
-        # EXPIRY GUARD: No new trades after 1:30 PM on Expiry Day
-        # Expiry Format: 27JAN2026
+        # EXPIRY GUARD
         try:
              today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
              if expiry == today_str:
@@ -489,28 +601,16 @@ class MomentumStrategy:
         except Exception as e:
              logger.error(f"Expiry Guard Check Error: {e}")
 
-        # VIX Sizing
-        mult = self.gatekeeper.get_vix_adjustment()
-        adjusted_lots = max(1, int(mult))
-        qty = int(Config.NIFTY_LOT_SIZE * adjusted_lots)
-        
-        # Strike
-        ltp = self.get_nifty_ltp()
-        if not ltp: 
-            logger.error("Could not fetch Nifty LTP for Strike Selection.")
-            return
-
-        strike = round(ltp / 50) * 50
-        
+        # Strike Selection
+        strike = round(nifty_ltp / 50) * 50
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
         if not token: 
-            logger.error(f"Could not find token for {strike} {leg}")
+            logger.error(f"Token not found for {strike} {leg}")
             return
         
-        # Determine actual cost
+        # Margin Check (Real Price)
         quote_ltp = 0
         try:
-             # Fetch LTP for the specific option to check margin
              q_resp = self.api.ltpData("NFO", symbol, token)
              if q_resp and q_resp.get('status'):
                  quote_ltp = float(q_resp['data']['ltp'])
@@ -519,31 +619,37 @@ class MomentumStrategy:
             
         estimated_cost = quote_ltp * qty
         if estimated_cost > 0:
-             # Only check margin if NOT in dry run
              if not self.dry_run and not self.gatekeeper.check_trade_margin(estimated_cost):
-                 logger.warning(f"Risk: Trade Skipped due to Insufficient Funds (Cost: {estimated_cost})")
+                 logger.warning(f"Risk: Insufficient Funds (Cost: {estimated_cost})")
                  return
         
+        # PLACE ORDER
         logger.info(f"Trade: Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
         
-        # Capture Context
         trade_context = {
             'entry_ema9': self.last_analysis.get('ema9', 0),
             'entry_ema21': self.last_analysis.get('ema21', 0),
             'entry_rsi': self.last_analysis.get('rsi', 0),
             'entry_adx': self.last_analysis.get('adx', 0),
+            'entry_atr': atr,
+            'regime': self.last_analysis.get('regime', 'UNKNOWN'),
             'htf_trend': self.last_analysis.get('htf_trend', "N/A")
         }
 
+        # Calculate OPTION Stop Loss Price
+        # Option SL = Entry - ATR (Dynamic)
+        actual_sl_points = option_sl_points
+        sl_price = max(0.1, quote_ltp - actual_sl_points)
+        
         if self.dry_run:
-            sl_offset = min(20, quote_ltp * 0.2)
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL
+                'entry_price': quote_ltp, 
+                'sl_price': sl_price, 
                 'context': trade_context
             }
-            # Save Dry Run Trade to DB
-            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, quote_ltp - sl_offset)
+            mode = "PAPER" if self.dry_run else "LIVE"
+            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode)
             if tid: self.active_position['id'] = tid
             return
 
@@ -556,15 +662,16 @@ class MomentumStrategy:
              oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Order Placed: {oid}")
             
-             sl_offset = min(20, quote_ltp * 0.2)
              self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 'sl_price': quote_ltp - sl_offset, # Smart SL 
+                'entry_price': quote_ltp, 
+                'sl_price': sl_price,
+                'atr': atr,
                 'context': trade_context
             }
              
-             # Save to DB
-             tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, quote_ltp - sl_offset)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode)
              if tid: self.active_position['id'] = tid
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
@@ -630,10 +737,84 @@ class MomentumStrategy:
              logger.info(f"Success: Exit Order Placed: {oid}")
              
              # Close in DB
-             trade_repo.close_trade(symbol=symbol)
+             trade_repo.close_trade(
+                 symbol=symbol, 
+                 exit_price=exit_price, 
+                 pnl=round(pnl, 2), 
+                 exit_reason=reason
+             )
              self.active_position = None
         except Exception as e:
              logger.error(f"Exit Order Failure: {e}")
+
+    def check_trailing_stop(self):
+        """
+        ATR-Based Trailing Stop.
+        """
+        if not self.active_position: return False
+        
+        token = self.active_position['token']
+        symbol = self.active_position['symbol']
+        entry_price = self.active_position.get('entry_price', 0.0)
+        current_sl = self.active_position.get('sl_price', 0.0)
+        atr_at_entry = self.active_position.get('atr', 20.0)
+        
+        if entry_price == 0: return False 
+        
+        ltp = 0.0
+        try:
+             q_resp = self.api.ltpData("NFO", symbol, token)
+             if q_resp and q_resp.get('status'):
+                 ltp = float(q_resp['data']['ltp'])
+        except Exception as e:
+            logger.warning(f"Trailing Stop LTP fetch error: {e}")
+            return False
+        if ltp == 0: return False
+        
+        # 1. Check if SL Hit
+        if current_sl > 0 and ltp <= current_sl:
+            logger.info(f"🛑 Trailing Stop Hit! Price: {ltp} <= SL: {current_sl}")
+            self.close_position("TRAILING_STOP")
+            return True
+            
+        # 2. Dynamic Trailing (ATR Step)
+        # Rule: If Price > Entry + (N * ATR), Move SL to Price - ATR
+        # Actually simpler: Trail at (High - 1.5 ATR) or Step?
+        # Let's use Step Ladder but sized by ATR
+        # Step Size = 0.5 * ATR
+        
+        profit_points = ltp - entry_price
+        
+        # Define Trailing Logic
+        # Option ATR approx atr_at_entry (Index ATR) * 0.5 ? Or just use entry ATR as Option ATR proxy?
+        # Let's treat atr_at_entry as "Option ATR" (calculated in enter_position effectively)
+        # Wait, in enter_position we used Index ATR as 'atr' context but option_sl_points was roughly Index ATR.
+        
+        # Let's assume Option ATR ~= Index ATR / 2 (Delta 0.5)
+        opt_atr = atr_at_entry * 0.5
+        if opt_atr < 5: opt_atr = 5
+        
+        # If Profit > 1 ATR, Move SL to Breakeven
+        if profit_points > (1.0 * opt_atr) and current_sl < entry_price:
+            new_sl = entry_price + 1.0 # Breakeven + cost
+            self.update_sl(new_sl, ltp)
+            return False
+
+        # If Profit > 2 ATR, Trail trend
+        if profit_points > (2.0 * opt_atr):
+            # Target SL = LTP - 1 ATR (Tighten)
+            target_sl = ltp - (1.0 * opt_atr)
+            if target_sl > current_sl:
+                self.update_sl(target_sl, ltp)
+                
+        return False
+
+    def update_sl(self, new_sl, ltp):
+        new_sl = round(new_sl, 1)
+        self.active_position['sl_price'] = new_sl
+        logger.info(f"📈 SL Moved Up to {new_sl} (LTP: {ltp})")
+        if 'id' in self.active_position:
+            trade_repo.update_sl(self.active_position['id'], new_sl)
 
     def get_nifty_ltp(self):
         try:

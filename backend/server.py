@@ -107,13 +107,30 @@ def get_status():
 def get_trade():
     return bot_manager.get_active_trade()
 
+@app.get("/api/daily-summary")
+def get_daily_summary():
+    return bot_manager.get_daily_summary()
+
 @app.get("/api/market-data")
 def get_market_data():
     data = market_service.get_market_data()
-    # Overlay P&L from Active Trade
-    trade = bot_manager.get_active_trade()
-    if trade.get("active") and trade.get("details"):
-        data["pnl"] = trade["details"].get("pnl", 0.0)
+    # Overlay Daily P&L (Total)
+    daily_summary = bot_manager.get_daily_summary()
+    data["pnl"] = daily_summary.get("daily_pnl", 0.0)
+    
+    # Read Strategy State (IPC)
+    try:
+        import json
+        import os
+        if os.path.exists("data/market_status.json"):
+            with open("data/market_status.json", "r") as f:
+                 state = json.load(f)
+                 data["analysis"] = state.get("analysis", {})
+                 # We could also use active_position from here if we trust it more than DB? 
+                 # For now just expose analysis.
+    except Exception as e:
+        print(f"Error reading market status: {e}")
+
     return data
 
 from backend.news_service import news_service
