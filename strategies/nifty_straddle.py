@@ -22,11 +22,11 @@ class NiftyStrategy:
         Fetches NIFTY 50 Spot Price and rounds to nearest 50.
         """
         try:
-            # SmartAPI Nifty 50 Token: 99926000
-            response = self.api.ltpData("NSE", "Nifty 50", "99926000")
+            from backend.market_service import market_service
+            data = market_service.get_market_data()
+            ltp = data.get('nifty', 0.0)
             
-            if response and response.get('status'):
-                ltp = response['data']['ltp']
+            if ltp > 0:
                 print(f">>> [Market] Nifty Spot Price: {ltp}")
                 return int(round(ltp / 50) * 50)
             else:
@@ -34,6 +34,7 @@ class NiftyStrategy:
         except Exception as e:
             print(f">>> [Error] get_atm_strike failed: {e}")
             return None
+
 
     def execute(self, expiry, action="SELL"): # Default to SELL for Straddle (Short)
         """

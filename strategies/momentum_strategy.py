@@ -702,19 +702,48 @@ class MomentumStrategy:
              oid = self.api.placeOrder(orderparams)
              logger.info(f"Success: Order Placed: {oid}")
             
+             # 5. Wait for Fill (New Resilience Logic)
+             fill_price = self.wait_for_fill(oid)
+             if not fill_price:
+                  fill_price = quote_ltp # Fallback to estimate if poll fails
+                  logger.warning(f"Momentum: Fill price not captured, using estimate: ₹{fill_price}")
+
+             # Recalculate SL based on ACTUAL fill
+             actual_sl = max(0.1, fill_price - actual_sl_points)
+
              self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 
-                'sl_price': sl_price,
+                'entry_price': fill_price, 
+                'sl_price': actual_sl,
                 'atr': atr,
                 'context': trade_context
             }
              
              mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode)
+             tid = trade_repo.save_trade(symbol, token, leg, qty, fill_price, actual_sl, mode=mode)
              if tid: self.active_position['id'] = tid
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
+
+    def wait_for_fill(self, order_id):
+        """Polls for order completion to get average fill price."""
+        if not order_id: return None
+        if self.dry_run: return 100.0
+        
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return float(o['averageprice'])
+                            elif o['status'] in ['rejected', 'cancelled']:
+                                return None
+            except: pass
+        return None
+
 
     def close_position(self, reason):
         if not self.active_position: return
@@ -860,10 +889,12 @@ class MomentumStrategy:
 
     def get_nifty_ltp(self):
         try:
-            resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
-            if resp: return resp['data']['ltp']
-        except: pass
-        return None
+             from backend.market_service import market_service
+             data = market_service.get_market_data()
+             return data.get('nifty', 0.0)
+        except Exception as e:
+            logger.error(f"LTP Fetch Error: {e}")
+            return 0.0
 
     def get_mock_df(self):
          # Toggle trend based on time? Or just random

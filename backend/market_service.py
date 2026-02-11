@@ -39,7 +39,10 @@ class MarketService:
             if is_master:
                 logger.info("MarketService: [MASTER] Starting Intelligence Loop... 🛰️")
                 threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
+                logger.info("MarketService: [MASTER] Starting Session Heartbeat... 💓")
+                threading.Thread(target=cls._instance._heartbeat_loop, daemon=True).start()
             else:
+
                 logger.info("MarketService: [CHILD] Passive Mode (Consuming Shared Data) 🛰️")
 
             
@@ -73,7 +76,7 @@ class MarketService:
             is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
             if not is_master:
                 try:
-                    state_file = "data/market_status.json"
+                    state_file = "data/market_analysis.json"
                     if os.path.exists(state_file):
                         # Only read if file is fresh (< 3 mins)
                         if time.time() - os.path.getmtime(state_file) < 185:
@@ -82,6 +85,7 @@ class MarketService:
                                  self.analysis_data = shared_state.get('analysis', {})
                                  self.oi_data = shared_state.get('oi_data', {})
                                  logger.info("MarketService: Consumed Shared Intelligence 📡")
+
                 except Exception as e:
 
                     # logger.error(f"Intelligence Sharing Error: {e}")
@@ -134,24 +138,50 @@ class MarketService:
 
     def get_ltp(self, exchange, symbol, token):
         """
-        Generic method to fetch LTP for any token.
+        Generic method to fetch LTP for any token with strict rate limiting.
         """
         self._ensure_connection()
         if not self.api: return 0.0
         
-        # Simple Rate Limiter / Cache could go here
-        # For now, just a try-except wrapper
-        
-        try:
-            time.sleep(0.34) # Ensure max 3 req/sec (~333ms gap)
-            resp = self.api.ltpData(exchange, symbol, token)
-            if resp and resp.get('status'):
-                return float(resp['data']['ltp'])
-        except Exception as e:
-            # logger.error(f"LTP Fetch Error ({symbol}): {e}")
-            pass # Suppress log spam
+        # 1. Use shared lock to prevent concurrent API calls within this process
+        with self._lock:
+            try:
+                # 2. Strict Rate Limiting (Angel One: ~3 req/sec)
+                # We enforce a 350ms gap between any two direct API calls.
+                now = time.time()
+                elapsed = now - getattr(self, '_last_api_call_time', 0)
+                if elapsed < 0.35:
+                    time.sleep(0.35 - elapsed)
+                
+                self._last_api_call_time = time.time()
+                
+                resp = self.api.ltpData(exchange, symbol, token)
+                if resp and resp.get('status'):
+                    return float(resp['data']['ltp'])
+            except Exception as e:
+                # logger.error(f"LTP Fetch Error ({symbol}): {e}")
+                pass 
             
         return 0.0
+
+    def _heartbeat_loop(self):
+        """Background loop to keep the Angel One session alive."""
+        while True:
+            try:
+                time.sleep(600) # Every 10 minutes
+                if self.api:
+                    # Small harmless API call to prevent idle timeout
+                    profile = self.api.getProfile()
+                    if profile and profile.get('status'):
+                        logger.debug("MarketService: Session Heartbeat Successful 💓")
+                    else:
+                        logger.warning("MarketService: Session Heartbeat Failed. Reconnecting...")
+                        self.api = None
+                        self._ensure_connection()
+            except Exception as e:
+                logger.error(f"MarketService Heartbeat Error: {e}")
+                time.sleep(60)
+
 
     def _analysis_loop(self):
         """Background loop to refresh Regime and OI analysis every 3 minutes."""
@@ -182,8 +212,9 @@ class MarketService:
                             "oi_data": self.oi_data
                         }
                         if not os.path.exists("data"): os.makedirs("data")
-                        with open("data/market_status.json", "w") as f:
+                        with open("data/market_analysis.json", "w") as f:
                             json.dump(state, f, default=str)
+
                         
                     logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
                 

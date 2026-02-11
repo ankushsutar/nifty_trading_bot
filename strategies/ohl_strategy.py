@@ -3,6 +3,9 @@ import time
 from config.settings import Config
 from core.safety_checks import SafetyGatekeeper
 from core.trade_repo import trade_repo
+from core.data_fetcher import DataFetcher
+from utils.logger import logger
+
 
 class OHLStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -10,6 +13,8 @@ class OHLStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        self.data_fetcher = DataFetcher(self.api)
+
 
     def execute(self, expiry, action="BUY"):
         """
@@ -141,32 +146,23 @@ class OHLStrategy:
              print(f">>> [Error] Entry Failed: {e}")
 
     def get_first_minute_candle(self):
-        # Fetch 09:15 candle logic
-        # For simplicity, fetching last 5 candles and picking 09:15 if available, 
-        # or most recent if running live at 09:16.
+        """Fetches the 09:15 one-minute candle using DataFetcher."""
         try:
-             today = datetime.date.today().strftime("%Y-%m-%d")
-             from_time = f"{today} 09:00"
-             to_time = f"{today} 09:20"
+             # Use the centralized DataFetcher which already handles AB1004 alignment
+             df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
              
-             historicParam={
-                "exchange": "NSE", "symboltoken": "99926000", "interval": "ONE_MINUTE",
-                "fromdate": from_time, "todate": to_time
-            }
-             # Mock support
-             is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
-             if is_mock_api: return self.get_mock_candle()
+             if df is not None and not df.empty:
+                  # Look for the 09:15 candle in the last 10 minutes of data
+                  for index, row in df.iterrows():
+                      if "09:15" in str(row['timestamp']):
+                          return {'open': row['open'], 'high': row['high'], 'low': row['low'], 'close': row['close']}
+        except Exception as e:
+            logger.error(f"OHL: Candle Fetch Error: {e}")
+            
+        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+        if is_mock_api: return self.get_mock_candle()
+        return None
 
-             resp = self.api.getCandleData(historicParam)
-             if resp and resp.get('data'):
-                 # Look for 09:15 candle
-                 for c in resp['data']:
-                     # c[0] is timestamp string "2024-01-01T09:15:00..."
-                     if "09:15" in c[0]:
-                         return {'open': c[1], 'high': c[2], 'low': c[3], 'close': c[4]}
-                 # If not found (delayed), return last?
-                 return None
-        except: pass
         
         is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
         if is_mock_api: return self.get_mock_candle()
@@ -177,13 +173,44 @@ class OHLStrategy:
          return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
 
     def wait_for_fill(self, order_id):
-        time.sleep(1)
-        return 100.0 if self.dry_run else None
+        """
+        Polls the order book until the order is 'complete' or times out.
+        Returns the average fill price or None.
+        """
+        if not order_id: return None
+        if self.dry_run:
+            time.sleep(1)
+            return 100.0 # Mock fill
+
+        logger.info(f"OHL: Waiting for order {order_id} to fill...")
+        
+        # Poll for 10 seconds
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            status = o['status']
+                            if status == 'complete':
+                                fill_price = float(o['averageprice'])
+                                logger.info(f"OHL: Order Filled at ₹{fill_price}")
+                                return fill_price
+                            elif status in ['rejected', 'cancelled']:
+                                logger.error(f"OHL: Order {status}! Reason: {o.get('text')}")
+                                return None
+            except Exception as e:
+                logger.error(f"OHL Fill Poll Error: {e}")
+        
+        logger.warning(f"OHL: Order {order_id} fill timeout.")
+        return None
 
     def get_nifty_ltp(self):
         try:
-            resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
-            if resp: return resp['data']['ltp']
+            from backend.market_service import market_service
+            data = market_service.get_market_data()
+            return data.get('nifty', 0.0)
         except: pass
         
         is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
@@ -193,38 +220,79 @@ class OHLStrategy:
     def place_sl_order(self, token, symbol, price, qty):
         # SL for Buy is SELL STOP
         try:
-             # Trigger slightly higher than limit price
-             trig = round(price + 0.5, 1)
-             orderparams = {
+            # Trigger slightly higher than limit price for SELL
+            trig = round(price + 0.5, 1)
+            orderparams = {
                 "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
             }
-             oid = self.api.placeOrder(orderparams)
-             print(f">>> [Risk] SL Placed: {oid}")
-        except: pass
+            oid = self.api.placeOrder(orderparams)
+            logger.info(f"OHL: SL Order Placed: {oid} at {price}")
+            return oid
+        except Exception as e:
+            logger.error(f"OHL: SL Order Failed: {e}")
+            return None
 
     def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None):
-         print(f">>> [Monitor] Target: {target} | SL: {sl}")
+         logger.info(f"OHL: Monitoring Trade. Target: {target} | SL: {sl}")
+         
          while True:
             try:
                 time.sleep(5)
-                # 1. Time Check
+                
+                # 1. Fetch Current Price
+                from backend.market_service import market_service
+                ltp = market_service.get_ltp("NFO", symbol, token)
+                if ltp == 0: continue
+                
+                # 2. Check Target Hit (Exit at Market)
+                if ltp >= target:
+                     logger.info(f"OHL: 🎯 Target Hit ({ltp} >= {target}). Closing Position.")
+                     self.exit_at_market(token, symbol, qty, "TARGET", trade_id)
+                     break
+
+                # 3. Check SL Hit (The Broker SL should already trigger, but we monitor for state sync)
+                if ltp <= sl:
+                     logger.info(f"OHL: 🛑 Stop Loss Hit ({ltp} <= {sl}).")
+                     # We assume the broker SL order closed this. 
+                     # We just need to ensure the DB is updated.
+                     if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
+                     break
+
+                # 4. Time Check (15:15)
                 if datetime.datetime.now().time() >= datetime.time(15, 15):
-                     print(">>> [Exit] Time 15:15. Closing.")
-                     self.place_entry(None, 0, "CE" if "CE" in symbol else "PE", qty, 0, "EXIT") # Re-use entry? No.
-                     # Exit Market
-                     orderparams = {
-                        "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                        "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
-                        "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-                    }
-                     self.api.placeOrder(orderparams)
-                     if trade_id: trade_repo.close_trade(trade_id=trade_id)
+                     logger.info("OHL: ⏰ Time 15:15. Closing.")
+                     self.exit_at_market(token, symbol, qty, "TIME", trade_id)
                      break
                 
             except KeyboardInterrupt:
-                 print("Stopped.")
-                 break
+                  logger.info("OHL: Monitor Stopped by User.")
+                  break
             except Exception as e:
-                 pass
+                  logger.error(f"OHL Monitor Error: {e}")
+                  time.sleep(10)
+
+    def exit_at_market(self, token, symbol, qty, reason, trade_id=None):
+        """Exits position at market price."""
+        try:
+            if self.dry_run:
+                logger.info(f"OHL: [Dry Run] Exit {symbol} ({reason})")
+                if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+                return
+
+            orderparams = {
+                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+            }
+            oid = self.api.placeOrder(orderparams)
+            logger.info(f"OHL: Market Exit Order: {oid} ({reason})")
+            
+            if trade_id:
+                 # Fetch final fill for PnL
+                 time.sleep(1)
+                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+        except Exception as e:
+            logger.error(f"OHL Exit Failed: {e}")
+
