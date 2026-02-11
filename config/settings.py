@@ -17,3 +17,9 @@ class Config:
     
     # Simulation Settings
     SIMULATION_CAPITAL = 500000.0 # 5 Lakhs default for Paper Trading
+
+    # MongoDB Settings for Historical Trade Persistence
+    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    MONGO_DB = os.getenv("MONGO_DB", "nifty_bot")
+    MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "trades")
+

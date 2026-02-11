@@ -120,10 +120,28 @@ class TradeRepository:
                     """, (exit_price, pnl, exit_reason, symbol))
                 
                 conn.commit()
+                
+                # Fetch the full trade data to push to MongoDB
+                if trade_id:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT * FROM trades WHERE id = ?", (trade_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        try:
+                            from core.mongo_repo import mongo_trade_repo
+                            trade_data = dict(row)
+                            trade_data['closed_at'] = datetime.datetime.now()
+                            mongo_trade_repo.save_historical_trade(trade_data)
+                        except Exception as mongo_err:
+                            logger.error(f"MongoDB Historical Save Error: {mongo_err}")
+
                 conn.close()
+
                 logger.info(f"TradeRepository: Trade Closed (PnL: {pnl}).")
             except Exception as e:
                 logger.error(f"TradeRepository Close Error: {e}")
+
 
     def get_active_trade(self, mode=None):
         """Returns the most recent OPEN trade. Optionally filter by mode."""
