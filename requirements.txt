@@ -8,3 +8,4 @@ uvicorn
 websockets
 feedparser
 vadersentiment
+pymongo
