@@ -384,33 +384,60 @@ class MomentumStrategy:
                 time.sleep(1)
 
     def analyze_market_trend(self):
-        # Fetch 5-min candles via DataFetcher
+        """
+        Calculates trend using MarketService (which shares intelligence across processes)
+        or falls back to manual fetch if MarketService is stale.
+        """
+        from backend.market_service import market_service
+        
+        # 0. Try using the shared intelligence from MarketService
+        market_data = market_service.get_market_data()
+        analysis = market_data.get('analysis', {})
+        
+        # If MarketService has fresh analysis, use it!
+        if analysis and analysis.get('regime') != 'UNKNOWN':
+            # logger.info(">>> [Strategy] Using Shared Market Analysis 📡")
+            return (
+                analysis.get('trend', 'NEUTRAL'),
+                analysis.get('ema9', 0),
+                analysis.get('ema21', 0),
+                analysis.get('rsi', 0),
+                analysis.get('adx', 0),
+                analysis.get('atr', 20.0),
+                analysis.get('regime', 'UNKNOWN')
+            )
+
+        # 1. Fallback: Fetch 5-min candles via DataFetcher if MarketService is unavailable/stale
         is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
         
         if is_mock_api:
             df = self.get_mock_df()
         else:
-             # Nifty 50 Index Token: 99926000
+            # Nifty 50 Index Token: 99926000
+            # Note: Child processes (the bot) will hit this if shared state isn't ready.
             df = self.data_fetcher.fetch_latest_candles("99926000")
             
         if df is None or df.empty: 
             return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
         
-        # 1. Regime Classification
+        # 2. Regime Classification
         regime_meta = self.regime_classifier.classify(df)
         
-        # 2. Periodic OI Sentiment Scan (Every 5 minutes)
+        # 3. Periodic OI Sentiment Scan (Every 5 minutes)
         now = time.time()
         if now - self.last_oi_scan > 300: # 5 Minutes
             try:
-                # Get Strike
-                ltp = df.iloc[-1]['close']
-                strike = int(round(ltp / 50) * 50)
-                
-                expiry = get_next_weekly_expiry()
-                
-                self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike)
-                self.last_oi_scan = now
+                # Use shared OI data if available
+                if market_data.get('oi_data'):
+                    self.oi_data = market_data['oi_data']
+                    self.last_oi_scan = now
+                else:
+                    # Manual fetch
+                    ltp = df.iloc[-1]['close']
+                    strike = int(round(ltp / 50) * 50)
+                    expiry = get_next_weekly_expiry()
+                    self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike)
+                    self.last_oi_scan = now
             except Exception as e:
                 logger.error(f"Periodic OI Scan Error: {e}")
 
@@ -418,7 +445,6 @@ class MomentumStrategy:
         signal = "NEUTRAL"
         if regime_meta['regime'] == "TRENDING":
             signal = regime_meta['trend']
-            if signal == "BULLISH": signal = "BULLISH" # redundant but for clarity
         
         return (
             signal, 
@@ -429,6 +455,7 @@ class MomentumStrategy:
             regime_meta['atr'], 
             regime_meta['regime']
         )
+
 
     def calculate_htf_trend(self):
         """

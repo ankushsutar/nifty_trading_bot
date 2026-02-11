@@ -9,6 +9,11 @@ class DataFetcher:
         self.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
         self.cache_duration = 55 # seconds (Just under 1 minute)
 
+    def _align_to_interval(self, dt, interval_mins=5):
+        """Rounds down a datetime to the nearest interval boundary."""
+        remainder = dt.minute % interval_mins
+        return dt.replace(minute=dt.minute - remainder, second=0, microsecond=0)
+
     def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange="NSE"):
         """
         Fetches historic candle data and returns a DataFrame.
@@ -24,9 +29,32 @@ class DataFetcher:
 
         max_retries = 3
         now = datetime.datetime.now()
-        # Look back 'days' to ensure we have data, but usually strictly for today/intraday
-        from_date = (now - datetime.timedelta(days=days)).strftime("%Y-%m-%d 09:15")
-        to_date = now.strftime("%Y-%m-%d %H:%M")
+        
+        # --- TIMESTAMP ALIGNMENT FIX (AB1004) ---
+        # Angel One requires todate to be aligned with the interval boundary.
+        # e.g. For 5-min candles, it MUST be 13:00, 13:05, etc.
+        interval_map = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "ONE_MINUTE": 1}
+        mins = interval_map.get(interval, 5)
+        
+        aligned_to = self._align_to_interval(now, mins)
+        
+        # --- ROBUSTNESS FIX ---
+        # Requesting the 'current' candle being formed often triggers AB1004.
+        # We always request up to the LAST COMPLETED candle to be safe.
+        # If we are at 13:19, aligned_to is 13:15. This is perfect.
+        # If we are at 13:15:05, aligned_to is 13:15, but it might be too fresh.
+        # So we always subtract 1 interval to be 100% safe.
+        aligned_to = aligned_to - datetime.timedelta(minutes=mins)
+            
+        aligned_from = self._align_to_interval(now - datetime.timedelta(days=days), mins)
+
+
+        # Optimization: If it's after 11:30 AM, today's data (09:15) is enough for EMA21
+        if days == 1 and now.time() > datetime.time(11, 30):
+            aligned_from = aligned_to.replace(hour=9, minute=15)
+            
+        from_date = aligned_from.strftime("%Y-%m-%d %H:%M")
+        to_date = aligned_to.strftime("%Y-%m-%d %H:%M")
 
         historicParam = {
             "exchange": exchange,
@@ -36,10 +64,12 @@ class DataFetcher:
             "todate": to_date
         }
 
+
         for attempt in range(max_retries):
             try:
-                # Rate limit protection
-                time.sleep(0.5) 
+                # Rate limit protection + slight jitter
+                import random
+                time.sleep(0.5 + random.uniform(0.1, 0.3)) 
                 
                 response = self.api.getCandleData(historicParam)
                 
@@ -57,11 +87,17 @@ class DataFetcher:
                     return df
                 else:
                     logger.warning(f"Fetch Candles Failed (Attempt {attempt+1}): {response}")
+                    logger.warning(f"Params: {historicParam}")
             
             except Exception as e:
                 logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
+                logger.error(f"Params: {historicParam}")
                 
             if attempt < max_retries - 1:
-                time.sleep(1)
+                # Exponential-ish backoff with jitter
+                sleep_time = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
+                logger.info(f"Retrying in {sleep_time:.2f}s...")
+                time.sleep(sleep_time)
 
         return None
+

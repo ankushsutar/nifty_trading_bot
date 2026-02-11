@@ -1,5 +1,7 @@
 import time
 import threading
+import datetime
+
 from core.angel_connect import get_angel_session
 from core.regime_classifier import RegimeClassifier
 from core.oi_analyzer import OIAnalyzer
@@ -32,10 +34,17 @@ class MarketService:
             cls._instance.oi_data = {}
             cls._instance.last_analysis_time = 0
             
-            # Start Background Analysis Thread
-            threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
+            # Start Background Analysis Thread only in MASTER process (Designated Backend)
+            is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+            if is_master:
+                logger.info("MarketService: [MASTER] Starting Intelligence Loop... 🛰️")
+                threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
+            else:
+                logger.info("MarketService: [CHILD] Passive Mode (Consuming Shared Data) 🛰️")
+
             
         return cls._instance
+
 
     def _ensure_connection(self):
         if self.api is None:
@@ -60,20 +69,42 @@ class MarketService:
             if time.time() - self.last_fetch_time < self.cache_expiry and self.cached_data:
                 return self.cached_data
 
+            # 1. Child Mode: Try loading shared intelligence from master first
+            is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+            if not is_master:
+                try:
+                    state_file = "data/market_status.json"
+                    if os.path.exists(state_file):
+                        # Only read if file is fresh (< 3 mins)
+                        if time.time() - os.path.getmtime(state_file) < 185:
+                             with open(state_file, "r") as f:
+                                 shared_state = json.load(f)
+                                 self.analysis_data = shared_state.get('analysis', {})
+                                 self.oi_data = shared_state.get('oi_data', {})
+                                 logger.info("MarketService: Consumed Shared Intelligence 📡")
+                except Exception as e:
+
+                    # logger.error(f"Intelligence Sharing Error: {e}")
+                    pass
+
             self._ensure_connection()
         
         if not self.api:
             # Fallback for UI if connection fails (or dry run without creds)
-            return {"nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection"}
+            return {
+                "nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection",
+                "analysis": self.analysis_data,
+                "oi_data": self.oi_data
+            }
 
         try:
-            # 1. Fetch Nifty 50 Spot (Token: 99926000, Exchange: NSE)
+            # 2. Fetch LTPs (All processes still do this for real-time accuracy, 
+            # but only Master does the heavy technical analysis)
             nifty_ltp = 0.0
             resp_nifty = self.api.ltpData("NSE", "Nifty 50", "99926000")
             if resp_nifty and resp_nifty.get('status'):
                 nifty_ltp = float(resp_nifty['data']['ltp'])
 
-            # 2. Fetch India VIX (Token: 99926017, Exchange: NSE)
             vix_ltp = 0.0
             try:
                 resp_vix = self.api.ltpData("NSE", "INDIA VIX", "99926017")
@@ -95,6 +126,7 @@ class MarketService:
             self.last_fetch_time = time.time()
             
             return data
+
 
         except Exception as e:
             logger.error(f"Market Data Fetch Error: {e}")
@@ -143,9 +175,20 @@ class MarketService:
                         
                         self.oi_data = self.oi_engine.get_market_sentiment(expiry, strike)
                         
+                        # 3. Save Shared Intelligence for Child Processes
+                        state = {
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "analysis": self.analysis_data,
+                            "oi_data": self.oi_data
+                        }
+                        if not os.path.exists("data"): os.makedirs("data")
+                        with open("data/market_status.json", "w") as f:
+                            json.dump(state, f, default=str)
+                        
                     logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
                 
                 time.sleep(180) # Run every 3 minutes
+
             except Exception as e:
                 logger.error(f"MarketService Analysis Loop Error: {e}")
                 time.sleep(60) # Retry after 1 minute

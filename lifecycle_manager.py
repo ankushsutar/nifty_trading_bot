@@ -52,16 +52,22 @@ class LifecycleManager:
 
         self.log(f"Executing: {' '.join(cmd)}")
         
+        # Isolate environment to prevent role leakage from backend
+        env = os.environ.copy()
+        env["PROCESS_TYPE"] = "BOT"
+        
         # Capture Output for UI Streaming
         # bufsize=1 (Line Buffered), text=True (String output)
         process = subprocess.Popen(
             cmd, 
             cwd=os.getcwd(),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, # Merge stderr into stdout
             text=True,
             bufsize=1
         )
+
         
         # Start a thread to consume output so we don't block
         t = threading.Thread(target=self._monitor_output, args=(process,))

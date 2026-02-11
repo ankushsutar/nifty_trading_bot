@@ -32,11 +32,13 @@ class OIAnalyzer:
 
             # Fetch Intraday Data for Delta OI
             # Rate limit protection: angel usually allows 3 req/sec
-            time.sleep(0.34) 
+            # Increasing buffer to 0.6s for safety
+            time.sleep(0.6) 
             ce_oi, ce_delta = self._fetch_oi_and_delta(ce_token)
             
-            time.sleep(0.34)
+            time.sleep(0.6)
             pe_oi, pe_delta = self._fetch_oi_and_delta(pe_token)
+
             
             total_ce_oi += ce_oi
             total_pe_oi += pe_oi
