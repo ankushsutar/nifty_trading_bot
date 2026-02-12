@@ -24,6 +24,21 @@ class ORBStrategy:
         """
         print(f">>> [Strategy] Initializing ORB Strategy for {expiry}")
         
+        # Check for Resumption
+        mode = "PAPER" if self.dry_run else "LIVE"
+        active_trade = trade_repo.get_active_trade(mode=mode, strategy="ORB")
+        
+        if active_trade:
+            print(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
+            print(">>> [Resumption] Resuming Monitoring...")
+            self.monitor_position(
+                active_trade['symbol'], 
+                active_trade['token'], 
+                active_trade['entry_price'], 
+                active_trade['id']
+            )
+            return
+
         # 1. Establish Range (Simulated or Real)
         self.establish_opening_range()
         
@@ -118,7 +133,8 @@ class ORBStrategy:
              # Assume filled at LTP
              fill_price = current_ltp
              sl_price = round(fill_price * 0.9, 1) # 10% SL assumption
-             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, sl_price)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, sl_price, mode=mode, strategy="ORB")
              self.monitor_position(symbol, token, fill_price, tid)
              return
 

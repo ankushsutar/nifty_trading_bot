@@ -1,11 +1,8 @@
-
-import sqlite3
 import threading
 import datetime
-import os
+from pymongo import MongoClient, ASCENDING, DESCENDING
+from config.settings import Config
 from utils.logger import logger
-
-DB_PATH = "trades.db"
 
 class TradeRepository:
     _instance = None
@@ -17,191 +14,154 @@ class TradeRepository:
             cls._instance._init_db()
         return cls._instance
 
-    def _get_connection(self):
-        # sqlite3 connections are generally not thread-safe if shared across threads without care.
-        # Creating a new connection per request is safer for low-throughput apps like this.
-        return sqlite3.connect(DB_PATH, check_same_thread=False)
-
     def _init_db(self):
-        with self._lock:
-            try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
+        try:
+            self.client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000)
+            self.db = self.client[Config.MONGO_DB]
+            self.collection = self.db[Config.MONGO_COLLECTION]
+            self.counters = self.db["counters"]
+            
+            # Create Indexes
+            self.collection.create_index([("id", ASCENDING)], unique=True)
+            self.collection.create_index([("symbol", ASCENDING)])
+            self.collection.create_index([("status", ASCENDING)])
+            self.collection.create_index([("created_at", DESCENDING)])
+            
+            # Initialize Counter if not exists
+            if not self.counters.find_one({"_id": "trade_id"}):
+                self.counters.insert_one({"_id": "trade_id", "seq": 0})
                 
-                # Check if trades table exists
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS trades (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        symbol TEXT NOT NULL,
-                        token TEXT NOT NULL,
-                        leg TEXT NOT NULL,
-                        side TEXT DEFAULT 'BUY',
-                        qty INTEGER NOT NULL,
-                        entry_price REAL NOT NULL,
-                        sl_price REAL,
-                        exit_price REAL,
-                        pnl REAL,
-                        exit_reason TEXT,
-                        mode TEXT DEFAULT 'PAPER',
-                        status TEXT DEFAULT 'OPEN',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """)
-                
-                # Schema Migration for existing tables
-                try:
-                    cursor.execute("ALTER TABLE trades ADD COLUMN exit_price REAL")
-                except: pass
-                try:
-                    cursor.execute("ALTER TABLE trades ADD COLUMN pnl REAL")
-                except: pass
-                try:
-                    cursor.execute("ALTER TABLE trades ADD COLUMN exit_reason TEXT")
-                except: pass
-                try:
-                    cursor.execute("ALTER TABLE trades ADD COLUMN mode TEXT DEFAULT 'PAPER'")
-                except: pass
-                
-                conn.commit()
-                conn.close()
-                logger.info("TradeRepository: Database initialized.")
-            except Exception as e:
-                logger.error(f"TradeRepository Init Error: {e}")
+            logger.info("TradeRepository: Connected to MongoDB (Direct Mode).")
+        except Exception as e:
+            logger.error(f"TradeRepository Init Error: {e}")
+            self.client = None
 
-    def save_trade(self, symbol, token, leg, qty, entry_price, sl_price=0.0, side="BUY", mode="PAPER"):
+    def _get_next_sequence(self, name):
+        """Get next integer ID for backward compatibility"""
+        ret = self.counters.find_one_and_update(
+            {"_id": name},
+            {"$inc": {"seq": 1}},
+            return_document=True
+        )
+        return ret['seq']
+
+    def save_trade(self, symbol, token, leg, qty, entry_price, sl_price=0.0, side="BUY", mode="PAPER", strategy=None):
+        if not self.client:
+            logger.error("TradeRepository: MongoDB not connected.")
+            return None
+
         with self._lock:
             try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
+                trade_id = self._get_next_sequence("trade_id")
                 
-                cursor.execute("""
-                    INSERT INTO trades (symbol, token, leg, qty, entry_price, sl_price, status, side, mode)
-                    VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)
-                """, (symbol, token, leg, qty, entry_price, sl_price, side, mode))
+                trade_doc = {
+                    "id": trade_id,
+                    "symbol": symbol,
+                    "token": token,
+                    "leg": leg,
+                    "side": side,
+                    "qty": qty,
+                    "entry_price": entry_price,
+                    "sl_price": sl_price,
+                    "exit_price": None,
+                    "pnl": 0.0,
+                    "exit_reason": None,
+                    "mode": mode,
+                    "strategy": strategy,
+                    "status": "OPEN",
+                    "created_at": datetime.datetime.now(),
+                    "updated_at": datetime.datetime.now()
+                }
                 
-                conn.commit()
-                trade_id = cursor.lastrowid
-                conn.close()
-                logger.info(f"TradeRepository: Trade Saved (ID: {trade_id}, Mode: {mode})")
+                self.collection.insert_one(trade_doc)
+                logger.info(f"TradeRepository: Trade Saved (ID: {trade_id}, Mode: {mode}, Strategy: {strategy})")
                 return trade_id
             except Exception as e:
                 logger.error(f"TradeRepository Save Error: {e}")
                 return None
 
     def update_sl(self, trade_id, new_sl):
-        with self._lock:
-            try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
-                cursor.execute("UPDATE trades SET sl_price = ? WHERE id = ?", (new_sl, trade_id))
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                logger.error(f"TradeRepository Update SL Error: {e}")
+        if not self.client: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": {"sl_price": new_sl, "updated_at": datetime.datetime.now()}}
+            )
+        except Exception as e:
+            logger.error(f"TradeRepository Update SL Error: {e}")
 
     def close_trade(self, trade_id=None, symbol=None, exit_price=0.0, pnl=0.0, exit_reason="UNKNOWN"):
         """Closes trade by ID or all open trades for a symbol."""
-        with self._lock:
-            try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
-                
-                if trade_id:
-                    cursor.execute("""
-                        UPDATE trades 
-                        SET status = 'CLOSED', exit_price = ?, pnl = ?, exit_reason = ? 
-                        WHERE id = ?
-                    """, (exit_price, pnl, exit_reason, trade_id))
-                elif symbol:
-                    cursor.execute("""
-                        UPDATE trades 
-                        SET status = 'CLOSED', exit_price = ?, pnl = ?, exit_reason = ? 
-                        WHERE symbol = ? AND status = 'OPEN'
-                    """, (exit_price, pnl, exit_reason, symbol))
-                
-                conn.commit()
-                
-                # Fetch the full trade data to push to MongoDB
-                if trade_id:
-                    conn.row_factory = sqlite3.Row
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT * FROM trades WHERE id = ?", (trade_id,))
-                    row = cursor.fetchone()
-                    if row:
-                        try:
-                            from core.mongo_repo import mongo_trade_repo
-                            trade_data = dict(row)
-                            trade_data['closed_at'] = datetime.datetime.now()
-                            mongo_trade_repo.save_historical_trade(trade_data)
-                        except Exception as mongo_err:
-                            logger.error(f"MongoDB Historical Save Error: {mongo_err}")
+        if not self.client: return
 
-                conn.close()
+        update_fields = {
+            "status": "CLOSED",
+            "exit_price": exit_price,
+            "pnl": pnl,
+            "exit_reason": exit_reason,
+            "closed_at": datetime.datetime.now(),
+            "updated_at": datetime.datetime.now()
+        }
 
-                logger.info(f"TradeRepository: Trade Closed (PnL: {pnl}).")
-            except Exception as e:
-                logger.error(f"TradeRepository Close Error: {e}")
-
-
-    def get_active_trade(self, mode=None):
-        """Returns the most recent OPEN trade. Optionally filter by mode."""
         try:
-            conn = self._get_connection()
-            conn.row_factory = sqlite3.Row # Access columns by name
-            cursor = conn.cursor()
+            if trade_id:
+                self.collection.update_one(
+                    {"id": trade_id},
+                    {"$set": update_fields}
+                )
+            elif symbol:
+                self.collection.update_many(
+                    {"symbol": symbol, "status": "OPEN"},
+                    {"$set": update_fields}
+                )
             
+            logger.info(f"TradeRepository: Trade Closed (PnL: {pnl}).")
+        except Exception as e:
+            logger.error(f"TradeRepository Close Error: {e}")
+
+    def get_active_trade(self, mode=None, strategy=None):
+        """Returns the most recent OPEN trade. Optionally filter by mode/strategy."""
+        if not self.client: return None
+        try:
+            query = {"status": "OPEN"}
             if mode:
-                cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' AND mode = ? ORDER BY id DESC LIMIT 1", (mode,))
-            else:
-                cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' ORDER BY id DESC LIMIT 1")
+                query["mode"] = mode
+            if strategy:
+                query["strategy"] = strategy
                 
-            row = cursor.fetchone()
-            conn.close()
-            
-            if row:
-                return dict(row)
-            return None
+            return self.collection.find_one(query, sort=[("id", DESCENDING)])
         except Exception as e:
             logger.error(f"TradeRepository Fetch Error: {e}")
             return None
 
-    def get_open_trades(self, mode=None):
+    def get_open_trades(self, mode=None, strategy=None):
         """Returns detailed list of all OPEN trades."""
+        if not self.client: return []
         try:
-            conn = self._get_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
+            query = {"status": "OPEN"}
             if mode:
-                cursor.execute("SELECT * FROM trades WHERE status = 'OPEN' AND mode = ?", (mode,))
-            else:
-                cursor.execute("SELECT * FROM trades WHERE status = 'OPEN'")
+                query["mode"] = mode
+            if strategy:
+                query["strategy"] = strategy
                 
-            rows = cursor.fetchall()
-            conn.close()
-            
-            return [dict(row) for row in rows]
+            cursor = self.collection.find(query).sort("id", DESCENDING)
+            return list(cursor)
         except Exception as e:
             logger.error(f"TradeRepository Fetch All Error: {e}")
             return []
 
     def get_today_trades(self, mode=None):
         """Returns all trades (OPEN and CLOSED) created today."""
+        if not self.client: return []
         try:
-            conn = self._get_connection()
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
+            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
             
-            # SQLite 'date' function returns YYYY-MM-DD
+            query = {"created_at": {"$gte": today_start}}
             if mode:
-                cursor.execute("SELECT * FROM trades WHERE date(created_at) = date('now', 'localtime') AND mode = ? ORDER BY id DESC", (mode,))
-            else:
-                cursor.execute("SELECT * FROM trades WHERE date(created_at) = date('now', 'localtime') ORDER BY id DESC")
+                query["mode"] = mode
                 
-            rows = cursor.fetchall()
-            conn.close()
-            
-            return [dict(row) for row in rows]
+            cursor = self.collection.find(query).sort("id", DESCENDING)
+            return list(cursor)
         except Exception as e:
             logger.error(f"TradeRepository Fetch Today Error: {e}")
             return []
@@ -209,28 +169,33 @@ class TradeRepository:
     def cleanup_stale_trades(self):
         """
         Closes any trades currently marked as 'OPEN' that were not created today.
-        This ensures the bot starts each day with a clean slate.
         """
-        with self._lock:
-            try:
-                conn = self._get_connection()
-                cursor = conn.cursor()
-                
-                # Close trades where date is NOT today
-                cursor.execute("""
-                    UPDATE trades 
-                    SET status = 'CLOSED', exit_reason = 'STALE_OVERNIGHT', pnl = 0.0
-                    WHERE status = 'OPEN' AND date(created_at) != date('now', 'localtime')
-                """)
-                
-                conn.commit()
-                count = cursor.rowcount
-                conn.close()
-                if count > 0:
-                    logger.info(f"TradeRepository: Cleaned up {count} stale trades from previous sessions.")
-                return count
-            except Exception as e:
-                logger.error(f"TradeRepository Cleanup Error: {e}")
-                return 0
+        if not self.client: return 0
+        try:
+            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            
+            result = self.collection.update_many(
+                {
+                    "status": "OPEN",
+                    "created_at": {"$lt": today_start}
+                },
+                {
+                    "$set": {
+                        "status": "CLOSED",
+                        "exit_reason": "STALE_OVERNIGHT",
+                        "pnl": 0.0,
+                        "closed_at": datetime.datetime.now(),
+                        "updated_at": datetime.datetime.now()
+                    }
+                }
+            )
+            
+            count = result.modified_count
+            if count > 0:
+                logger.info(f"TradeRepository: Cleaned up {count} stale trades from previous sessions.")
+            return count
+        except Exception as e:
+            logger.error(f"TradeRepository Cleanup Error: {e}")
+            return 0
 
 trade_repo = TradeRepository()

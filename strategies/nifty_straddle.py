@@ -36,11 +36,53 @@ class NiftyStrategy:
             return None
 
 
+    def resume(self):
+        """Recover existing STRADDLE trades from MongoDB"""
+        mode = "PAPER" if self.dry_run else "LIVE"
+        open_trades = trade_repo.get_open_trades(mode=mode, strategy="STRADDLE")
+        
+        if not open_trades:
+            return False
+            
+        print(f">>> [Resumption] Found {len(open_trades)} Open Straddle Legs.")
+        for trade in open_trades:
+            leg = trade['leg']
+            self.legs_active[leg] = True
+            self.entry_prices[leg] = trade['entry_price']
+            self.leg_metadata[leg] = {
+                'token': trade['token'], 
+                'symbol': trade['symbol'], 
+                'qty': trade['qty'],
+                'id': trade['id']
+            }
+            # For Straddle, we often need to recover the SL orders from broker too.
+            # But here we'll assume the monitor loop will find them or we manage manually.
+            # (In a real pro bot, we'd fetch orderBook to find pending SLs)
+            
+        return True
+
     def execute(self, expiry, action="SELL"): # Default to SELL for Straddle (Short)
         """
         Executes the 9:20 Straddle (Short ATM CE & PE).
         """
         print(f"\n--- 9:20 STRADDLE STRATEGY ({expiry}) ---")
+
+        # Check for Resumption
+        if self.resume():
+            print(">>> [Resumption] Resuming Monitoring...")
+            # We need to jump to monitor. We'll pick ce/pe tokens from metadata
+            ce_meta = self.leg_metadata.get('CE')
+            pe_meta = self.leg_metadata.get('PE')
+            
+            # Simple assumption: Both legs might not exist (one could have hit SL)
+            ce_token = ce_meta['token'] if ce_meta else None
+            pe_token = pe_meta['token'] if pe_meta else None
+            ce_symbol = ce_meta['symbol'] if ce_meta else None
+            pe_symbol = pe_meta['symbol'] if pe_meta else None
+            qty = (ce_meta['qty'] if ce_meta else pe_meta['qty']) if (ce_meta or pe_meta) else 0
+            
+            self.monitor_straddle(ce_token, pe_token, ce_symbol, pe_symbol, qty)
+            return
 
         # 1. Time Check (Ideally run at 09:20, but we allow manual run with check)
         now = datetime.datetime.now().time()
@@ -108,31 +150,26 @@ class NiftyStrategy:
         ce_price = self.wait_for_fill(ce_order, symbol=ce_symbol, token=ce_token)
         pe_price = self.wait_for_fill(pe_order, symbol=pe_symbol, token=pe_token)
 
+        mode = "PAPER" if self.dry_run else "LIVE"
+        
         if ce_price:
              self.entry_prices['CE'] = ce_price
              self.legs_active['CE'] = True
-             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity}
-             trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
+             tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
+             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': tid}
              
         if pe_price:
              self.entry_prices['PE'] = pe_price
              self.legs_active['PE'] = True
-             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity}
-             trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL", mode="PAPER" if self.dry_run else "LIVE")
+             tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
+             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': tid}
 
         # 7. Place Initial Stop Loss (25%)
         # For Sell Order, SL is Buy Stop Limit at (Price * 1.25)
         if self.legs_active['CE']:
             sl_price = round(ce_price * 1.25, 1)
-            trig_price = round(sl_price - 0.5, 1) # Trigger slightly lower for Buy SL? 
-            # Actually for Buy SL: Trigger < Price. 
-            # SL-Limit Buy Order: Trigger at X, Buy at >=X.
-            # SmartAPI StopLoss: transactiontype=BUY. triggerprice. price.
-            # Usually Trigger = 125, Price = 126 (Buy Limit above Trigger to ensure fill).
-            
             buy_trigger = sl_price
             buy_price = round(sl_price + 1.0, 1)
-            
             self.sl_orders['CE'] = self.place_sl_order(ce_token, ce_symbol, buy_trigger, buy_price, quantity)
             
         if self.legs_active['PE']:

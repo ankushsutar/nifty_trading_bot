@@ -11,6 +11,35 @@ class InsideBarStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        self.active_trade = None
+        from core.data_fetcher import DataFetcher
+        self.data_fetcher = DataFetcher(self.api)
+
+    def fetch_candles(self, interval="FIFTEEN_MINUTE"):
+        # Nifty 50 Token
+        token = "99926000"
+        return self.data_fetcher.fetch_latest_candles(token, interval=interval)
+
+    def get_nifty_ltp(self):
+        try:
+            resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
+            if resp and resp.get('status'):
+                return float(resp['data']['ltp'])
+        except: pass
+        return 0.0
+
+    def wait_for_fill(self, order_id):
+        if self.dry_run: return 100.0
+        for _ in range(5):
+             try:
+                 book = self.api.orderBook()
+                 if book and book.get('data'):
+                     for o in book['data']:
+                         if o['orderid'] == order_id and o['status'] == 'complete':
+                             return float(o['averageprice'])
+             except: pass
+             time.sleep(1)
+        return 0.0
 
     def execute(self, expiry, action="BUY"):
         """
@@ -19,6 +48,22 @@ class InsideBarStrategy:
         Pattern: Mother Candle, then Baby Candle inside Mother's High/Low.
         """
         print(f"\n--- INSIDE BAR STRATEGY ({expiry}) ---")
+
+        # Check for Resumption
+        mode = "PAPER" if self.dry_run else "LIVE"
+        self.active_trade = trade_repo.get_active_trade(mode=mode, strategy="INSIDE_BAR")
+        
+        if self.active_trade:
+            print(f">>> [Resumption] Found Open Trade: {self.active_trade['symbol']} (ID: {self.active_trade['id']})")
+            print(">>> [Resumption] Resuming Monitoring...")
+            self.monitor_trailing(
+                self.active_trade['token'], 
+                self.active_trade['symbol'], 
+                self.active_trade['qty'], 
+                "RECOVERED", 
+                self.active_trade['id']
+            )
+            return
 
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
@@ -86,11 +131,13 @@ class InsideBarStrategy:
         
         # Place Buy Order
         print(f">>> [Trade] Entering {symbol} (Qty: {qty})")
+        mode = "PAPER" if self.dry_run else "LIVE"
+        
         if self.dry_run:
              # Save Dry Run
              fill = self.get_nifty_ltp()
              sl_price = fill * 0.9
-             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price)
+             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price, mode=mode, strategy="INSIDE_BAR")
              self.monitor_trailing(token, symbol, qty, "dry_run_oid", tid)
              return
         
@@ -114,9 +161,8 @@ class InsideBarStrategy:
              
              self.place_sl(token, symbol, sl_price, qty)
              
-             
              # Save
-             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price)
+             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price, mode=mode, strategy="INSIDE_BAR")
 
              # Trailing Logic
              self.monitor_trailing(token, symbol, qty, oid, tid)

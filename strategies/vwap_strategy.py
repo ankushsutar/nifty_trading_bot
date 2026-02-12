@@ -25,6 +25,21 @@ class VWAPStrategy:
         """
         print(f">>> [Pro Strategy] Initializing VWAP (Institutional Trend) for {expiry}")
 
+        # Check for Resumption
+        mode = "PAPER" if self.dry_run else "LIVE"
+        active_trade = trade_repo.get_active_trade(mode=mode, strategy="VWAP")
+        
+        if active_trade:
+            print(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
+            print(">>> [Resumption] Resuming Monitoring...")
+            self.monitor_position(
+                active_trade['symbol'], 
+                active_trade['token'], 
+                active_trade['entry_price'], 
+                active_trade['id']
+            )
+            return
+
         # 1. Safety Check (Strict for Pro)
         # Pros don't trade if undercapitalized.
         if not self.gatekeeper.check_funds(required_margin_per_lot=8500):
@@ -177,7 +192,8 @@ class VWAPStrategy:
              print(f">>> [Dry Run] Would Buy {symbol} at Market.")
              # Save
              fill_price = ltp
-             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="VWAP")
              self.monitor_position(symbol, token, fill_price, tid)
              return
              
@@ -207,7 +223,8 @@ class VWAPStrategy:
                  self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
                  
                  # Save
-                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+                 mode = "PAPER" if self.dry_run else "LIVE"
+                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="VWAP")
                  
                  self.monitor_position(symbol, token, fill_price, tid)
 

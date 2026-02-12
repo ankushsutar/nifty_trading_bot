@@ -17,6 +17,15 @@ class BotManager:
             try:
                 from core.trade_repo import trade_repo
                 trade_repo.cleanup_stale_trades()
+                
+                # Fetch Today's Open Trades for Resumption
+                open_trades = trade_repo.get_open_trades()
+                if open_trades:
+                    print(f">>> [Startup] Found {len(open_trades)} Open Trades for today in MongoDB.")
+                    for t in open_trades:
+                        print(f"    - {t['strategy']} | {t['symbol']} | Qty: {t['qty']} | Status: {t['status']}")
+                else:
+                    print(">>> [Startup] No open trades found in MongoDB for today.")
             except Exception as e:
                 print(f"BotManager Startup Cleanup Error: {e}")
                 

@@ -1,7 +1,6 @@
 import sys
 import os
 import requests
-import sqlite3
 import datetime
 import time
 

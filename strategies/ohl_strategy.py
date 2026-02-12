@@ -23,6 +23,31 @@ class OHLStrategy:
         """
         print(f"\n--- OHL SCALP STRATEGY ({expiry}) ---")
 
+        # Check for Resumption
+        mode = "PAPER" if self.dry_run else "LIVE"
+        active_trade = trade_repo.get_active_trade(mode=mode, strategy="OHL")
+        
+        if active_trade:
+            print(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
+            print(">>> [Resumption] Resuming Monitoring...")
+            # For OHL, we need target_price. We'll derive it or store it.
+            # Since we don't store target in DB yet, we'll recalculate or use 1:2 R:R from entry.
+            # Better: derive from sl_price in DB.
+            fill = active_trade['entry_price']
+            sl = active_trade['sl_price']
+            opt_risk = abs(fill - sl)
+            target = round(fill + (opt_risk * 2), 1)
+            
+            self.monitor_trade(
+                active_trade['token'], 
+                active_trade['symbol'], 
+                active_trade['qty'], 
+                target, 
+                sl, 
+                active_trade['id']
+            )
+            return
+
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
@@ -89,7 +114,8 @@ class OHLStrategy:
              # Save
              fill_price = self.get_nifty_ltp() or 22000.0
              sl_price = fill_price * 0.9
-             tid = trade_repo.save_trade(symbol, token, "OHL", qty, fill_price, sl_price)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
              
              # Calculate Target for Monitor
              # Logic copied from real trade block generally
@@ -137,7 +163,8 @@ class OHLStrategy:
              
              
              # Save
-             tid = trade_repo.save_trade(symbol, token, "OHL", qty, fill_price, sl_price)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
 
              # 6. Monitor
              self.monitor_trade(token, symbol, qty, target_price, sl_price, tid)

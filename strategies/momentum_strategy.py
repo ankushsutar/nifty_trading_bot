@@ -72,7 +72,7 @@ class MomentumStrategy:
         if self.dry_run:
             # Try to recover state from DB for Paper Trading
             if self.active_position is None:
-                db_trade = trade_repo.get_active_trade(mode="PAPER")
+                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="MOMENTUM")
                 if db_trade:
                     # Map DB columns to Strategy State
                     self.active_position = {
@@ -97,16 +97,11 @@ class MomentumStrategy:
                  found_active = None
                  
                  for pos in pos_resp['data']:
-                     # Filter for NIFTY Options, Intraday, and Open (NetQty != 0)
-                     # Note: SmartAPI 'symbolname' handles 'NIFTY', 'BANKNIFTY' etc.
-                     # 'netqty' is the open quantity.
                      if (pos['symbolname'] == 'NIFTY' and 
                          pos['producttype'] == 'INTRADAY' and 
                          int(pos['netqty']) != 0):
                          
                          qty = int(pos['netqty'])
-                         # If qty > 0 (LONG), < 0 (SHORt). We usually Buy options so Qty > 0.
-                         # If we sold (Short Strategy), Qty < 0.
                          
                          found_active = {
                              'leg': "CE" if "CE" in pos['symbolnm'] else "PE", # simplistic
@@ -134,7 +129,7 @@ class MomentumStrategy:
                  
                  # Attempt to link DB ID if we found a position
                  if self.active_position and 'id' not in self.active_position:
-                     db_trade = trade_repo.get_active_trade()
+                     db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
                      if db_trade and db_trade['symbol'] == self.active_position['symbol']:
                          self.active_position['id'] = db_trade['id']
                          logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']}")
@@ -713,7 +708,7 @@ class MomentumStrategy:
                 'context': trade_context
             }
             mode = "PAPER" if self.dry_run else "LIVE"
-            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode)
+            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode, strategy="MOMENTUM")
             if tid: self.active_position['id'] = tid
             return
 
