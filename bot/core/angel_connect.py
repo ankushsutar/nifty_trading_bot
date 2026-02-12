@@ -1,6 +1,6 @@
 from SmartApi import SmartConnect
 import pyotp
-from config.settings import Config
+from bot.config.settings import Config
 
 def get_angel_session():
     print(">>> [System] Connecting to Angel One...")

@@ -7,7 +7,7 @@ import time
 # Add parent dir to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.trade_repo import trade_repo
+from bot.core.trade_repo import trade_repo
 
 # Ensure we use the correct DB path relative to execution
 # The bot runs from /home/cwd/agent/nifty_trading_bot usually

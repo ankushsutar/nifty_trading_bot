@@ -4,12 +4,12 @@ import os
 # Add the parent directory to sys.path to allow importing 'core'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from core.angel_connect import get_angel_session
+from bot.core.angel_connect import get_angel_session
 
 def verify_credentials():
     print("\n>>> [Verify] Attempting to login with .env credentials...")
     
-    # helper function from core/angel_connect.py
+    # helper function from bot.core/angel_connect.py
     # performs login and returns the API object if successful
     api = get_angel_session()
     

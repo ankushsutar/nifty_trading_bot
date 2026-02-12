@@ -1,18 +1,18 @@
 import argparse
 import sys
 import signal
-from core.angel_connect import get_angel_session
-from utils.token_lookup import TokenLookup
-from strategies.nifty_straddle import NiftyStrategy
-from core.mock_connect import MockSmartConnect, MockTokenLookup
-from utils.expiry_calculator import get_next_weekly_expiry
-from strategies.orb_strategy import ORBStrategy
-from strategies.momentum_strategy import MomentumStrategy
-from strategies.vwap_strategy import VWAPStrategy
-from strategies.ohl_strategy import OHLStrategy
-from strategies.inside_bar_strategy import InsideBarStrategy
-from strategies.inside_bar_strategy import InsideBarStrategy
-from core.decision_engine import DecisionEngine
+from bot.core.angel_connect import get_angel_session
+from bot.utils.token_lookup import TokenLookup
+from bot.strategies.nifty_straddle import NiftyStrategy
+from bot.core.mock_connect import MockSmartConnect, MockTokenLookup
+from bot.utils.expiry_calculator import get_next_weekly_expiry
+from bot.strategies.orb_strategy import ORBStrategy
+from bot.strategies.momentum_strategy import MomentumStrategy
+from bot.strategies.vwap_strategy import VWAPStrategy
+from bot.strategies.ohl_strategy import OHLStrategy
+from bot.strategies.inside_bar_strategy import InsideBarStrategy
+from bot.strategies.inside_bar_strategy import InsideBarStrategy
+from bot.core.decision_engine import DecisionEngine
 
 # Global variable for graceful shutdown
 bot_instance = None

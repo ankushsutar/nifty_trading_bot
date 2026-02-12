@@ -13,7 +13,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.bot_manager import bot_manager
 from backend.socket_manager import socket_manager
 from backend.market_service import market_service
-from utils.logger import log_queue, logger
+from bot.utils.logger import log_queue, logger
 
 app = FastAPI(title="Nifty Bot API", version="1.0")
 

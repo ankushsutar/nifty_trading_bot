@@ -1,10 +1,10 @@
 import datetime
 import time
-from config.settings import Config
-from core.safety_checks import SafetyGatekeeper
-from core.trade_repo import trade_repo
-from core.data_fetcher import DataFetcher
-from utils.logger import logger
+from bot.config.settings import Config
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.trade_repo import trade_repo
+from bot.core.data_fetcher import DataFetcher
+from bot.utils.logger import logger
 
 
 class OHLStrategy:

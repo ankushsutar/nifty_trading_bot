@@ -1,7 +1,7 @@
 import time
 import datetime
 import pandas as pd
-from utils.logger import logger
+from bot.utils.logger import logger
 
 import threading
 

@@ -1,6 +1,6 @@
 import requests
 import pandas as pd
-from config.settings import Config
+from bot.config.settings import Config
 
 class TokenLookup:
     def __init__(self):

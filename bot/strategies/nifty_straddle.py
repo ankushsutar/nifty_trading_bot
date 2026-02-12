@@ -1,9 +1,9 @@
 import time
 import datetime
-from config.settings import Config
-from core.safety_checks import SafetyGatekeeper
-from core.trade_repo import trade_repo
-from core.oi_analyzer import OIAnalyzer
+from bot.config.settings import Config
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.trade_repo import trade_repo
+from bot.core.oi_analyzer import OIAnalyzer
 
 class NiftyStrategy:
     def __init__(self, api, token_loader, dry_run=False):

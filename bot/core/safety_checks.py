@@ -49,7 +49,7 @@ class SafetyGatekeeper:
             
             # SIMULATION MODE CHECK
             if self.dry_run:
-                from config.settings import Config
+                from bot.config.settings import Config
                 available_cash = Config.SIMULATION_CAPITAL
                 # print(f">>> [Gatekeeper] 🟡 DRY RUN: Using Simulation Capital: ₹{available_cash}")
             else:
@@ -107,7 +107,7 @@ class SafetyGatekeeper:
             available_cash = 0.0
             
             if self.dry_run:
-                from config.settings import Config
+                from bot.config.settings import Config
                 available_cash = Config.SIMULATION_CAPITAL
             else:
                 # Reuse cache if available and fresh

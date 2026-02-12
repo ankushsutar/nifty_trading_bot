@@ -1,4 +1,4 @@
-from core.safety_checks import SafetyGatekeeper
+from bot.core.safety_checks import SafetyGatekeeper
 from backend.market_service import market_service
 import datetime
 

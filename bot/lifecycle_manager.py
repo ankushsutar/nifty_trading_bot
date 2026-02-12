@@ -4,7 +4,7 @@ import datetime
 import sys
 import os
 import threading
-from utils.logger import logger
+from bot.utils.logger import logger
 
 class LifecycleManager:
     def __init__(self, dry_run=False, test_mode=False):
@@ -38,7 +38,7 @@ class LifecycleManager:
         """
         Runs main.py with the specified strategy or auto mode.
         """
-        cmd = [sys.executable, "main.py"]
+        cmd = [sys.executable, "-m", "bot.main"]
         
         if auto:
             cmd.append("--auto")

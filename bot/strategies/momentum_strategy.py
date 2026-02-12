@@ -5,16 +5,16 @@ import random
 import json
 import os
 
-from config.settings import Config
-from core.angel_connect import get_angel_session
-from core.safety_checks import SafetyGatekeeper
-from core.data_fetcher import DataFetcher
-from core.regime_classifier import RegimeClassifier
-from core.oi_analyzer import OIAnalyzer
-from utils.logger import logger
-from utils.expiry_calculator import get_next_weekly_expiry
-from utils.trade_journal import TradeJournal
-from core.trade_repo import trade_repo
+from bot.config.settings import Config
+from bot.core.angel_connect import get_angel_session
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.data_fetcher import DataFetcher
+from bot.core.regime_classifier import RegimeClassifier
+from bot.core.oi_analyzer import OIAnalyzer
+from bot.utils.logger import logger
+from bot.utils.expiry_calculator import get_next_weekly_expiry
+from bot.utils.trade_journal import TradeJournal
+from bot.core.trade_repo import trade_repo
 
 # ... imports ...
 

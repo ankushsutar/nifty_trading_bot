@@ -1,7 +1,7 @@
 import logging
 import time
 import datetime
-from utils.logger import logger
+from bot.utils.logger import logger
 
 class OIAnalyzer:
     def __init__(self, api, token_loader):

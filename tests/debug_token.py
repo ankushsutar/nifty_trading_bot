@@ -1,7 +1,7 @@
 
 import requests
 import pandas as pd
-from config.settings import Config
+from bot.config.settings import Config
 
 def check_token():
     print("Downloading Scrip Master...")

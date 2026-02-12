@@ -1,7 +1,7 @@
 import threading
 import time
-from utils.logger import logger
-from lifecycle_manager import LifecycleManager
+from bot.utils.logger import logger
+from bot.lifecycle_manager import LifecycleManager
 
 class BotManager:
     _instance = None
@@ -15,7 +15,7 @@ class BotManager:
             
             # Startup Cleanup: Flush any stale trades from previous days
             try:
-                from core.trade_repo import trade_repo
+                from bot.core.trade_repo import trade_repo
                 trade_repo.cleanup_stale_trades()
                 
                 # Fetch Today's Open Trades for Resumption
@@ -81,7 +81,7 @@ class BotManager:
         
         # So we can just read that file.
         # Use SQLite Repository
-        from core.trade_repo import trade_repo
+        from bot.core.trade_repo import trade_repo
         from backend.market_service import market_service
         
         try:
@@ -155,7 +155,7 @@ class BotManager:
             "trades": [list of trade dicts]
         }
         """
-        from core.trade_repo import trade_repo
+        from bot.core.trade_repo import trade_repo
         from backend.market_service import market_service
         
         try:

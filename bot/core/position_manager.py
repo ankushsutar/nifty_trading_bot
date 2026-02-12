@@ -1,7 +1,7 @@
 import time
 import datetime
-from config.settings import Config
-from core.trade_repo import trade_repo
+from bot.config.settings import Config
+from bot.core.trade_repo import trade_repo
 
 class PositionManager:
     def __init__(self, api, dry_run=False):

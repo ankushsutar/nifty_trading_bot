@@ -1,4 +1,4 @@
-from core.angel_connect import get_angel_session
+from bot.core.angel_connect import get_angel_session
 
 def test_vix():
     api = get_angel_session()

@@ -2,12 +2,12 @@ import time
 import threading
 import datetime
 
-from core.angel_connect import get_angel_session
-from core.regime_classifier import RegimeClassifier
-from core.oi_analyzer import OIAnalyzer
-from core.data_fetcher import DataFetcher
-from utils.token_lookup import TokenLookup
-from utils.logger import logger
+from bot.core.angel_connect import get_angel_session
+from bot.core.regime_classifier import RegimeClassifier
+from bot.core.oi_analyzer import OIAnalyzer
+from bot.core.data_fetcher import DataFetcher
+from bot.utils.token_lookup import TokenLookup
+from bot.utils.logger import logger
 import json
 import os
 
@@ -193,7 +193,7 @@ class MarketService:
                         # 2. OI Sentiment Analysis
                         ltp = df.iloc[-1]['close']
                         strike = int(round(ltp / 50) * 50)
-                        from utils.expiry_calculator import get_next_weekly_expiry
+                        from bot.utils.expiry_calculator import get_next_weekly_expiry
                         expiry = get_next_weekly_expiry()
                         
                         self.oi_data = self.oi_engine.get_market_sentiment(expiry, strike)

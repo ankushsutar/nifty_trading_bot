@@ -2,7 +2,7 @@ import requests
 import threading
 import feedparser
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from utils.logger import logger
+from bot.utils.logger import logger
 import time
 import re
 

@@ -2,9 +2,9 @@ import time
 import datetime
 import pandas as pd
 import numpy as np
-from config.settings import Config
-from core.safety_checks import SafetyGatekeeper
-from core.trade_repo import trade_repo
+from bot.config.settings import Config
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.trade_repo import trade_repo
 
 class VWAPStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -12,7 +12,7 @@ class VWAPStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        from core.data_fetcher import DataFetcher
+        from bot.core.data_fetcher import DataFetcher
         self.data_fetcher = DataFetcher(self.api)
         self.running = True
 
@@ -70,7 +70,7 @@ class VWAPStrategy:
             print(f">>> [Result] High Probability Setup Detected: {trend} ({signal})")
             
             # 3. "X-Ray" Vision Check (OI Analysis) 🧠
-            from core.oi_analyzer import OIAnalyzer
+            from bot.core.oi_analyzer import OIAnalyzer
             analyzer = OIAnalyzer(self.api, self.token_loader)
             
             # Calculate ATM for OI Check
@@ -255,7 +255,7 @@ class VWAPStrategy:
     def monitor_position(self, symbol, token, fill_price, trade_id=None):
         # if self.dry_run: return
         print(">>> [Manager] Monitoring Trade (Target: 20%)...")
-        from core.position_manager import PositionManager
+        from bot.core.position_manager import PositionManager
         manager = PositionManager(self.api, self.dry_run)
         manager.monitor([{
            'symbol': symbol, 'token': token, 

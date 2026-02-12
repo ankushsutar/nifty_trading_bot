@@ -1,8 +1,8 @@
 import threading
 import datetime
 from pymongo import MongoClient, ASCENDING, DESCENDING
-from config.settings import Config
-from utils.logger import logger
+from bot.config.settings import Config
+from bot.utils.logger import logger
 
 class TradeRepository:
     _instance = None

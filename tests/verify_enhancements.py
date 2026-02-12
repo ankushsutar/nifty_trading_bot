@@ -1,6 +1,6 @@
-from core.decision_engine import DecisionEngine
-from core.angel_connect import get_angel_session
-from utils.token_lookup import TokenLookup
+from bot.core.decision_engine import DecisionEngine
+from bot.core.angel_connect import get_angel_session
+from bot.utils.token_lookup import TokenLookup
 import json
 
 def verify_brain():
@@ -20,8 +20,8 @@ def verify_brain():
     print(f"\n[Result] Final Strategy Selected: {strategy}")
     
     # Check Regime explicitly
-    from core.data_fetcher import DataFetcher
-    from core.regime_classifier import RegimeClassifier
+    from bot.core.data_fetcher import DataFetcher
+    from bot.core.regime_classifier import RegimeClassifier
     
     fetcher = DataFetcher(api)
     classifier = RegimeClassifier()

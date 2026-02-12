@@ -1,9 +1,9 @@
 import datetime
 import time
 import pandas as pd
-from config.settings import Config
-from core.safety_checks import SafetyGatekeeper
-from core.trade_repo import trade_repo
+from bot.config.settings import Config
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.trade_repo import trade_repo
 
 class InsideBarStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -12,7 +12,7 @@ class InsideBarStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.active_trade = None
-        from core.data_fetcher import DataFetcher
+        from bot.core.data_fetcher import DataFetcher
         self.data_fetcher = DataFetcher(self.api)
         self.running = True
 

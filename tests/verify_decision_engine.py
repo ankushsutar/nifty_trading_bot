@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 import datetime
-from core.decision_engine import DecisionEngine
+from bot.core.decision_engine import DecisionEngine
 
 class TestDecisionEngine(unittest.TestCase):
     def setUp(self):

@@ -2,11 +2,11 @@
 import time
 import unittest
 from unittest.mock import MagicMock
-from core.data_fetcher import DataFetcher
-from strategies.inside_bar_strategy import InsideBarStrategy
-from strategies.vwap_strategy import VWAPStrategy
-from strategies.nifty_straddle import NiftyStrategy
-from core.position_manager import PositionManager
+from bot.core.data_fetcher import DataFetcher
+from bot.strategies.inside_bar_strategy import InsideBarStrategy
+from bot.strategies.vwap_strategy import VWAPStrategy
+from bot.strategies.nifty_straddle import NiftyStrategy
+from bot.core.position_manager import PositionManager
 
 class TestProductionReadiness(unittest.TestCase):
     def setUp(self):

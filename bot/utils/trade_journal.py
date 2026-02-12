@@ -1,7 +1,7 @@
 import csv
 import os
 import datetime
-from utils.logger import logger
+from bot.utils.logger import logger
 
 class TradeJournal:
     FILE_PATH = "logs/trade_journal.csv"

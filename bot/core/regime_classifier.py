@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from utils.logger import logger
+from bot.utils.logger import logger
 
 class RegimeClassifier:
     def __init__(self, period_adx=14, period_rsi=14, period_atr=14, period_bbw=20):

@@ -3,7 +3,7 @@ import os
 import time
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.position_manager import PositionManager
+from bot.core.position_manager import PositionManager
 
 # Mock API
 class MockAPI:
@@ -50,7 +50,7 @@ def test_tsl_scenario():
     }
     
     # Patch datetime in the module
-    import core.position_manager as pm
+    import bot.core.position_manager as pm
     from unittest.mock import MagicMock
     import datetime
 

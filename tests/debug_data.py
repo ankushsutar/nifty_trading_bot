@@ -1,4 +1,4 @@
-from core.angel_connect import get_angel_session
+from bot.core.angel_connect import get_angel_session
 import json
 
 def check():

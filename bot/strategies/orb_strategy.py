@@ -1,8 +1,8 @@
 import time
 import datetime
-from config.settings import Config
-from core.safety_checks import SafetyGatekeeper
-from core.trade_repo import trade_repo
+from bot.config.settings import Config
+from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.trade_repo import trade_repo
 
 class ORBStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -10,7 +10,7 @@ class ORBStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        from core.data_fetcher import DataFetcher
+        from bot.core.data_fetcher import DataFetcher
         self.data_fetcher = DataFetcher(self.api)
         self.running = True
         
@@ -257,7 +257,7 @@ class ORBStrategy:
 
 
         print(">>> [ORB] Trade Active. Monitoring P&L (Target: 20%)...")
-        from core.position_manager import PositionManager
+        from bot.core.position_manager import PositionManager
         
         pos = [{
            'symbol': symbol, 'token': token, 
