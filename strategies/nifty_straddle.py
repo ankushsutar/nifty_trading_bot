@@ -16,6 +16,7 @@ class NiftyStrategy:
         self.legs_active = {'CE': False, 'PE': False}
         self.leg_metadata = {'CE': None, 'PE': None} # { 'CE': {'token': ..., 'symbol': ..., 'qty': ...} }
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
+        self.running = True
 
     def get_atm_strike(self):
         """
@@ -186,7 +187,7 @@ class NiftyStrategy:
         print(f"\n>>> [Monitor] Straddle Active. SL Orders: {self.sl_orders}")
         sl_moved_to_cost = False
         
-        while True:
+        while self.running:
             try:
                 time.sleep(3)
                 now = datetime.datetime.now().time()
@@ -388,6 +389,7 @@ class NiftyStrategy:
     def stop(self):
         """Graceful Square-off on Shutdown"""
         print("\n>>> [Strategy] Stop Signal Received. Squaring off positions...")
+        self.running = False
         for leg in ['CE', 'PE']:
             if self.legs_active[leg]:
                 meta = self.leg_metadata[leg]

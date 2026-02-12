@@ -11,7 +11,7 @@ class Config:
     TOTP_SECRET = os.getenv("TOTP_SECRET")
     
     # Nifty Constants (Updated for 2026)
-    NIFTY_LOT_SIZE = 65
+    NIFTY_LOT_SIZE = 75
     # URL to fetch token IDs for all stocks
     SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     

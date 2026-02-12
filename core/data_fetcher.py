@@ -3,16 +3,53 @@ import datetime
 import pandas as pd
 from utils.logger import logger
 
+import threading
+
 class DataFetcher:
-    def __init__(self, api):
-        self.api = api
-        self.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
-        self.cache_duration = 55 # seconds (Just under 1 minute)
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls, api=None):
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(DataFetcher, cls).__new__(cls)
+                cls._instance.api = api
+                cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
+                cls._instance.cache_duration = 55 # seconds
+            elif api is not None:
+                # Update API if a new one is provided (e.g. session refreshed)
+                cls._instance.api = api
+            return cls._instance
+
+    def __init__(self, api=None):
+        # Init logic moved to __new__ for singleton consistency
+        pass
 
     def _align_to_interval(self, dt, interval_mins=5):
         """Rounds down a datetime to the nearest interval boundary."""
         remainder = dt.minute % interval_mins
         return dt.replace(minute=dt.minute - remainder, second=0, microsecond=0)
+
+    def get_ltp(self, token, exchange="NSE"):
+        """
+        Fetches LTP and caches it for a short duration.
+        """
+        cache_key = (token, "LTP")
+        if cache_key in self.data_cache:
+            last_time, cached_ltp = self.data_cache[cache_key]
+            if time.time() - last_time < 5: # LTP cache is short (5s)
+                return cached_ltp
+
+        try:
+            resp = self.api.ltpData(exchange, "SYMBOL", token)
+            if resp and resp.get('status'):
+                ltp = float(resp['data']['ltp'])
+                self.data_cache[cache_key] = (time.time(), ltp)
+                return ltp
+        except Exception as e:
+            logger.error(f"DataFetcher LTP Error: {e}")
+        
+        return 0.0
 
     def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange="NSE"):
         """

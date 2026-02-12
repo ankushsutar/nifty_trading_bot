@@ -14,6 +14,7 @@ class InsideBarStrategy:
         self.active_trade = None
         from core.data_fetcher import DataFetcher
         self.data_fetcher = DataFetcher(self.api)
+        self.running = True
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
         # Nifty 50 Token
@@ -197,24 +198,35 @@ class InsideBarStrategy:
         """
         print(">>> [Monitor] Trade Active. Waiting for SL or Time Exit...")
         
-        while True:
+        while self.running:
             try:
                 time.sleep(5)
                 # 1. Time Check
                 if datetime.datetime.now().time() >= datetime.time(15, 15):
                      print(">>> [Exit] Time 15:15. Closing.")
                      # Exit Market
-                     orderparams = {
-                        "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                        "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
-                        "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-                    }
-                     self.api.placeOrder(orderparams)
-                     if trade_id: trade_repo.close_trade(trade_id=trade_id)
+                     self.exit_at_market(token, symbol, qty, "TIME", trade_id)
                      break
                 
-            except KeyboardInterrupt:
-                 print("Stopped.")
-                 break
             except Exception as e:
-                 pass
+                 print(f">>> [Error] Monitor: {e}")
+                 time.sleep(10)
+
+    def stop(self):
+        """Signal strategy to stop monitoring and exit."""
+        print(">>> [System] Stopping Strategy...")
+        self.running = False
+
+    def exit_at_market(self, token, symbol, qty, reason, trade_id=None):
+        try:
+            orderparams = {
+                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+            }
+            oid = self.api.placeOrder(orderparams)
+            print(f">>> [Exit] Market Order Sent: {oid} ({reason})")
+            if trade_id:
+                trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+        except Exception as e:
+            print(f">>> [Error] Market Exit Failed: {e}")

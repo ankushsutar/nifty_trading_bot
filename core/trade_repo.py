@@ -73,11 +73,18 @@ class TradeRepository:
                     "updated_at": datetime.datetime.now()
                 }
                 
-                self.collection.insert_one(trade_doc)
-                logger.info(f"TradeRepository: Trade Saved (ID: {trade_id}, Mode: {mode}, Strategy: {strategy})")
-                return trade_id
+                # Retry Loop for MongoDB Insertion
+                for attempt in range(3):
+                    try:
+                        self.collection.insert_one(trade_doc)
+                        logger.info(f"TradeRepository: Trade Saved (ID: {trade_id}, Mode: {mode}, Strategy: {strategy})")
+                        return trade_id
+                    except Exception as e:
+                        if attempt == 2: raise e
+                        logger.warning(f"TradeRepository Save Attempt {attempt+1} failed: {e}. Retrying...")
+                        time.sleep(1)
             except Exception as e:
-                logger.error(f"TradeRepository Save Error: {e}")
+                logger.error(f"TradeRepository Save Error after retries: {e}")
                 return None
 
     def update_sl(self, trade_id, new_sl):

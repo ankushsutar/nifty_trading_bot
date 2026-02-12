@@ -8,6 +8,12 @@ class PositionManager:
         self.api = api
         self.dry_run = dry_run
         self.target_percent = 0.20 # 20% Profit Target
+        self.running = True
+
+    def stop(self):
+        """Signal monitoring to stop."""
+        print(">>> [Manager] Stop signal received.")
+        self.running = False
 
     def monitor(self, active_positions):
         """
@@ -22,7 +28,7 @@ class PositionManager:
             pos['sl_level'] = -0.10   # Initial Hard SL (-10%)
             pos['tsl_active'] = False # Flag for Breakeven activation
 
-        while True:
+        while self.running:
             try:
                 # 1. Check Time Exit
                 now = datetime.datetime.now().time()

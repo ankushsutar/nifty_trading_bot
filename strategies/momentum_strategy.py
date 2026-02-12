@@ -31,8 +31,8 @@ class MomentumStrategy:
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         
         self.data_failure_count = 0
-        self.active_position = None 
-        self.stop_requested = False  # Control flag for API
+        self.active_position = None
+        self.running = True  # Flag for graceful shutdown
         self.last_sync_time = 0
         self.last_analysis = {} # Stores EMA9, RSI, etc for logging
         self.last_oi_scan = 0
@@ -139,7 +139,7 @@ class MomentumStrategy:
 
     def stop(self):
         """Signals the loop to stop and closes open positions."""
-        self.stop_requested = True
+        self.running = False
         logger.info("[Control] Stop Requested from API.")
         
         if self.active_position:
@@ -233,7 +233,7 @@ class MomentumStrategy:
         # Reset seconds/micro to 0 and add buffer
         next_check = next_check.replace(second=5, microsecond=0)
         
-        if self.stop_requested:
+        if not self.running:
             logger.info("[Control] Stopping Strategy Loop.")
             return
 
@@ -252,8 +252,9 @@ class MomentumStrategy:
         except Exception as e:
             logger.error(f"Initial Pulse Error: {e}")
 
-        while True:
-            if self.stop_requested:
+        while self.running:
+            # Check for stop signal
+            if not self.running:
                 logger.info("[Control] Stopping Strategy Loop.")
                 break
 

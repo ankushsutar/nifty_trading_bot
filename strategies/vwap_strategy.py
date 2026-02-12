@@ -12,19 +12,26 @@ class VWAPStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        from core.data_fetcher import DataFetcher
+        self.data_fetcher = DataFetcher(self.api)
+        self.running = True
+
+    def stop(self):
+        """Gracefully stop the strategy monitoring."""
+        print(">>> [VWAP] Stop signal received.")
+        self.running = False
+        if hasattr(self, 'manager') and self.manager:
+            self.manager.stop()
 
     def execute(self, expiry, action="BUY"):
         """
-        'The Senior Trader' Strategy (VWAP + EMA Confluence)
-        Win Rate Targets: 60-70%
-        Logic:
-           We only trade when Institutions are active (Price consistent with Volume).
-           1. BUY CE if: Close > VWAP and Close > EMA(20) (Strong Uptrend)
-           2. BUY PE if: Close < VWAP and Close < EMA(20) (Strong Downtrend)
-           3. NO TRADE if: Price is trapped between VWAP and EMA (Chop/Sideways)
+        VWAP Institutional Logic:
+        1. 09:15 - 10:00: Wait for Price/VWAP Stability
+        2. 10:00+: Wait for Breakout above VWAP (Buy CE) or below (Buy PE)
+        3. RSI Filter: Only Buy if RSI > 50 (CE) or < 50 (PE)
         """
-        print(f">>> [Pro Strategy] Initializing VWAP (Institutional Trend) for {expiry}")
-
+        print(f">>> [Strategy] Initializing VWAP Strategy for {expiry}")
+        
         # Check for Resumption
         mode = "PAPER" if self.dry_run else "LIVE"
         active_trade = trade_repo.get_active_trade(mode=mode, strategy="VWAP")
@@ -41,46 +48,56 @@ class VWAPStrategy:
             return
 
         # 1. Safety Check (Strict for Pro)
-        # Pros don't trade if undercapitalized.
         if not self.gatekeeper.check_funds(required_margin_per_lot=8500):
              print(">>> [Strategy] Insufficient Funds for Pro Setup. Aborting.")
              return
 
-        # 2. Analyze Market Structure
-        trend, signal, ltp = self.analyze_market_structure()
-        
-        if trend == "NEUTRAL":
-            print(f">>> [Result] Market is Choppy ({signal}). Pros sit on hands. No Trade.")
-            return
+        print(">>> [VWAP] Institutional Trend Monitoring Started...")
+        self.monitor_breakout(expiry)
 
-        print(f">>> [Result] High Probability Setup Detected: {trend} ({signal})")
+    def monitor_breakout(self, expiry):
+        print(">>> [VWAP] Waiting for Price vs VWAP crossover...")
         
-        if trend != "NEUTRAL":
-             # 3. "X-Ray" Vision Check (OI Analysis) 🧠
-             from core.oi_analyzer import OIAnalyzer
-             analyzer = OIAnalyzer(self.api, self.token_loader)
-             
-             # Calculate ATM for OI Check
-             atm = round(ltp / 50) * 50
-             pcr = analyzer.get_pcr(expiry, atm)
-             sentiment = analyzer.analyze_sentiment(pcr)
-             
-             print(f">>> [AI Check] PCR: {pcr} | Sentiment: {sentiment}")
-             
-             # Filter Logic
-             if trend == "BULLISH":
-                 if sentiment == "BEARISH":
-                     print(">>> [AI Filter] REJECTED CE Trade. Price is Bullish but Big Players are Bearish (PCR < 0.8). Trap Detected! 🛡️")
-                     return
-                 print(">>> [Trade] Institutional Buying Detected (Price + OI Confirmed) -> GO LONG (CE)")
-                 self.place_pro_trade(expiry, "CE", ltp)
-                 
-             elif trend == "BEARISH":
-                 if sentiment == "BULLISH":
-                     print(">>> [AI Filter] REJECTED PE Trade. Price is Bearish but Big Players are Bullish (PCR > 1.2). Bear Trap! 🛡️")
-                     return
-                 print(">>> [Trade] Institutional Selling Detected (Price + OI Confirmed) -> GO SHORT (PE)")
-                 self.place_pro_trade(expiry, "PE", ltp)
+        while self.running:
+            # Analyze Market Structure
+            trend, signal, ltp = self.analyze_market_structure()
+            
+            if trend == "NEUTRAL":
+                print(f">>> [Analysis] Neutral/Chop. Waiting... ({signal})")
+                time.sleep(30) # Institutional analysis takes time
+                continue
+
+            print(f">>> [Result] High Probability Setup Detected: {trend} ({signal})")
+            
+            # 3. "X-Ray" Vision Check (OI Analysis) 🧠
+            from core.oi_analyzer import OIAnalyzer
+            analyzer = OIAnalyzer(self.api, self.token_loader)
+            
+            # Calculate ATM for OI Check
+            atm = int(round(ltp / 50) * 50)
+            pcr = analyzer.get_pcr(expiry, atm)
+            sentiment = analyzer.analyze_sentiment(pcr)
+            
+            print(f">>> [AI Check] PCR: {pcr:.2f} | Sentiment: {sentiment}")
+            
+            # Filter Logic
+            if trend == "BULLISH":
+                if sentiment == "BEARISH":
+                    print(">>> [AI Filter] REJECTED CE Trade. Price is Bullish but Big Players are Bearish. Trap Detected! 🛡️")
+                else:
+                    print(">>> [Trade] Institutional Buying Detected (Price + OI Confirmed) -> GO LONG (CE)")
+                    self.place_pro_trade(expiry, "CE", ltp)
+                    break # Position Managed by PositionManager from here
+                
+            elif trend == "BEARISH":
+                if sentiment == "BULLISH":
+                    print(">>> [AI Filter] REJECTED PE Trade. Price is Bearish but Big Players are Bullish. Bear Trap! 🛡️")
+                else:
+                    print(">>> [Trade] Institutional Selling Detected (Price + OI Confirmed) -> GO SHORT (PE)")
+                    self.place_pro_trade(expiry, "PE", ltp)
+                    break
+            
+            time.sleep(10)
 
     def analyze_market_structure(self):
         """
@@ -132,31 +149,15 @@ class VWAPStrategy:
 
     def fetch_nifty_data(self):
         try:
-            today_str = datetime.date.today().strftime("%Y-%m-%d")
-            # Fetch data from 09:15 to current time
-            historicParam={
-                "exchange": "NSE",
-                "symboltoken": "99926000", 
-                "interval": "FIVE_MINUTE",
-                "fromdate": f"{today_str} 09:15", 
-                "todate": f"{today_str} 15:30"
-            }
-            
-            data = self.api.getCandleData(historicParam)
-            
-            if data and data.get('data'):
-                candles = data['data']
-                df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                df['close'] = df['close'].astype(float)
-                df['high'] = df['high'].astype(float)
-                df['low'] = df['low'].astype(float)
-                df['volume'] = df['volume'].astype(float)
+            # Use DataFetcher for candle data
+            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+            if df is not None and not df.empty:
                 return df
-            else:
-                 # Mock Data Fallback ONLY if strictly testing
-                 is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
-                 if is_mock_api:
-                     return self.generate_mock_data()
+            
+            # Mock Data Fallback ONLY if strictly testing
+            is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
+            if is_mock_api:
+                return self.generate_mock_data()
         except:
             is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
             if is_mock_api: return self.generate_mock_data()
@@ -233,8 +234,18 @@ class VWAPStrategy:
 
     # Reused Helpers (Ideally refactor to a Mixin)
     def wait_for_fill(self, order_id):
-        time.sleep(1)
-        return 120.0 # Higher price simulation for ITM
+        attempts = 0
+        while attempts < 5 and self.running:
+            try:
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id and o['status'] == 'complete':
+                            return float(o['averageprice'])
+            except: pass
+            time.sleep(1)
+            attempts += 1
+        return 120.0 # Fallback
         
     def place_stop_loss(self, token, symbol, buy_price, qty):
         # ... Reuse SL logic ...

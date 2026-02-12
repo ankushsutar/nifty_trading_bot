@@ -61,8 +61,6 @@ class DecisionEngine:
 
         # 5. Smart Selection Matrix
         
-        # ... (rest of the rules) ...
-        
         # RULE: If Volatile, STAY CASH
         if regime == "VOLATILE":
             print(">>> [Brain] ⚠️ Market is VOLATILE. Staying in CASH to avoid whipsaws.")
@@ -70,12 +68,25 @@ class DecisionEngine:
 
         # Scenario: Trending Market
         if regime == "TRENDING":
-            if trend == "BULLISH" and bias != "BEARISH":
-                print(">>> [Brain] 📈 Bullish Trend Confirmed by OI. Selected: Momentum (Buy CE)")
+            adx = regime_data.get('adx', 0)
+            
+            # A. High Momentum (Super Trend) -> Reactive EMA Crossover
+            if adx > 30:
+                print(f">>> [Brain] ⚡ Strong Trend (ADX: {adx:.1f}). Selected: Momentum (Reactive Mode)")
                 return "MOMENTUM"
-            elif trend == "BEARISH" and bias != "BULLISH":
-                print(">>> [Brain] 📉 Bearish Trend Confirmed by OI. Selected: Momentum (Buy PE)")
-                return "MOMENTUM"
+
+            # B. Early Morning (09:30 - 10:00) -> Range Breakouts
+            if datetime.time(9, 30) <= now < datetime.time(10, 0):
+                print(">>> [Brain] 🚀 Early Trend detected. Selected: ORB (Range Breakout)")
+                return "ORB"
+            
+            # C. Post-Stability (10:00+) -> Institutional VWAP
+            elif now >= datetime.time(10, 0):
+                print(">>> [Brain] 🏛️ Institutional Trend confirmed. Selected: VWAP (Institutional Mode)")
+                return "VWAP"
+            
+            # Default fallback for trend
+            return "MOMENTUM"
 
         # Scenario: Rangebound / Sideways Market
         if regime in ["SIDEWAYS", "CHOP"]:
@@ -85,5 +96,10 @@ class DecisionEngine:
             elif bias != "NEUTRAL":
                 print(f">>> [Brain] 🎯 Rangebound but OI has {bias} bias. Selected: Inside Bar Scalp")
                 return "INSIDE_BAR"
+            else:
+                # If neutral but low funds, or just want a single-leg trade
+                print(">>> [Brain] 🕯️ Sideways. Selected: Inside Bar (Limited Risk)")
+                return "INSIDE_BAR"
 
+        # Fallback
         return "MOMENTUM"

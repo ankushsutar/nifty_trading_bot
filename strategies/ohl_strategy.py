@@ -14,6 +14,7 @@ class OHLStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.data_fetcher = DataFetcher(self.api)
+        self.running = True
 
 
     def execute(self, expiry, action="BUY"):
@@ -264,7 +265,7 @@ class OHLStrategy:
     def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None):
          logger.info(f"OHL: Monitoring Trade. Target: {target} | SL: {sl}")
          
-         while True:
+         while self.running:
             try:
                 time.sleep(5)
                 
@@ -293,12 +294,14 @@ class OHLStrategy:
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id)
                      break
                 
-            except KeyboardInterrupt:
-                  logger.info("OHL: Monitor Stopped by User.")
-                  break
             except Exception as e:
                   logger.error(f"OHL Monitor Error: {e}")
                   time.sleep(10)
+
+    def stop(self):
+        """Signal strategy to stop monitoring and exit."""
+        logger.info("OHL: Strategy Stop Signal Received.")
+        self.running = False
 
     def exit_at_market(self, token, symbol, qty, reason, trade_id=None):
         """Exits position at market price."""

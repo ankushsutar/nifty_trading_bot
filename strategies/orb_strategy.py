@@ -10,6 +10,9 @@ class ORBStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        from core.data_fetcher import DataFetcher
+        self.data_fetcher = DataFetcher(self.api)
+        self.running = True
         
         # State
         self.range_high = -1
@@ -74,7 +77,7 @@ class ORBStrategy:
     def monitor_breakout(self, expiry):
         print(">>> [ORB] Monitoring for Breakout...")
         
-        while True:
+        while self.running:
             # 1. Safety Check: Gatekeepers
             # We construct a fake 'tick_timestamp' for now as we are polling
             if not self.gatekeeper.check_funds(required_margin_per_lot=7000):
@@ -113,6 +116,13 @@ class ORBStrategy:
                 break
                 
             time.sleep(2)
+
+    def stop(self):
+        """Gracefully stop the strategy monitoring."""
+        print(">>> [ORB] Stop signal received.")
+        self.running = False
+        if hasattr(self, 'manager') and self.manager:
+            self.manager.stop()
 
     def place_entry_order(self, expiry, option_type):
         # Calculate Strike (ATM or slightly ITM based on breakout)
@@ -175,7 +185,8 @@ class ORBStrategy:
                  self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
                  
                  # Save to DB
-                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0)
+                 mode = "PAPER" if self.dry_run else "LIVE"
+                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="ORB")
                  
                  # START MONITORING
                  self.monitor_position(symbol, token, fill_price, tid)
@@ -190,7 +201,7 @@ class ORBStrategy:
         """
         attempts = 0
         max_attempts = 5 # Retry 5 times
-        while attempts < max_attempts:
+        while attempts < max_attempts and self.running:
             try:
                 book = self.api.orderBook()
                 if book and book.get('status'):
@@ -254,16 +265,12 @@ class ORBStrategy:
            'id': trade_id
         }]
         
-        manager = PositionManager(self.api, self.dry_run)
-        manager.monitor(pos)
+        self.manager = PositionManager(self.api, self.dry_run)
+        self.manager.monitor(pos)
 
     def get_nifty_ltp(self):
-        # Helper to get Nifty Index LTP
+        # Use DataFetcher for cached LTP
         try:
-            # Nifty 50 Token: 99926000
-            resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
-            if resp and resp.get('status'):
-                return resp['data']['ltp']
+            return self.data_fetcher.get_ltp("99926000")
         except:
-            pass
-        return None
+            return None
