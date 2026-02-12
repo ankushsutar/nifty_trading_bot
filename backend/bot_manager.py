@@ -117,7 +117,9 @@ class BotManager:
                      total_pnl += trade_pnl
                  
                  primary_trade['pnl'] = round(total_pnl, 2)
-                 # We mark it as 'active' logic
+                 # Sanitize for JSON (Remove ObjectId)
+                 if "_id" in primary_trade: del primary_trade["_id"]
+                 
                  return {"active": True, "details": primary_trade}
                  
         except Exception as e:
@@ -208,6 +210,8 @@ class BotManager:
                     except Exception as e:
                         logger.error(f"Daily Summary Open Trade Calc Error: {e}")
                 
+                # Sanitize for JSON (Remove ObjectId)
+                if "_id" in trade: del trade["_id"]
                 summary_trades.append(trade)
                 
             return {
