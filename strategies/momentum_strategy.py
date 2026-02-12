@@ -36,6 +36,7 @@ class MomentumStrategy:
         self.last_sync_time = 0
         self.last_analysis = {} # Stores EMA9, RSI, etc for logging
         self.last_oi_scan = 0
+        self.last_trailing_check = 0 # Throttle Trailing Stop Checks
         self.oi_data = {}
         
         self.sync_state() # Initial Sync with Broker
@@ -68,7 +69,25 @@ class MomentumStrategy:
         Synchronizes active position from Broker API.
         Current Rule: Looks for the FIRST active NIFTY Intraday position.
         """
-        if self.dry_run: return # No sync in dry run
+        if self.dry_run:
+            # Try to recover state from DB for Paper Trading
+            if self.active_position is None:
+                db_trade = trade_repo.get_active_trade(mode="PAPER")
+                if db_trade:
+                    # Map DB columns to Strategy State
+                    self.active_position = {
+                        'id': db_trade['id'],
+                        'leg': db_trade['leg'],
+                        'symbol': db_trade['symbol'],
+                        'token': db_trade['token'],
+                        'qty': db_trade['qty'],
+                        'entry_price': db_trade['entry_price'],
+                        'sl_price': db_trade['sl_price'],
+                        # Restore context if possible, or default
+                        'atr': 0.0 # Will be updated on next analysis
+                    }
+                    logger.info(f"♻️ PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
+            return
         
         try:
              # logger.info("System: 🔄 Syncing State with Broker...")
@@ -201,7 +220,8 @@ class MomentumStrategy:
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
         if not self.gatekeeper.check_max_daily_loss(0): return
-        if self.gatekeeper.is_blackout_period(): return
+        # Allow managing EXISTING positions during Blackout
+        if not self.active_position and self.gatekeeper.is_blackout_period(): return
 
         # 1. Continuous Monitor Loop
         logger.info("Starting Smart Monitor Loop (Safety: 1s | Trend: 5m Sync)...")
@@ -252,30 +272,34 @@ class MomentumStrategy:
                      self.last_sync_time = time.time()
 
                 if self.active_position:
-                    # Check Trailing Stop
-                    if self.check_trailing_stop():
-                        pass # Triggered
-                    
-                    # Calculate Real-Time PnL & Max Loss
-                    try:
-                        token = self.active_position['token']
-                        symbol = self.active_position['symbol']
-                        entry_price = self.active_position['entry_price']
-                        qty = self.active_position['qty']
+                    # Check Trailing Stop & PnL (Throttled to 3s)
+                    if time.time() - self.last_trailing_check > 3:
+                        if self.check_trailing_stop():
+                            pass # Triggered and Closed
                         
-                        # Get LTP
-                        ltp_check = self.api.ltpData("NFO", symbol, token)
-                        if ltp_check and ltp_check.get('status'):
-                            curr_ltp = float(ltp_check['data']['ltp'])
-                            curr_pnl = (curr_ltp - entry_price) * qty
-                            
-                            # Check against Max Daily Loss
-                            if not self.gatekeeper.check_max_daily_loss(curr_pnl):
-                                logger.error(f"🛑 ACTIVE MAX LOSS HIT (PnL: {curr_pnl}). Force Closing!")
-                                self.close_position("MAX_DAILY_LOSS")
-                                break # Stop strategy completely
-                    except Exception as e:
-                        logger.error(f"Active PnL Check Error: {e}")
+                        else:
+                            # Calculate Real-Time PnL & Max Loss (Only if still active)
+                            try:
+                                token = self.active_position['token']
+                                symbol = self.active_position['symbol']
+                                entry_price = self.active_position['entry_price']
+                                qty = self.active_position['qty']
+                                
+                                # Get LTP
+                                ltp_check = self.api.ltpData("NFO", symbol, token)
+                                if ltp_check and ltp_check.get('status'):
+                                    curr_ltp = float(ltp_check['data']['ltp'])
+                                    curr_pnl = (curr_ltp - entry_price) * qty
+                                    
+                                    # Check against Max Daily Loss
+                                    if not self.gatekeeper.check_max_daily_loss(curr_pnl):
+                                        logger.error(f"🛑 ACTIVE MAX LOSS HIT (PnL: {curr_pnl}). Force Closing!")
+                                        self.close_position("MAX_DAILY_LOSS")
+                                        break # Stop strategy completely
+                            except Exception as e:
+                                logger.error(f"Active PnL Check Error: {e}")
+
+                        self.last_trailing_check = time.time()
 
                 # 2. Time Exit
                 now_time = datetime.datetime.now().time()

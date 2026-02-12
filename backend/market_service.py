@@ -102,20 +102,13 @@ class MarketService:
             }
 
         try:
-            # 2. Fetch LTPs (All processes still do this for real-time accuracy, 
-            # but only Master does the heavy technical analysis)
-            nifty_ltp = 0.0
-            resp_nifty = self.api.ltpData("NSE", "Nifty 50", "99926000")
-            if resp_nifty and resp_nifty.get('status'):
-                nifty_ltp = float(resp_nifty['data']['ltp'])
-
+            # 2. Fetch LTPs using centralized throttle
+            nifty_ltp = self.get_ltp("NSE", "Nifty 50", "99926000")
+            
             vix_ltp = 0.0
             try:
-                resp_vix = self.api.ltpData("NSE", "INDIA VIX", "99926017")
-                if resp_vix and resp_vix.get('status'):
-                    vix_ltp = float(resp_vix['data']['ltp'])
-            except: 
-                pass
+                vix_ltp = self.get_ltp("NSE", "INDIA VIX", "99926017")
+            except: pass
 
             data = {
                 "nifty": nifty_ltp,
@@ -146,12 +139,12 @@ class MarketService:
         # 1. Use shared lock to prevent concurrent API calls within this process
         with self._lock:
             try:
-                # 2. Strict Rate Limiting (Angel One: ~3 req/sec)
-                # We enforce a 350ms gap between any two direct API calls.
+                # 2. Strict Rate Limiting (Angel One: ~3 req/sec global, but safe to go slow)
+                # We enforce a 1.0s gap between any two direct API calls from this process.
                 now = time.time()
                 elapsed = now - getattr(self, '_last_api_call_time', 0)
-                if elapsed < 0.35:
-                    time.sleep(0.35 - elapsed)
+                if elapsed < 1.0:
+                    time.sleep(1.0 - elapsed)
                 
                 self._last_api_call_time = time.time()
                 
