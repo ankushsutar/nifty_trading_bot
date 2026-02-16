@@ -143,7 +143,8 @@ class LifecycleManager:
                     if not self.current_process:
                         self.log("⏰ Time 09:20+ Detected. Switching to Main Auto-Strategy...")
                         self.current_process = self.run_strategy(auto=True)
-                        time.sleep(10)
+                        # Throttle: Wait at least 60s before checking again to prevent rapid restarts
+                        time.sleep(60)
                 
                 # D. MARKET CLOSE (> 15:15)
                 elif now >= datetime.time(15, 15):

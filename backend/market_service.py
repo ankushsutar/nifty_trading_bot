@@ -50,6 +50,33 @@ class MarketService:
 
 
     def _ensure_connection(self):
+        # 1. Check for Forced Refresh Flag (from Rate Limiter)
+        flag_file = os.path.join(os.getcwd(), "data", "session_refresh.flag")
+        if os.path.exists(flag_file):
+            logger.warning(">>> [MarketService] Session Refresh Flag Detected! Forcing New Session...")
+            try:
+                # 1. Reset Circuit Breaker FIRST to avoid waiting for the penalty time during recovery
+                from bot.utils.rate_limiter import rate_limiter
+                rate_limiter.reset_circuit_breaker()
+                
+                # 2. Force Refresh (Now it won't be blocked by CB)
+                self.api = get_angel_session(force_refresh=True)
+                
+                if self.api:
+                    logger.info("MarketService: Session Refreshed Successfully 🟢")
+                    
+                    # Update Components with new API instance
+                    if self.data_fetcher: self.data_fetcher.api = self.api
+                    if self.oi_engine: self.oi_engine.api = self.api
+                    
+                    # Remove Flag
+                    os.remove(flag_file)
+                else:
+                    logger.error("Session Refresh Failed: API is None.")
+            except Exception as e:
+                logger.error(f"Session Refresh Error: {e}")
+
+        # 2. Normal Connection Check
         if self.api is None:
             try:
                 self.api = get_angel_session()
@@ -57,6 +84,7 @@ class MarketService:
                     logger.info("MarketService: Connected to Angel One 🟢")
             except Exception as e:
                 logger.error(f"MarketService Connection Failed: {e}")
+
 
     def get_market_data(self):
         """
@@ -131,29 +159,22 @@ class MarketService:
 
     def get_ltp(self, exchange, symbol, token):
         """
-        Generic method to fetch LTP for any token with strict rate limiting.
+        Generic method to fetch LTP for any token with strict global rate limiting.
         """
         self._ensure_connection()
         if not self.api: return 0.0
         
-        # 1. Use shared lock to prevent concurrent API calls within this process
-        with self._lock:
-            try:
-                # 2. Strict Rate Limiting (Angel One: ~3 req/sec global, but safe to go slow)
-                # We enforce a 1.0s gap between any two direct API calls from this process.
-                now = time.time()
-                elapsed = now - getattr(self, '_last_api_call_time', 0)
-                if elapsed < 1.0:
-                    time.sleep(1.0 - elapsed)
-                
-                self._last_api_call_time = time.time()
-                
-                resp = self.api.ltpData(exchange, symbol, token)
-                if resp and resp.get('status'):
-                    return float(resp['data']['ltp'])
-            except Exception as e:
-                # logger.error(f"LTP Fetch Error ({symbol}): {e}")
-                pass 
+        try:
+            # --- GLOBAL RATE LIMITING ---
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            
+            resp = self.api.ltpData(exchange, symbol, token)
+            if resp and resp.get('status'):
+                return float(resp['data']['ltp'])
+        except Exception as e:
+            # logger.error(f"LTP Fetch Error ({symbol}): {e}")
+            pass 
             
         return 0.0
 
@@ -164,7 +185,10 @@ class MarketService:
                 time.sleep(600) # Every 10 minutes
                 if self.api:
                     # Small harmless API call to prevent idle timeout
-                    profile = self.api.getProfile()
+                    from bot.utils.rate_limiter import rate_limiter
+                    rate_limiter.wait()
+                    
+                    profile = self.api.getProfile(self.api.refresh_token)
                     if profile and profile.get('status'):
                         logger.debug("MarketService: Session Heartbeat Successful 💓")
                     else:
@@ -196,20 +220,36 @@ class MarketService:
                         from bot.utils.expiry_calculator import get_next_weekly_expiry
                         expiry = get_next_weekly_expiry()
                         
-                        self.oi_data = self.oi_engine.get_market_sentiment(expiry, strike)
-                        
-                        # 3. Save Shared Intelligence for Child Processes
-                        state = {
-                            "timestamp": datetime.datetime.now().isoformat(),
-                            "analysis": self.analysis_data,
-                            "oi_data": self.oi_data
-                        }
-                        if not os.path.exists("data"): os.makedirs("data")
-                        with open("data/market_analysis.json", "w") as f:
-                            json.dump(state, f, default=str)
+                        # Fetch VIX for shared state
+                        vix_ltp = 0.0
+                        try:
+                            vix_ltp = self.get_ltp("NSE", "INDIA VIX", "99926017")
+                        except: pass
 
-                        
-                    logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
+                        if ltp > 0:
+                            analysis = self.oi_engine.get_market_sentiment(expiry, ltp)
+                            self.oi_data = analysis # Update oi_data with the full analysis dict
+                            
+                            # 3. Save Shared Intelligence for Child Processes
+                            state = {
+                                "timestamp": datetime.datetime.now().isoformat(),
+                                "nifty_ltp": ltp,
+                                "vix": vix_ltp,
+                                "analysis": self.analysis_data,
+                                "sentiment": analysis.get("bias", "NEUTRAL"),
+                                "pcr": analysis.get("pcr", 1.0),
+                                "oi_delta_ratio": analysis.get("delta_ratio", 1.0)
+                            }
+                            if not os.path.exists("data"): os.makedirs("data")
+                            with open("data/market_analysis.json", "w") as f:
+                                json.dump(state, f, default=str)
+
+                            
+                            logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
+                        else:
+                            logger.warning("MarketService: Skipping OI analysis - Nifty LTP is zero.")
+                    else:
+                        logger.warning("MarketService: Skipping refresh - No candle data available.")
                 
                 time.sleep(180) # Run every 3 minutes
 

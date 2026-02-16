@@ -1,101 +1,122 @@
-import logging
-import time
+import pandas as pd
 import datetime
+import time
+import os
+import json
 from bot.utils.logger import logger
+from bot.utils.rate_limiter import rate_limiter
 
 class OIAnalyzer:
-    def __init__(self, api, token_loader):
+    def __init__(self, api, token_lookup):
         self.api = api
-        self.loader = token_loader
-        
+        self.token_lookup = token_lookup
+        self.snapshot_file = os.path.join(os.getcwd(), "data", "oi_snapshot.json")
+
+    def _get_oi_snapshot(self):
+        """Loads today's 09:15 OI snapshot."""
+        today = datetime.date.today().isoformat()
+        if os.path.exists(self.snapshot_file):
+            try:
+                with open(self.snapshot_file, "r") as f:
+                    data = json.load(f)
+                    if data.get("date") == today:
+                        return data.get("snapshots", {})
+            except: pass
+        return {}
+
+    def _save_oi_snapshot(self, snapshots):
+        """Saves today's 09:15 OI snapshot."""
+        today = datetime.date.today().isoformat()
+        data = {"date": today, "snapshots": snapshots}
+        os.makedirs(os.path.dirname(self.snapshot_file), exist_ok=True)
+        with open(self.snapshot_file, "w") as f:
+            json.dump(data, f)
+
     def get_market_sentiment(self, expiry, atm_strike):
         """
-        Comprehensive Market Sentiment analysis using PCR and Delta OI.
-        Returns: { 'pcr': float, 'sentiment': str, 'confidence': float, 'bias': str }
+        Analyzes OI sentiment using Batch Quote API.
+        This replaces 10 historical fetches with 1 Quote fetch.
         """
-        logger.info(f">>> [Analysis] 🔍 Scanning Option Chain Sentiment (ATM: {atm_strike})")
-        
-        # 5 Strikes around ATM
-        strikes = [atm_strike - 100, atm_strike - 50, atm_strike, atm_strike + 50, atm_strike + 100]
-        
-        total_ce_oi = 0
-        total_pe_oi = 0
-        total_ce_delta = 0
-        total_pe_delta = 0
-        
-        for strike in strikes:
-            ce_token, ce_symbol = self.loader.get_token("NIFTY", expiry, strike, "CE")
-            pe_token, pe_symbol = self.loader.get_token("NIFTY", expiry, strike, "PE")
-            
-            if not ce_token or not pe_token:
-                continue
-
-            # Fetch Intraday Data for Delta OI
-            # Rate limit protection: angel usually allows 3 req/sec
-            # Increasing buffer to 1.2s for safety to handle concurrent load
-            time.sleep(1.2) 
-            ce_oi, ce_delta = self._fetch_oi_and_delta(ce_token)
-            
-            time.sleep(1.2)
-            pe_oi, pe_delta = self._fetch_oi_and_delta(pe_token)
-
-            
-            total_ce_oi += ce_oi
-            total_pe_oi += pe_oi
-            total_ce_delta += ce_delta
-            total_pe_delta += pe_delta
-            
-            logger.debug(f"    Strike {strike} | CE-OI: {ce_oi}, Δ: {ce_delta} | PE-OI: {pe_oi}, Δ: {pe_delta}")
-
-        # 1. PCR Calculation
-        pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
-        pcr = round(pcr, 2)
-        
-        # 2. Delta Sentiment (The "Pressure")
-        # If PE Delta > CE Delta -> Put Writing is heavier -> Bullish Pressure
-        delta_ratio = total_pe_delta / total_ce_delta if total_ce_delta > 0 else 1.0
-        
-        # 3. Overall Bias
-        bias = "NEUTRAL"
-        if pcr > 1.2 or delta_ratio > 1.5:
-            bias = "BULLISH"
-        elif pcr < 0.8 or delta_ratio < 0.6:
-            bias = "BEARISH"
-            
-        logger.info(f">>> [Sentiment] PCR: {pcr} | DeltaPressure: {round(delta_ratio, 2)} | Bias: {bias}")
-        
-        return {
-            "pcr": pcr,
-            "delta_ratio": round(delta_ratio, 2),
-            "bias": bias,
-            "total_ce_oi": total_ce_oi,
-            "total_pe_oi": total_pe_oi
-        }
-
-    def _fetch_oi_and_delta(self, token):
-        """Fetches current OI and the change since the first intraday candle."""
         try:
-            today = datetime.datetime.now().strftime("%Y-%m-%d 09:15")
-            now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+            # 1. Determine Strikes (5 above, 5 below)
+            base_strike = round(atm_strike / 50) * 50
+            strikes = [base_strike + (i * 50) for i in range(-5, 6)]
             
-            param = {
-                "exchange": "NFO",
-                "symboltoken": token,
-                "interval": "FIVE_MINUTE",
-                "fromdate": today,
-                "todate": now
-            }
+            # 2. Map Strikes to Tokens
+            tokens_to_fetch = []
+            token_map = {} # token -> (strike, type)
             
-            data = self.api.getCandleData(param)
-            if data and data.get('data') and len(data['data']) > 0:
-                candles = data['data']
-                # [timestamp, open, high, low, close, volume, oi]
-                latest_oi = float(candles[-1][6]) if len(candles[-1]) > 6 else float(candles[-1][5])
-                initial_oi = float(candles[0][6]) if len(candles[0]) > 6 else float(candles[0][5])
+            for strike in strikes:
+                for opt_type in ['CE', 'PE']:
+                    token, symbol = self.token_lookup.get_token("NIFTY", expiry, strike, opt_type)
+                    if token:
+                        tokens_to_fetch.append(token)
+                        token_map[token] = {"strike": strike, "type": opt_type, "symbol": symbol}
+
+            if not tokens_to_fetch:
+                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+
+            # 3. Batch Fetch Current Quotes (OI + LTP)
+            batch_params = {"NFO": tokens_to_fetch}
+            
+            rate_limiter.wait()
+            response = self.api.getMarketData("FULL", batch_params)
+            
+            if not response.get('status') or 'data' not in response:
+                logger.error(f"OI Batch Fetch Failed: {response}")
+                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+
+            fetched_data = response['data']['fetched']
+            
+            # 4. Handle OI Snapshots for Intraday Change
+            snapshots = self._get_oi_snapshot()
+            if not snapshots:
+                logger.info(">>> [System] Creating Daily OI Snapshot... 📸")
+                for item in fetched_data:
+                    snapshots[item['symbolToken']] = item['opnInterest']
+                self._save_oi_snapshot(snapshots)
+
+            # 5. Calculate Sentiment
+            total_ce_oi = 0
+            total_pe_oi = 0
+            total_ce_delta = 0
+            total_pe_delta = 0
+            
+            for item in fetched_data:
+                token = item['symbolToken']
+                current_oi = item['opnInterest']
+                prev_oi = snapshots.get(token, current_oi)
                 
-                delta_oi = latest_oi - initial_oi
-                return latest_oi, delta_oi
+                delta_oi = current_oi - prev_oi
+                opt_info = token_map.get(token)
+                
+                if opt_info['type'] == 'CE':
+                    total_ce_oi += current_oi
+                    total_ce_delta += delta_oi
+                else:
+                    total_pe_oi += current_oi
+                    total_pe_delta += delta_oi
+
+            # Calculations
+            pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
+            delta_ratio = total_pe_delta / total_ce_delta if total_ce_delta > 0 else 1.0
             
-            return 0, 0
+            bias = "NEUTRAL"
+            if pcr > 1.2 or delta_ratio > 1.5:
+                bias = "BULLISH"
+            elif pcr < 0.8 or delta_ratio < 0.6:
+                bias = "BEARISH"
+                
+            logger.info(f">>> [Sentiment] PCR: {round(pcr, 2)} | Delta Ratio: {round(delta_ratio, 2)} | Bias: {bias}")
+            
+            return {
+                "bias": bias,
+                "pcr": round(pcr, 2),
+                "delta_ratio": round(delta_ratio, 2),
+                "total_ce_oi": total_ce_oi,
+                "total_pe_oi": total_pe_oi
+            }
+
         except Exception as e:
-            return 0, 0
+            logger.error(f"OI Analysis Error: {e}")
+            return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}

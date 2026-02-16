@@ -15,7 +15,16 @@ class RegimeClassifier:
         Returns a dict with regime and metadata.
         """
         if df is None or len(df) < 22:
-            return {"regime": "UNKNOWN", "adx": 0, "rsi": 50, "atr": 0, "bbw": 0}
+            return {
+                "regime": "UNKNOWN", 
+                "trend": "NEUTRAL",
+                "adx": 0, 
+                "rsi": 50, 
+                "atr": 0, 
+                "bbw": 0,
+                "ema9": 0,
+                "ema21": 0
+            }
 
         df = df.copy()
         

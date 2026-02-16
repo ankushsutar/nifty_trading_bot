@@ -1,6 +1,8 @@
 import time
 import datetime
 import pandas as pd
+import json
+import os
 from bot.utils.logger import logger
 
 import threading
@@ -15,10 +17,13 @@ class DataFetcher:
                 cls._instance = super(DataFetcher, cls).__new__(cls)
                 cls._instance.api = api
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
-                cls._instance.cache_duration = 55 # seconds
+                cls._instance.cache_duration = 115 # seconds (Increased to ~2 mins)
+                cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
+                cls._instance.last_session_check = time.time()
             elif api is not None:
                 # Update API if a new one is provided (e.g. session refreshed)
                 cls._instance.api = api
+                cls._instance.last_session_check = time.time()
             return cls._instance
 
     def __init__(self, api=None):
@@ -56,13 +61,20 @@ class DataFetcher:
         Fetches historic candle data and returns a DataFrame.
         Uses caching to prevent hitting unnecessary API limits.
         """
-        # 1. Check Cache
-        cache_key = (symbol_token, interval)
+        # 1. Check In-Memory Cache first
+        cache_key = f"{symbol_token}_{interval}"
         if cache_key in self.data_cache:
             last_time, cached_df = self.data_cache[cache_key]
             if time.time() - last_time < self.cache_duration:
-                # logger.info(f"Using Cached Data for {symbol_token} ({time.time() - last_time:.0f}s old)")
-                return cached_df.copy() # Return copy to avoid mutation issues
+                return cached_df.copy()
+
+        # 2. Check Disk Cache (for sharing across processes)
+        disk_data = self._read_disk_cache(cache_key)
+        if disk_data is not None:
+            logger.info(f"Using Disk-Cached Data for {symbol_token}_{interval}")
+            # Update in-memory cache
+            self.data_cache[cache_key] = (time.time(), disk_data)
+            return disk_data.copy()
 
         max_retries = 3
         now = datetime.datetime.now()
@@ -80,15 +92,19 @@ class DataFetcher:
         # We always request up to the LAST COMPLETED candle to be safe.
         # If we are at 13:19, aligned_to is 13:15. This is perfect.
         # If we are at 13:15:05, aligned_to is 13:15, but it might be too fresh.
-        # So we always subtract 1 interval to be 100% safe.
-        aligned_to = aligned_to - datetime.timedelta(minutes=mins)
+        # So we always subtract 2 intervals to be extremely safe.
+        # This ensures the data is fully finalized on Angel One's servers.
+        aligned_to = aligned_to - datetime.timedelta(minutes=mins * 2)
             
-        aligned_from = self._align_to_interval(now - datetime.timedelta(days=days), mins)
-
-
-        # Optimization: If it's after 11:30 AM, today's data (09:15) is enough for EMA21
-        if days == 1 and now.time() > datetime.time(11, 30):
-            aligned_from = aligned_to.replace(hour=9, minute=15)
+        # Optimization: Snap to today's open (09:15) if we only need ~1 day of data
+        # This keeps response size small and helps with NFO tokens.
+        if days == 1:
+            market_open = now.replace(hour=9, minute=15, second=0, microsecond=0)
+            if now >= market_open:
+                aligned_from = market_open
+            else:
+                # If before market open, get from yesterday's 09:15
+                aligned_from = market_open - datetime.timedelta(days=1)
             
         from_date = aligned_from.strftime("%Y-%m-%d %H:%M")
         to_date = aligned_to.strftime("%Y-%m-%d %H:%M")
@@ -103,10 +119,15 @@ class DataFetcher:
 
 
         for attempt in range(max_retries):
+            # Aggressive Time Alignment on subsequent attempts
+            current_aligned_to = aligned_to
+            if attempt > 0:
+                current_aligned_to = aligned_to - datetime.timedelta(minutes=mins * attempt)
+                historicParam["todate"] = current_aligned_to.strftime("%Y-%m-%d %H:%M")
+
             try:
-                # Rate limit protection + slight jitter
-                import random
-                time.sleep(0.5 + random.uniform(0.1, 0.3)) 
+                from bot.utils.rate_limiter import rate_limiter
+                rate_limiter.wait()
                 
                 response = self.api.getCandleData(historicParam)
                 
@@ -114,27 +135,111 @@ class DataFetcher:
                     columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
                     df = pd.DataFrame(response['data'], columns=columns)
                     
-                    # Convert columns to proper types
+                    if df.empty:
+                        logger.warning(f"Fetch Candles Success but EMPTY data for {symbol_token}")
+                        return None
+
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                     df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
                     
-                    # Update Cache
                     self.data_cache[cache_key] = (time.time(), df)
-                    
+                    self._write_disk_cache(cache_key, df)
                     return df
                 else:
+                    err_code = response.get('errorcode')
                     logger.warning(f"Fetch Candles Failed (Attempt {attempt+1}): {response}")
-                    logger.warning(f"Params: {historicParam}")
+                    
+                    if err_code == 'AB1004':
+                        if attempt >= 1: # Trigger breaker on 2nd+ fail
+                            from bot.utils.rate_limiter import rate_limiter
+                            rate_limiter.trigger_circuit_breaker(30)
             
             except Exception as e:
                 logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
-                logger.error(f"Params: {historicParam}")
                 
+                # --- SESSION RELOAD CHECK ---
+                # If we encounter an error, check if the session file has been updated (by MarketService)
+                try:
+                    session_file = os.path.join(os.getcwd(), "data", "session.json")
+                    if os.path.exists(session_file):
+                        file_mtime = os.path.getmtime(session_file)
+                        if file_mtime > self.last_session_check:
+                            logger.info(">>> [DataFetcher] Deteced New Session File! Reloading API... 🔄")
+                            from bot.core.angel_connect import get_angel_session
+                            new_api = get_angel_session()
+                            if new_api:
+                                self.api = new_api
+                                self.last_session_check = time.time()
+                                logger.info(">>> [DataFetcher] API Instance Reloaded Successfully.")
+                except Exception as ex:
+                    logger.warning(f"Session Reload Check Failed: {ex}")
+                # -----------------------------
+
             if attempt < max_retries - 1:
-                # Exponential-ish backoff with jitter
+                import random
                 sleep_time = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
-                logger.info(f"Retrying in {sleep_time:.2f}s...")
+                logger.info(f"Retrying Candle Fetch in {sleep_time:.2f}s...")
                 time.sleep(sleep_time)
 
+        # --- OPTIMISTIC FALLBACK ---
+        # If all retries fail, check if we have ANY data in disk/memory cache 
+        # that is not TOO old (e.g. < 10 mins)
+        stale_data = self._read_disk_cache(cache_key, force_fresh=False)
+        if stale_data is not None:
+             logger.warning(f"!!! [System] All retries failed. Returning STALE cached data for {symbol_token} as fallback.")
+             return stale_data
+             
         return None
 
+
+    def _read_disk_cache(self, cache_key, force_fresh=True):
+        """Reads candle data from shared disk cache."""
+        try:
+            if not os.path.exists(self.disk_cache_path):
+                return None
+                
+            # Check if file is fresh (for fallback, we might accept older)
+            max_age = self.cache_duration if force_fresh else 600 # 10 mins fallback
+            if time.time() - os.path.getmtime(self.disk_cache_path) > max_age and force_fresh:
+                return None
+
+            with open(self.disk_cache_path, "r") as f:
+                full_cache = json.load(f)
+                
+            if cache_key in full_cache:
+                entry = full_cache[cache_key]
+                # Check if specific entry is fresh
+                if time.time() - entry['timestamp'] < self.cache_duration:
+                    df = pd.DataFrame(entry['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+                    df['timestamp'] = pd.to_datetime(df['timestamp'])
+                    df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
+                    return df
+        except Exception as e:
+            # logger.error(f"Disk Cache Read Error: {e}")
+            pass
+        return None
+
+    def _write_disk_cache(self, cache_key, df):
+        """Writes candle data to shared disk cache."""
+        try:
+            full_cache = {}
+            if os.path.exists(self.disk_cache_path):
+                try:
+                    with open(self.disk_cache_path, "r") as f:
+                        full_cache = json.load(f)
+                except: pass
+            
+            # Use list records format for JSON serialization
+            full_cache[cache_key] = {
+                "timestamp": time.time(),
+                "data": df.values.tolist()
+            }
+            
+            if not os.path.exists(os.path.dirname(self.disk_cache_path)):
+                os.makedirs(os.path.dirname(self.disk_cache_path))
+                
+            with open(self.disk_cache_path, "w") as f:
+                json.dump(full_cache, f)
+        except Exception as e:
+            # logger.error(f"Disk Cache Write Error: {e}")
+            pass
