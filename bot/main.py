@@ -20,6 +20,7 @@ bot_instance = None
 def signal_handler(sig, frame):
     """Handles Ctrl+C and Termination Signals"""
     print(f"\n>>> [System] Signal Received ({sig}). Initiating Graceful Shutdown...")
+    sys.stdout.flush()
     
     if bot_instance:
         print(">>> [System] Cleaning up Active Positions...")

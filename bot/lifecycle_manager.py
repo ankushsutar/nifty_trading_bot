@@ -38,7 +38,7 @@ class LifecycleManager:
         """
         Runs main.py with the specified strategy or auto mode.
         """
-        cmd = [sys.executable, "-m", "bot.main"]
+        cmd = [sys.executable, "-u", "-m", "bot.main"]
         
         if auto:
             cmd.append("--auto")
@@ -92,7 +92,7 @@ class LifecycleManager:
             self.log("Sending Kill Signal to Child Process...")
             self.current_process.terminate()
             try:
-                self.current_process.wait(timeout=5)
+                self.current_process.wait(timeout=10)
                 self.log("Child Process terminated gracefully.")
             except subprocess.TimeoutExpired:
                 self.log("Child Process stuck. Force Killing...")

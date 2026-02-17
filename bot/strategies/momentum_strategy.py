@@ -263,9 +263,9 @@ class MomentumStrategy:
                 # --- FAST LOOP (Safety & Management) ---
                 # Runs every iteration (~1 second)
                 # 1. Active PnL & Sync Check (Synced every 15s)
-                 if not self.dry_run and time.time() - self.last_sync_time > 15:
-                      self.sync_state()
-                      self.last_sync_time = time.time()
+                if not self.dry_run and time.time() - self.last_sync_time > 15:
+                     self.sync_state()
+                     self.last_sync_time = time.time()
 
                 if self.active_position:
                     # Check Trailing Stop & PnL (Throttled to 3s)

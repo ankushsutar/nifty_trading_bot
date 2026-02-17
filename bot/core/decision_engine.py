@@ -60,8 +60,8 @@ class DecisionEngine:
         print(f">>> [Brain] Option Chain Bias: {bias} (PCR: {sentiment.get('pcr', 0)})")
 
         # 5. Smart Selection Matrix
-        
-        # RULE: If Volatile, STAY CASH
+        selected_strategy = "MOMENTUM" # Default Fallback
+
         if regime == "VOLATILE":
             print(">>> [Brain] ⚠️ Market is VOLATILE. Staying in CASH to avoid whipsaws.")
             return None
@@ -73,33 +73,56 @@ class DecisionEngine:
             # A. High Momentum (Super Trend) -> Reactive EMA Crossover
             if adx > 30:
                 print(f">>> [Brain] ⚡ Strong Trend (ADX: {adx:.1f}). Selected: Momentum (Reactive Mode)")
-                return "MOMENTUM"
+                selected_strategy = "MOMENTUM"
 
             # B. Early Morning (09:30 - 10:00) -> Range Breakouts
-            if datetime.time(9, 30) <= now < datetime.time(10, 0):
+            elif datetime.time(9, 30) <= now < datetime.time(10, 0):
                 print(">>> [Brain] 🚀 Early Trend detected. Selected: ORB (Range Breakout)")
-                return "ORB"
+                selected_strategy = "ORB"
             
             # C. Post-Stability (10:00+) -> Institutional VWAP
             elif now >= datetime.time(10, 0):
                 print(">>> [Brain] 🏛️ Institutional Trend confirmed. Selected: VWAP (Institutional Mode)")
-                return "VWAP"
+                selected_strategy = "VWAP"
             
-            # Default fallback for trend
-            return "MOMENTUM"
-
         # Scenario: Rangebound / Sideways Market
-        if regime in ["SIDEWAYS", "CHOP"]:
+        elif regime in ["SIDEWAYS", "CHOP"]:
             if funds_for_straddle and bias == "NEUTRAL":
                 print(">>> [Brain] 💠 Rangebound Market + Neutral OI. Selected: Straddle (Premium Capture)")
-                return "STRADDLE"
+                selected_strategy = "STRADDLE"
             elif bias != "NEUTRAL":
                 print(f">>> [Brain] 🎯 Rangebound but OI has {bias} bias. Selected: Inside Bar Scalp")
-                return "INSIDE_BAR"
+                selected_strategy = "INSIDE_BAR"
             else:
                 # If neutral but low funds, or just want a single-leg trade
                 print(">>> [Brain] 🕯️ Sideways. Selected: Inside Bar (Limited Risk)")
-                return "INSIDE_BAR"
+                selected_strategy = "INSIDE_BAR"
 
-        # Fallback
-        return "MOMENTUM"
+        # FINAL BUDGET CHECK
+        # Map strategies to their margin requirements (approx)
+        # Includes 10% buffer
+        MARGIN_MAP = {
+            "STRADDLE": 150000,
+            "VWAP": 9500,      # 8500 + buffer
+            "ORB": 5500,       # 5000 + buffer
+            "MOMENTUM": 5500,
+            "OHL": 5500,
+            "INSIDE_BAR": 5500
+        }
+
+        required = MARGIN_MAP.get(selected_strategy, 5500)
+        if not self.gatekeeper.check_funds(required_margin_per_lot=required):
+            print(f">>> [Brain] ⚠️ Insufficient Funds for {selected_strategy} (Need ~₹{required}).")
+            
+            # Fallback Logic
+            if selected_strategy == "VWAP":
+                print(">>> [Brain] 🔄 Downgrading to MOMENTUM (Cheaper Trend Strategy).")
+                selected_strategy = "MOMENTUM"
+            elif selected_strategy == "STRADDLE":
+                print(">>> [Brain] 🔄 Downgrading to INSIDE_BAR (Cheaper Range/Scalp Strategy).")
+                selected_strategy = "INSIDE_BAR"
+            else:
+                print(">>> [Brain] ❌ No cheaper strategy available. Aborting.")
+                return None
+        
+        return selected_strategy

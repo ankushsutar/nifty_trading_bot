@@ -207,6 +207,21 @@ class ORBStrategy:
         max_attempts = 5 # Retry 5 times
         while attempts < max_attempts and self.running:
             try:
+                # 1. Fetch Order Book
+                book = self.api.orderBook()
+                if book and book.get('status'):
+                    for order in book['data']:
+                        if order['orderid'] == order_id:
+                            if order['status'] == 'complete':
+                                avg_price = float(order['averageprice'])
+                                print(f">>> [Fill] Order {order_id} filled at ₹{avg_price}")
+                                return avg_price
+                            
+            except Exception as e:
+                print(f">>> [Wait] Error fetching order book: {e}")
+            
+            time.sleep(1)
+            attempts += 1
         
         print(f">>> [Error] Order {order_id} failed to fill after waiting.")
         return None
