@@ -116,12 +116,15 @@ class PositionManager:
                 if now - last_time < 0.9: # Return cached if < 0.9s old
                     return last_val
 
-            # 2. Fetch from API (Respecting Global Rate Limit?)
-            # Ideally we should use rate_limiter.wait() but that would slow us down.
-            # Instead, we just try to fetch. SmartAPI limit is usually 3/sec.
-            # Our global limit is conservative (1/sec). 
-            # We will use a local throttle here to avoid hitting global lock too hard.
-            
+            # 2. Check Circuit Breaker (Global)
+            from bot.utils.rate_limiter import rate_limiter
+            if rate_limiter.check_circuit_breaker() > 0:
+                 # Return stale cache if available, else 0
+                 if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
+                     return self._ltp_cache[token][1]
+                 return 0.0
+
+            # 3. Fetch from API
             resp = self.api.ltpData("NFO", "token_lookup", token)
             if resp and resp.get('status'):
                 val = float(resp['data']['ltp'])

@@ -91,6 +91,13 @@ class MomentumStrategy:
             return
         
         try:
+             # Circuit Breaker Check
+             from bot.utils.rate_limiter import rate_limiter
+             wait_time = rate_limiter.check_circuit_breaker()
+             if wait_time > 0:
+                 logger.warning(f"⚠️ Sync Skipped due to Circuit Breaker (Wait {wait_time:.1f}s)")
+                 return
+
              # logger.info("System: 🔄 Syncing State with Broker...")
              pos_resp = self.api.position()
              
@@ -137,6 +144,10 @@ class MomentumStrategy:
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
+            # Check for Rate Limit Error
+            if "Access denied" in str(e) or "AB1004" in str(e):
+                from bot.utils.rate_limiter import rate_limiter
+                rate_limiter.trigger_circuit_breaker()
 
     def stop(self):
         """Signals the loop to stop and closes open positions."""
@@ -289,10 +300,16 @@ class MomentumStrategy:
                                      if now - last_time < 0.9: curr_ltp = last_val
                                 
                                 if curr_ltp == 0:
-                                     ltp_check = self.api.ltpData("NFO", symbol, token)
-                                     if ltp_check and ltp_check.get('status'):
-                                         curr_ltp = float(ltp_check['data']['ltp'])
-                                         self._ltp_cache[token] = (now, curr_ltp)
+                                     # Circuit Breaker Check
+                                     from bot.utils.rate_limiter import rate_limiter
+                                     if rate_limiter.check_circuit_breaker() == 0:
+                                         ltp_check = self.api.ltpData("NFO", symbol, token)
+                                         if ltp_check and ltp_check.get('status'):
+                                             curr_ltp = float(ltp_check['data']['ltp'])
+                                             self._ltp_cache[token] = (now, curr_ltp)
+                                     else:
+                                         # Breaker Active: use logic to maybe return stale cache or just skip
+                                         pass
 
                                 if curr_ltp > 0:
                                     curr_pnl = (curr_ltp - entry_price) * qty
@@ -304,6 +321,9 @@ class MomentumStrategy:
                                         break # Stop strategy completely
                             except Exception as e:
                                 logger.error(f"Active PnL Check Error: {e}")
+                                if "Access denied" in str(e) or "AB1004" in str(e):
+                                    from bot.utils.rate_limiter import rate_limiter
+                                    rate_limiter.trigger_circuit_breaker()
 
                         self.last_trailing_check = time.time()
 

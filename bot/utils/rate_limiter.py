@@ -22,6 +22,25 @@ class GlobalRateLimiter:
             
         return cls._instance
 
+    def check_circuit_breaker(self):
+        """
+        Returns wait time in seconds if circuit breaker is active.
+        Returns 0.0 if safe to proceed.
+        NON-BLOCKING check (Read-Only Lock).
+        """
+        if not os.path.exists(self.time_file): return 0.0
+        
+        try:
+            with open(self.time_file, "r") as f:
+                lines = f.readlines()
+                if len(lines) > 1:
+                    cb_until = float(lines[1].strip())
+                    wait_time = cb_until - time.time()
+                    if wait_time > 0:
+                        return wait_time
+        except: pass
+        return 0.0
+
     def wait(self):
         while True:
             wait_time = 0.0
