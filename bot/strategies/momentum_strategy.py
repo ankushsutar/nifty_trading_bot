@@ -38,6 +38,7 @@ class MomentumStrategy:
         self.last_oi_scan = 0
         self.last_trailing_check = 0 # Throttle Trailing Stop Checks
         self.oi_data = {}
+        self._ltp_cache = {} # SafeLTP Cache
         
         self.sync_state() # Initial Sync with Broker
 
@@ -261,11 +262,10 @@ class MomentumStrategy:
             try:
                 # --- FAST LOOP (Safety & Management) ---
                 # Runs every iteration (~1 second)
-                
-                # 1. Active PnL & Sync Check
-                if not self.dry_run and time.time() - self.last_sync_time > 15:
-                     self.sync_state()
-                     self.last_sync_time = time.time()
+                # 1. Active PnL & Sync Check (Synced every 15s)
+                 if not self.dry_run and time.time() - self.last_sync_time > 15:
+                      self.sync_state()
+                      self.last_sync_time = time.time()
 
                 if self.active_position:
                     # Check Trailing Stop & PnL (Throttled to 3s)
@@ -281,10 +281,20 @@ class MomentumStrategy:
                                 entry_price = self.active_position['entry_price']
                                 qty = self.active_position['qty']
                                 
-                                # Get LTP
-                                ltp_check = self.api.ltpData("NFO", symbol, token)
-                                if ltp_check and ltp_check.get('status'):
-                                    curr_ltp = float(ltp_check['data']['ltp'])
+                                # Get LTP (Throttled)
+                                curr_ltp = 0
+                                now = time.time()
+                                if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
+                                     last_time, last_val = self._ltp_cache[token]
+                                     if now - last_time < 0.9: curr_ltp = last_val
+                                
+                                if curr_ltp == 0:
+                                     ltp_check = self.api.ltpData("NFO", symbol, token)
+                                     if ltp_check and ltp_check.get('status'):
+                                         curr_ltp = float(ltp_check['data']['ltp'])
+                                         self._ltp_cache[token] = (now, curr_ltp)
+
+                                if curr_ltp > 0:
                                     curr_pnl = (curr_ltp - entry_price) * qty
                                     
                                     # Check against Max Daily Loss
@@ -393,8 +403,8 @@ class MomentumStrategy:
                     next_check = next_check.replace(second=5, microsecond=0)
                     logger.info(f"⏳ Next Trend Check scheduled for: {next_check.strftime('%H:%M:%S')}")
 
-                # Sleep significantly less for safety checks
-                time.sleep(1)
+                # Sleep significantly less for safety checks (Speed: 0.5s for fast reaction)
+                time.sleep(0.5)
                 
             except KeyboardInterrupt:
                 logger.info("User Manual Stop.")
@@ -501,10 +511,14 @@ class MomentumStrategy:
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
         
+        # Check validation of Last Closed Candle
         last_closed = df.iloc[-2]
         ema9 = last_closed['EMA9']
         ema21 = last_closed['EMA21']
         
+        # Log Logic for debug
+        # logger.info(f"HTF 15m: EMA9={ema9:.2f} EMA21={ema21:.2f}")
+
         if ema9 > ema21: return "BULLISH"
         if ema9 < ema21: return "BEARISH"
         return "NEUTRAL"
@@ -720,6 +734,11 @@ class MomentumStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
              }
              oid = self.api.placeOrder(orderparams)
+             
+             if not oid:
+                 logger.error("❌ Order Placement Failed! (API returned None). Check 'logs/YYYY-MM-DD/app.log' for details.")
+                 return
+
              logger.info(f"Success: Order Placed: {oid}")
             
              # 5. Wait for Fill (New Resilience Logic)
@@ -742,6 +761,11 @@ class MomentumStrategy:
              mode = "PAPER" if self.dry_run else "LIVE"
              tid = trade_repo.save_trade(symbol, token, leg, qty, fill_price, actual_sl, mode=mode)
              if tid: self.active_position['id'] = tid
+             
+             # Place Hard SL
+             sl_oid = self.place_stop_loss(token, symbol, actual_sl, qty)
+             if sl_oid:
+                 self.active_position['sl_order_id'] = sl_oid
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
 
@@ -764,6 +788,25 @@ class MomentumStrategy:
             except: pass
         return None
 
+    def place_stop_loss(self, token, symbol, price, qty):
+        """Places a Hard Stop Loss Order."""
+        if self.dry_run: return "dry_run_sl"
+        try:
+             # SL Order for BUY is SELL SL
+             # Trigger slightly higher than limit price
+             trig = round(price + 0.5, 1)
+             orderparams = {
+                "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
+                "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
+            }
+             oid = self.api.placeOrder(orderparams)
+             logger.info(f"🛡️ Hard SL Placed: {symbol} @ {price} | ID: {oid}")
+             return oid
+        except Exception as e:
+             logger.error(f"SL Place Error: {e}")
+             return None
+
 
     def close_position(self, reason):
         if not self.active_position: return
@@ -785,6 +828,14 @@ class MomentumStrategy:
         # Fallback if API fails
         if exit_price == 0: 
             exit_price = self.active_position.get('entry_price', 0)
+
+        # Cancel Pending SL
+        sl_oid = self.active_position.get('sl_order_id')
+        if sl_oid:
+            try:
+                self.api.cancelOrder(sl_oid, "STOPLOSS")
+                logger.info(f"Cleanup: Cancelled SL Order {sl_oid}")
+            except: pass
 
         # LOGGING
         try:

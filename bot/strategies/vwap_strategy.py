@@ -214,6 +214,10 @@ class VWAPStrategy:
                 "quantity": Config.NIFTY_LOT_SIZE
             }
              order_id = self.api.placeOrder(orderparams)
+             if not order_id:
+                 print(">>> [Error] Order Failed (None returned)")
+                 return
+
              print(f">>> [Success] Order ID: {order_id}")
              
              # Risk Management: Tighter SL for Pro setup
@@ -221,13 +225,13 @@ class VWAPStrategy:
              # We start with 10% fixed.
              fill_price = self.wait_for_fill(order_id)
              if fill_price:
-                 self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+                 sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
                  
                  # Save
                  mode = "PAPER" if self.dry_run else "LIVE"
                  tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="VWAP")
                  
-                 self.monitor_position(symbol, token, fill_price, tid)
+                 self.monitor_position(symbol, token, fill_price, tid, sl_oid)
 
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
@@ -248,17 +252,38 @@ class VWAPStrategy:
         return 120.0 # Fallback
         
     def place_stop_loss(self, token, symbol, buy_price, qty):
-        # ... Reuse SL logic ...
-        print(f">>> [Risk] Placing Protective SL for {symbol}")
-        # API call...
+        """Places a Hard Stop Loss Order."""
+        if self.dry_run: return "dry_run_sl"
+        try:
+             # SL Order for BUY is SELL SL
+             # Trigger slightly higher than limit price
+             trig = round(buy_price * 0.9 + 0.5, 1) # 10% SL Trigger
+             price = round(buy_price * 0.9, 1)      # 10% SL Price
+             
+             orderparams = {
+                "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
+                "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
+            }
+             oid = self.api.placeOrder(orderparams)
+             print(f">>> [Risk] SL Placed {symbol} @ {price} | ID: {oid}")
+             return oid
+        except Exception as e:
+             print(f">>> [Error] SL Place: {e}")
+             return None
 
-    def monitor_position(self, symbol, token, fill_price, trade_id=None):
+    def monitor_position(self, symbol, token, fill_price, trade_id=None, sl_order_id=None):
         # if self.dry_run: return
         print(">>> [Manager] Monitoring Trade (Target: 20%)...")
         from bot.core.position_manager import PositionManager
+        if not self.running: return
+
+        # Delegate to PositionManager for Exit Management
         manager = PositionManager(self.api, self.dry_run)
-        manager.monitor([{
+        pos = {
            'symbol': symbol, 'token': token, 
            'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE,
-           'id': trade_id
-        }])
+           'id': trade_id,
+           'sl_order_id': sl_order_id
+        }
+        manager.monitor([pos])

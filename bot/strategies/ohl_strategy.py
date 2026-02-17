@@ -136,6 +136,10 @@ class OHLStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
              order_id = self.api.placeOrder(orderparams)
+             if not order_id:
+                 print(">>> [Error] Entry Order Failed (None returned)")
+                 return
+
              print(f">>> [Success] Entry Order: {order_id}")
              
              # 3. Wait for Fill
@@ -160,15 +164,14 @@ class OHLStrategy:
              print(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
              
              # 5. Place SL Order
-             self.place_sl_order(token, symbol, sl_price, qty)
-             
+             sl_oid = self.place_sl_order(token, symbol, sl_price, qty)
              
              # Save
              mode = "PAPER" if self.dry_run else "LIVE"
              tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
 
              # 6. Monitor
-             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid)
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid, sl_oid)
 
         except Exception as e:
              print(f">>> [Error] Entry Failed: {e}")
@@ -262,12 +265,12 @@ class OHLStrategy:
             logger.error(f"OHL: SL Order Failed: {e}")
             return None
 
-    def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None):
+    def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None, sl_oid=None):
          logger.info(f"OHL: Monitoring Trade. Target: {target} | SL: {sl}")
          
          while self.running:
             try:
-                time.sleep(5)
+                time.sleep(0.5) # Veteran Speed
                 
                 # 1. Fetch Current Price
                 from backend.market_service import market_service
@@ -277,8 +280,9 @@ class OHLStrategy:
                 # 2. Check Target Hit (Exit at Market)
                 if ltp >= target:
                      logger.info(f"OHL: 🎯 Target Hit ({ltp} >= {target}). Closing Position.")
-                     self.exit_at_market(token, symbol, qty, "TARGET", trade_id)
+                     self.exit_at_market(token, symbol, qty, "TARGET", trade_id, sl_oid)
                      break
+
 
                 # 3. Check SL Hit (The Broker SL should already trigger, but we monitor for state sync)
                 if ltp <= sl:
@@ -291,7 +295,7 @@ class OHLStrategy:
                 # 4. Time Check (15:15)
                 if datetime.datetime.now().time() >= datetime.time(15, 15):
                      logger.info("OHL: ⏰ Time 15:15. Closing.")
-                     self.exit_at_market(token, symbol, qty, "TIME", trade_id)
+                     self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
                      break
                 
             except Exception as e:
@@ -303,7 +307,7 @@ class OHLStrategy:
         logger.info("OHL: Strategy Stop Signal Received.")
         self.running = False
 
-    def exit_at_market(self, token, symbol, qty, reason, trade_id=None):
+    def exit_at_market(self, token, symbol, qty, reason, trade_id=None, sl_oid=None):
         """Exits position at market price."""
         try:
             if self.dry_run:
@@ -318,6 +322,13 @@ class OHLStrategy:
             }
             oid = self.api.placeOrder(orderparams)
             logger.info(f"OHL: Market Exit Order: {oid} ({reason})")
+            
+            # Cancel SL
+            if sl_oid:
+                try:
+                    self.api.cancelOrder(sl_oid, "STOPLOSS")
+                    logger.info(f"OHL: Cancelled SL {sl_oid}")
+                except: pass
             
             if trade_id:
                  # Fetch final fill for PnL

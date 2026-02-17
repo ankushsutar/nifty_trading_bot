@@ -17,6 +17,7 @@ class NiftyStrategy:
         self.leg_metadata = {'CE': None, 'PE': None} # { 'CE': {'token': ..., 'symbol': ..., 'qty': ...} }
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.running = True
+        self._ltp_cache = {} # SafeLTP Cache
 
     def get_atm_strike(self):
         """
@@ -183,6 +184,24 @@ class NiftyStrategy:
         self.monitor_straddle(ce_token, pe_token, ce_symbol, pe_symbol, quantity)
 
 
+    def get_ltp(self, token):
+        try:
+             # throttle to 1s
+            now = time.time()
+            if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
+                last_time, last_val = self._ltp_cache[token]
+                if now - last_time < 0.9: return last_val
+
+            resp = self.api.ltpData("NFO", "token_lookup", token)
+            if resp and resp.get('status'):
+                val = float(resp['data']['ltp'])
+                self._ltp_cache[token] = (now, val)
+                return val
+        except Exception as e:
+            print(f">>> [Error] Straddle get_ltp: {e}")
+        if self.dry_run: return 100.0 # Mock
+        return None
+
     def monitor_straddle(self, ce_token, pe_token, ce_symbol, pe_symbol, quantity):
         print(f"\n>>> [Monitor] Straddle Active. SL Orders: {self.sl_orders}")
         sl_moved_to_cost = False
@@ -223,8 +242,24 @@ class NiftyStrategy:
                     print(">>> [Exit] Both Legs Closed.")
                     break
                     
-                # Optional: Check Global P&L for Target? (Not specified in request, but implied 'Max Profit/Loss target')
-                # For now keeping it simple as per prompt "Exit: 03:15 PM or if Max Profit/Loss target is reached"
+                # Check Global P&L for Target (25% Decay of Combined Premium)
+                total_entry = self.entry_prices.get('CE', 0) + self.entry_prices.get('PE', 0)
+                
+                # Get Current Prices
+                ce_ltp = self.get_ltp(ce_token)
+                pe_ltp = self.get_ltp(pe_token)
+                
+                if total_entry > 0 and ce_ltp and pe_ltp:
+                    current_sum = ce_ltp + pe_ltp
+                    
+                    # Target: 25% Profit (Premium decayed by 25%)
+                    target_sum = total_entry * 0.75 
+                    
+                    if current_sum <= target_sum:
+                        print(f">>> [Profit] Target Hit! Combined Premium {current_sum} <= {target_sum} (Entry: {total_entry})")
+                        self.exit_at_market(ce_token, ce_symbol, quantity, "TARGET")
+                        self.exit_at_market(pe_token, pe_symbol, quantity, "TARGET")
+                        break
                 
             except KeyboardInterrupt:
                 print(">>> [User] Stop Signal.")

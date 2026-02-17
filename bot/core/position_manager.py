@@ -9,6 +9,7 @@ class PositionManager:
         self.dry_run = dry_run
         self.target_percent = 0.20 # 20% Profit Target
         self.running = True
+        self._ltp_cache = {} # Cache for SafeLTP (Token -> (Timestamp, Value))
 
     def stop(self):
         """Signal monitoring to stop."""
@@ -85,12 +86,18 @@ class PositionManager:
                         self.exit_trade(pos, ltp, reason=reason)
                         pos['exited'] = True
 
+                    # 4. Check Target Exit
+                    elif pnl_pct >= self.target_percent:
+                        print(f">>> [Exit] TARGET HIT 🎯 P&L: {pnl_pct*100:.2f}% >= {self.target_percent*100:.0f}%")
+                        self.exit_trade(pos, ltp, reason="TARGET_HIT")
+                        pos['exited'] = True
+
                 # Check if all exited
                 if all(p.get('exited') for p in active_positions):
                     print(">>> [Manager] All positions closed.")
                     break
                     
-                time.sleep(5)
+                time.sleep(0.5) # Veteran Speed: 0.5s for fast moves
                 
             except KeyboardInterrupt:
                 print(">>> [User] Manual Stop.")
@@ -101,19 +108,36 @@ class PositionManager:
 
     def get_ltp(self, token):
         try:
-            # Exchange is usually NFO for options
+            # 1. Check local cache (throttle to 1s to respect Global Limit)
+            # If we poll every 0.5s, we can return cached value every other time
+            now = time.time()
+            if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
+                last_time, last_val = self._ltp_cache[token]
+                if now - last_time < 0.9: # Return cached if < 0.9s old
+                    return last_val
+
+            # 2. Fetch from API (Respecting Global Rate Limit?)
+            # Ideally we should use rate_limiter.wait() but that would slow us down.
+            # Instead, we just try to fetch. SmartAPI limit is usually 3/sec.
+            # Our global limit is conservative (1/sec). 
+            # We will use a local throttle here to avoid hitting global lock too hard.
+            
             resp = self.api.ltpData("NFO", "token_lookup", token)
             if resp and resp.get('status'):
-                return resp['data']['ltp']
+                val = float(resp['data']['ltp'])
+                
+                # Update Cache
+                self._ltp_cache[token] = (now, val)
+                
+                return val
             
             # Check for Mock Mode Fallback if API returns None and we are testing
             if self.dry_run or (hasattr(self.api, 'api_key') and self.api.api_key is None):
-                # Simulte fluctuating price for testing
                 import random
-                return 100.0 + random.uniform(-5, 25) # Simulate slight profit
+                return 100.0 + random.uniform(-5, 25) 
                 
         except Exception as e:
-            pass
+            print(f">>> [Error] get_ltp: {e}")
         return None
 
     def exit_all(self, positions, reason):
@@ -127,7 +151,7 @@ class PositionManager:
             return
 
         try:
-            orderparams = {
+             orderparams = {
                 "variety": "NORMAL",
                 "tradingsymbol": pos['symbol'],
                 "symboltoken": pos['token'],
@@ -138,11 +162,17 @@ class PositionManager:
                 "duration": "DAY",
                 "quantity": pos['qty']
             }
-            order_id = self.api.placeOrder(orderparams)
-            print(f">>> [Exit] Sold {pos['symbol']} | Order ID: {order_id} | Reason: {reason}")
-            
-            # TODO: Cancel the SL Order if possible. (Requires storing SL Order ID)
-            print(">>> [Reminder] Please manually cancel pending SL orders if not triggered.")
+             order_id = self.api.placeOrder(orderparams)
+             print(f">>> [Exit] Sold {pos['symbol']} | Order ID: {order_id} | Reason: {reason}")
+             
+             # Cancel Pending SL Order if exists
+             sl_id = pos.get('sl_order_id')
+             if sl_id:
+                 try:
+                     print(f">>> [Cleanup] Cancelling Pending SL Order: {sl_id}")
+                     self.api.cancelOrder(sl_id, "STOPLOSS")
+                 except Exception as e:
+                     print(f">>> [Warning] Failed to cancel SL {sl_id}: {e}")
             
         except Exception as e:
             print(f">>> [Error] Exit Failed: {e}")

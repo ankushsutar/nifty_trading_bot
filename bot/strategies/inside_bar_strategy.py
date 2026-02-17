@@ -64,7 +64,6 @@ class InsideBarStrategy:
                 "RECOVERED", 
                 self.active_trade['id']
             )
-            return
 
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
@@ -160,13 +159,13 @@ class InsideBarStrategy:
              opt_diff = diff * 0.5
              sl_price = round(fill - opt_diff, 1)
              
-             self.place_sl(token, symbol, sl_price, qty)
+             sl_oid = self.place_sl(token, symbol, sl_price, qty)
              
              # Save
              tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price, mode=mode, strategy="INSIDE_BAR")
 
              # Trailing Logic
-             self.monitor_trailing(token, symbol, qty, oid, tid)
+             self.monitor_trailing(token, symbol, qty, oid, tid, sl_oid)
              
         except Exception as e:
              print(f">>> [Error] {e}")
@@ -192,41 +191,38 @@ class InsideBarStrategy:
         except Exception as e:
              print(f">>> [Error] SL Place: {e}")
 
-    def monitor_trailing(self, token, symbol, qty, entry_oid, trade_id=None):
+    def monitor_trailing(self, token, symbol, qty, entry_oid, trade_id=None, sl_oid=None):
         """
-        Monitor for Exit.
+        Monitor using shared PositionManager (TSL + Target).
         """
-        print(">>> [Monitor] Trade Active. Waiting for SL or Time Exit...")
+        print(">>> [Monitor] Trade Active. Handing over to PositionManager.")
+        from bot.core.position_manager import PositionManager
+        manager = PositionManager(self.api, self.dry_run)
         
-        while self.running:
-            try:
-                time.sleep(5)
-                # 1. Time Check
-                if datetime.datetime.now().time() >= datetime.time(15, 15):
-                     print(">>> [Exit] Time 15:15. Closing.")
-                     # Exit Market
-                     self.exit_at_market(token, symbol, qty, "TIME", trade_id)
-                     break
-                
-            except Exception as e:
-                 print(f">>> [Error] Monitor: {e}")
-                 time.sleep(10)
+        # Determine Entry Price
+        entry_price = 0.0
+        if self.active_trade: entry_price = self.active_trade.get('entry_price', 0.0)
+        if entry_price == 0:
+             # Try fetching from Repo or use a fallback if just entered
+             pass 
+
+        # We need entry price for PositionManager. 
+        # It's passed in calling context usually, but here we might need to look it up if resuming.
+        # But wait, execute() calls this with trade_id.
+        
+        # Retrieve trade details if needed
+        if trade_id and entry_price == 0:
+             trade = trade_repo.get_active_trade(mode="PAPER" if self.dry_run else "LIVE", strategy="INSIDE_BAR")
+             if trade: entry_price = trade['entry_price']
+        
+        manager.monitor([{
+           'symbol': symbol, 'token': token, 
+           'entry_price': entry_price, 'qty': qty,
+           'id': trade_id,
+           'sl_order_id': sl_oid
+        }])
 
     def stop(self):
         """Signal strategy to stop monitoring and exit."""
         print(">>> [System] Stopping Strategy...")
         self.running = False
-
-    def exit_at_market(self, token, symbol, qty, reason, trade_id=None):
-        try:
-            orderparams = {
-                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
-                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-            }
-            oid = self.api.placeOrder(orderparams)
-            print(f">>> [Exit] Market Order Sent: {oid} ({reason})")
-            if trade_id:
-                trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
-        except Exception as e:
-            print(f">>> [Error] Market Exit Failed: {e}")

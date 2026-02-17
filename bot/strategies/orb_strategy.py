@@ -167,6 +167,10 @@ class ORBStrategy:
                 "quantity": Config.NIFTY_LOT_SIZE
             }
              order_id = self.api.placeOrder(orderparams)
+             if not order_id:
+                 print(">>> [Error] Order Failed (None returned)")
+                 return
+
              print(f">>> [Success] Order ID: {order_id}")
              
              # Stop Loss Logic (Wait for Fill -> Place SL)
@@ -182,14 +186,14 @@ class ORBStrategy:
                  # Since we trade Options, mapping Spot Range Levels to Option Premiums is complex without Delta.
                  # COMPROMISE: We will safely use the robust 10% Premium SL for now to ensure safety,
                  # as calculating the exact Option Price for the Spot Level is error-prone without Greeks.
-                 self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+                 sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
                  
                  # Save to DB
                  mode = "PAPER" if self.dry_run else "LIVE"
                  tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="ORB")
                  
                  # START MONITORING
-                 self.monitor_position(symbol, token, fill_price, tid)
+                 self.monitor_position(symbol, token, fill_price, tid, sl_oid)
              
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
@@ -203,21 +207,6 @@ class ORBStrategy:
         max_attempts = 5 # Retry 5 times
         while attempts < max_attempts and self.running:
             try:
-                book = self.api.orderBook()
-                if book and book.get('status'):
-                    for order in book['data']:
-                        if order['orderid'] == order_id:
-                            if order['status'] == 'complete':
-                                avg_price = float(order['averageprice'])
-                                print(f">>> [Fill] Order {order_id} filled at ₹{avg_price}")
-                                return avg_price
-                            else:
-                                print(f">>> [Wait] Order {order_id} status: {order['status']}")
-            except Exception as e:
-                print(f">>> [Wait] Error fetching order book: {e}")
-            
-            time.sleep(1)
-            attempts += 1
         
         print(f">>> [Error] Order {order_id} failed to fill after waiting.")
         return None
@@ -252,9 +241,8 @@ class ORBStrategy:
             print(f">>> [Error] SL Placement Failed: {e}")
             return None
 
-    def monitor_position(self, symbol, token, fill_price, trade_id=None):
+    def monitor_position(self, symbol, token, fill_price, trade_id=None, sl_order_id=None):
         # if self.dry_run: return # Already supported in Manager 
-
 
         print(">>> [ORB] Trade Active. Monitoring P&L (Target: 20%)...")
         from bot.core.position_manager import PositionManager
@@ -262,7 +250,8 @@ class ORBStrategy:
         pos = [{
            'symbol': symbol, 'token': token, 
            'entry_price': fill_price, 'qty': Config.NIFTY_LOT_SIZE,
-           'id': trade_id
+           'id': trade_id,
+           'sl_order_id': sl_order_id
         }]
         
         self.manager = PositionManager(self.api, self.dry_run)
