@@ -46,6 +46,8 @@ class DataFetcher:
                 return cached_ltp
 
         try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
             resp = self.api.ltpData(exchange, "SYMBOL", token)
             if resp and resp.get('status'):
                 ltp = float(resp['data']['ltp'])
@@ -62,7 +64,7 @@ class DataFetcher:
         Uses caching to prevent hitting unnecessary API limits.
         """
         # 1. Check In-Memory Cache first
-        cache_key = f"{symbol_token}_{interval}"
+        cache_key = f"{symbol_token}_{interval}_{days}"
         if cache_key in self.data_cache:
             last_time, cached_df = self.data_cache[cache_key]
             if time.time() - last_time < self.cache_duration:
