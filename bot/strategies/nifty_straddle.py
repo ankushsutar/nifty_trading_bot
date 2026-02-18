@@ -330,12 +330,36 @@ class NiftyStrategy:
                 "quantity": qty
             }
             order_id = self.api.placeOrder(orderparams)
+            
+            if not order_id:
+                print(f">>> [Error] {action} Order Failed (None returned)")
+                return None
+
             print(f">>> [Order] {action} {symbol} | ID: {order_id}")
             
-            # Save to DB if Closing Trade
+            # If Exit Order (BUY), Verify Fill before DB Close
             if action == "BUY" and qty > 0:
-                 # Closing Short Straddle
-                 trade_repo.close_trade(symbol=symbol, exit_price=exit_price, pnl=pnl, exit_reason=reason)
+                 print(f">>> [Exit] Verifying Fill for {symbol}...")
+                 fill_result = self.wait_for_fill(order_id)
+                 
+                 if fill_result['status'] == 'FILLED':
+                     real_exit_price = fill_result['price']
+                     print(f">>> [Success] Exit Filled @ {real_exit_price}")
+                     # Recalculate PnL with real price if possible, or just log valid exit
+                     # Note: pnl passed in arg was estimated. 
+                     # Ideally we recalculate, but for now we trust the flow or update if needed.
+                     
+                     trade_repo.close_trade(symbol=symbol, exit_price=real_exit_price, pnl=pnl, exit_reason=reason)
+                     
+                 elif fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                     print(f"❌ Exit REJECTED. Reason: {fill_result.get('message')}")
+                     # Do not close DB. Keep position active.
+                     return None
+                 else:
+                     print(f"⚠️ Exit Verification Timeout. Status: {fill_result['status']}")
+                     # Do not close DB? Or assume it worked? 
+                     # Safest: Don't close DB. Let next loop retry or manual intervention.
+                     return None
             
             return order_id
         except Exception as e:

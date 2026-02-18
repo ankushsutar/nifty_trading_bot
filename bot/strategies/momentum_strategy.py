@@ -846,17 +846,14 @@ class MomentumStrategy:
         
         logger.info(f"Exit: Closing {symbol} due to {reason}")
         
-        # Determine Exit Price for Logging (Paper Trading uses Real LTP)
+        # Determine Exit Price (Initially estimate, update if filled)
         exit_price = 0
         try:
              q_resp = self.api.ltpData("NFO", symbol, token)
              if q_resp and q_resp.get('status'):
                  exit_price = float(q_resp['data']['ltp'])
         except: pass
-        
-        # Fallback if API fails
-        if exit_price == 0: 
-            exit_price = self.active_position.get('entry_price', 0)
+        if exit_price == 0: exit_price = self.active_position.get('entry_price', 0)
 
         # Cancel Pending SL
         sl_oid = self.active_position.get('sl_order_id')
@@ -866,7 +863,55 @@ class MomentumStrategy:
                 logger.info(f"Cleanup: Cancelled SL Order {sl_oid}")
             except: pass
 
-        # LOGGING
+        # REAL TRADING EXECUTION
+        if not self.dry_run:
+            try:
+                orderparams = {
+                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                    "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                }
+                oid = self.api.placeOrder(orderparams)
+                
+                if not oid:
+                    logger.error("❌ Exit Order API returned None! Retrying next loop...")
+                    return
+
+                logger.info(f"Success: Exit Order Placed: {oid}. Waiting for Fill...")
+                
+                # --- CRITICAL FIX: Verify Exit ---
+                fill_result = self.wait_for_fill(oid)
+                
+                if fill_result['status'] == 'FILLED':
+                    exit_price = fill_result['price']
+                    logger.info(f"✅ Exit Filled @ {exit_price}")
+
+                elif fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                    logger.error(f"❌ Exit Order {oid} REJECTED. Reason: {fill_result.get('message')}")
+                    
+                    # Handle "No Open Position" specifically
+                    msg = str(fill_result.get('message', '')).lower()
+                    if "no open position" in msg or "no net position" in msg:
+                        logger.warning("⚠️ Broker says no position. Force closing local state.")
+                        # Allow to proceed to DB Close
+                    else:
+                        # Other errors (funds, rate limit, etc.) -> Keep Position Open!
+                        logger.warning("⚠️ Exit Failed. Keeping position active for retry.")
+                        return 
+
+                else:
+                    # TIMEOUT or PENDING
+                    logger.warning(f"⚠️ Exit Order {oid} status: {fill_result['status']}. Checking Broker Sync...")
+                    # Do not close DB. Next loop 'sync_state' might handle it, or we try again.
+                    return
+
+            except Exception as e:
+                logger.error(f"Exit Order Exception: {e}")
+                return # Keep position open on error
+        else:
+            logger.info(f"Dry Run: Simulated Exit for {symbol}")
+
+        # LOGGING (Journal)
         try:
              entry_price = self.active_position['entry_price']
              pnl = (exit_price - entry_price) * qty
@@ -887,35 +932,27 @@ class MomentumStrategy:
              }
              if 'context' in self.active_position:
                  trade_record.update(self.active_position['context'])
-                 
+             
              TradeJournal.log_trade(trade_record)
         except Exception as e:
              logger.error(f"Journal Error: {e}")
 
-        if not self.dry_run:
-            try:
-                orderparams = {
-                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
-                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-                }
-                oid = self.api.placeOrder(orderparams)
-                logger.info(f"Success: Exit Order Placed: {oid}")
-            except Exception as e:
-                logger.error(f"Exit Order Failure: {e}")
-        else:
-            logger.info(f"Dry Run: Simulated Exit for {symbol}")
-
-        # Close in DB: ALWAYS do this (Dry Run or Real)
+        # DB CLOSE
         try:
+             entry_p = self.active_position['entry_price']
+             pnl_val = (exit_price - entry_p) * qty
+
              trade_repo.close_trade(
                  symbol=symbol, 
                  exit_price=exit_price, 
-                 pnl=round(pnl, 2), 
+                 pnl=round(pnl_val, 2), 
                  exit_reason=reason
              )
              self.active_position = None
+             logger.info("✅ Strategy State: Trade Closed.")
         except Exception as e:
+             # If DB update fails, we still cleared memory.
+             # Ideally we should verify DB, but this is acceptable for now.
              logger.error(f"DB Close Error: {e}")
 
     def check_trailing_stop(self):

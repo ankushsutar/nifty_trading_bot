@@ -151,6 +151,9 @@ class PositionManager:
     def exit_trade(self, pos, price, reason="TARGET"):
         if self.dry_run:
             print(f">>> [Dry Run] Selling {pos['symbol']} at Market.")
+            # Simulate Fill
+            if 'id' in pos:
+                 trade_repo.close_trade(trade_id=pos['id'], exit_price=self.get_ltp(pos['token']), exit_reason=reason)
             return
 
         try:
@@ -166,7 +169,28 @@ class PositionManager:
                 "quantity": pos['qty']
             }
              order_id = self.api.placeOrder(orderparams)
+             
+             if not order_id:
+                 print(">>> [Error] Exit Order returned None.")
+                 return # Keep open
+
              print(f">>> [Exit] Sold {pos['symbol']} | Order ID: {order_id} | Reason: {reason}")
+             
+             # --- VERIFY EXIT ---
+             fill_result = self.wait_for_fill(order_id)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 print(f"❌ Exit Order REJECTED. Reason: {fill_result.get('message')}")
+                 
+                 # Only close if "No Open Position" error
+                 msg = str(fill_result.get('message', '')).lower()
+                 if "no open position" in msg or "no net position" in msg:
+                     print(">>> [Sync] Broker says no position. Closing local state.")
+                     # Proceed to Close
+                 else:
+                     return # Keep Active
+                     
+             # If Filled or No Position Error, proceed to clean up
              
              # Cancel Pending SL Order if exists
              sl_id = pos.get('sl_order_id')
@@ -177,11 +201,29 @@ class PositionManager:
                  except Exception as e:
                      print(f">>> [Warning] Failed to cancel SL {sl_id}: {e}")
             
+             # Update DB
+             if 'id' in pos:
+                  trade_repo.close_trade(trade_id=pos['id'], exit_reason=reason)
+             else:
+                  trade_repo.close_trade(symbol=pos['symbol'], exit_reason=reason)
+
         except Exception as e:
             print(f">>> [Error] Exit Failed: {e}")
 
-        # Update DB
-        if 'id' in pos:
-             trade_repo.close_trade(trade_id=pos['id'])
-        else:
-             trade_repo.close_trade(symbol=pos['symbol'])
+    def wait_for_fill(self, order_id):
+        """Polls for order completion."""
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
+            except: pass
+        return {'status': 'TIMEOUT', 'price': None}

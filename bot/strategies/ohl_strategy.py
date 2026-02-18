@@ -322,7 +322,28 @@ class OHLStrategy:
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
             oid = self.api.placeOrder(orderparams)
+            
+            if not oid:
+                logger.error("OHL: Exit Order Failed (None returned).")
+                return 
+
             logger.info(f"OHL: Market Exit Order: {oid} ({reason})")
+            
+            # --- VERIFY EXIT ---
+            fill_result = self.wait_for_fill(oid)
+            
+            if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 logger.error(f"❌ OHL Exit REJECTED. Reason: {fill_result.get('message')}")
+                 
+                 msg = str(fill_result.get('message', '')).lower()
+                 if "no open position" in msg or "no net position" in msg:
+                     logger.warning("OHL: Broker says no position. Force closing local state.")
+                     # Proceed
+                 else:
+                     logger.warning("OHL: Exit Failed. Keeping position active.")
+                     return # Keep Active
+
+            exit_price = fill_result.get('price', 0.0)
             
             # Cancel SL
             if sl_oid:
@@ -332,9 +353,8 @@ class OHLStrategy:
                 except: pass
             
             if trade_id:
-                 # Fetch final fill for PnL
-                 time.sleep(1)
-                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+                 trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
+                 
         except Exception as e:
             logger.error(f"OHL Exit Failed: {e}")
 

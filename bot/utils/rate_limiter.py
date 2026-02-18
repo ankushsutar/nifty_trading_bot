@@ -15,7 +15,7 @@ class GlobalRateLimiter:
             cls._instance = super(GlobalRateLimiter, cls).__new__(cls)
             cls._instance.lock_file = os.path.join(os.getcwd(), "data", "api_global.lock")
             cls._instance.time_file = os.path.join(os.getcwd(), "data", "api_last_call.time")
-            cls._instance.min_interval = 1.0 # Seconds (Angel One historical API is strict)
+            cls._instance.min_interval = 2.0 # Seconds (Angel One historical API is strict)
             
             # Ensure data dir exists
             os.makedirs(os.path.dirname(cls._instance.lock_file), exist_ok=True)

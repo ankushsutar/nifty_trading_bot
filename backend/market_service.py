@@ -202,6 +202,7 @@ class MarketService:
 
     def _analysis_loop(self):
         """Background loop to refresh Regime and OI analysis every 3 minutes."""
+        time.sleep(10) # Wait 10s for system to settle (prevent startup burst)
         while True:
             try:
                 self._ensure_connection()
