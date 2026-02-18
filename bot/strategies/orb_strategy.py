@@ -38,9 +38,10 @@ class ORBStrategy:
             logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
             
             fill = active_trade['entry_price']
-            # Default ORB Target 20% if not in DB
-            target = round(fill * 1.2, 1)
             sl = active_trade.get('sl_price', round(fill * 0.9, 1))
+            # FIX: Derive target from stored SL for consistent 1:2 RR (was hardcoded at 20%)
+            risk = abs(fill - sl)
+            target = round(fill + (risk * 2), 1)
             
             self.monitor_position(
                 active_trade['symbol'], 
@@ -48,6 +49,7 @@ class ORBStrategy:
                 active_trade['qty'],
                 target,
                 sl,
+                fill,  # FIX: entry_price was missing — Risk-Free Pivot now works on resumed trades
                 active_trade['id'],
                 active_trade.get('sl_order_id'),
                 active_trade.get('leg')
@@ -68,18 +70,32 @@ class ORBStrategy:
 
     def establish_opening_range(self):
         """
-        In a real scenario, this would loop from 09:15 to 09:30 updating high/low.
+        Fetches the actual 09:15 1-minute candle to establish the real opening range.
+        High = Range High, Low = Range Low.
         """
-        logger.info(">>> [ORB] Establishing Range...")
-        # Simulating fetch via DataFetcher or LTP
-        ltp = self.data_fetcher.get_ltp("99926000")
-        if ltp and ltp > 0:
-            # Fake range for demo: +/- 20 points
-            self.range_high = round(ltp + 20, 2)
-            self.range_low = round(ltp - 20, 2)
-            self.range_set = True
-        else:
-            logger.warning(">>> [ORB] Could not fetch LTP.")
+        logger.info(">>> [ORB] Establishing Real Opening Range from 09:15 candle...")
+        try:
+            df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+            if df is not None and not df.empty:
+                # Use the first candle of the day (09:15 candle)
+                first_candle = df.iloc[0]
+                self.range_high = round(float(first_candle['high']), 2)
+                self.range_low = round(float(first_candle['low']), 2)
+                self.range_set = True
+                logger.info(f">>> [ORB] Real Range Set from candle: High={self.range_high}, Low={self.range_low}")
+            else:
+                # Fallback: use LTP with a 0.1% buffer if candle data unavailable
+                ltp = self.data_fetcher.get_ltp("99926000")
+                if ltp and ltp > 0:
+                    buffer = round(ltp * 0.001, 2)  # 0.1% of index
+                    self.range_high = round(ltp + buffer, 2)
+                    self.range_low = round(ltp - buffer, 2)
+                    self.range_set = True
+                    logger.warning(f">>> [ORB] Candle unavailable. Using LTP fallback range: {self.range_low} - {self.range_high}")
+                else:
+                    logger.warning(">>> [ORB] Could not establish range. No LTP or candle data.")
+        except Exception as e:
+            logger.error(f">>> [ORB] Error establishing range: {e}")
 
     def monitor_breakout(self, expiry):
         logger.info(">>> [ORB] Monitoring for Breakout...")
@@ -124,6 +140,7 @@ class ORBStrategy:
             return
 
         # Apply Compounding (Exponential Scaling)
+        capital = self.gatekeeper.get_current_capital()  # FIX: was NameError - capital never defined
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
         qty = lots * Config.NIFTY_LOT_SIZE
         
@@ -155,6 +172,11 @@ class ORBStrategy:
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                  logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
+                 return
+             # FIX Obs #3: Explicit TIMEOUT handling — don't silently use quote_ltp as fill
+             if fill_result['status'] == 'TIMEOUT':
+                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting to avoid incorrect SL/target.")
+                 self.order_manager.cancel_order(oid, "NORMAL")
                  return
 
              fill_price = fill_result['price'] or quote_ltp

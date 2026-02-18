@@ -313,6 +313,9 @@ class MomentumStrategy:
                         if current_leg == "CE" and trend == "BEARISH":
                              logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
                              self.close_position("REVERSAL")
+                             # FIX Obs #2: 1-candle cooldown before reversal re-entry to avoid whipsaws
+                             logger.info("⏳ Reversal Cooldown: Waiting 1 candle (5 min) before re-entry.")
+                             time.sleep(300)  # 5 minutes = 1 candle
                              if rsi > 30:
                                  self.enter_position(expiry, "PE") 
                              else:
@@ -321,6 +324,9 @@ class MomentumStrategy:
                         elif current_leg == "PE" and trend == "BULLISH":
                              logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
                              self.close_position("REVERSAL")
+                             # FIX Obs #2: 1-candle cooldown before reversal re-entry to avoid whipsaws
+                             logger.info("⏳ Reversal Cooldown: Waiting 1 candle (5 min) before re-entry.")
+                             time.sleep(300)  # 5 minutes = 1 candle
                              if rsi < 70:
                                  self.enter_position(expiry, "CE")
                              else:
@@ -401,9 +407,7 @@ class MomentumStrategy:
         )
 
     def calculate_htf_trend(self):
-        if self.dry_run:
-            return random.choice(["BULLISH", "BEARISH", "NEUTRAL"])
-
+        # FIX Obs #1: Always use real data — random values made dry run results meaningless
         df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
         
         if df is None or len(df) < 22: 
@@ -512,7 +516,7 @@ class MomentumStrategy:
         
         # Apply Compounding (Exponential Scaling)
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
-        qty = lots * lot_size
+        qty = lots * Config.NIFTY_LOT_SIZE  # FIX: was NameError - lot_size was never defined
         
         logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
 
@@ -753,13 +757,23 @@ class MomentumStrategy:
         try:
              entry_p = self.active_position['entry_price']
              pnl_val = (exit_price - entry_p) * qty
-
-             trade_repo.close_trade(
-                 symbol=symbol, 
-                 exit_price=exit_price, 
-                 pnl=round(pnl_val, 2), 
-                 exit_reason=reason
-             )
+             # FIX Obs #4: Use trade_id for precision — symbol-based close could affect multiple trades
+             trade_id = self.active_position.get('id')
+             if trade_id:
+                 trade_repo.close_trade(
+                     trade_id=trade_id,
+                     exit_price=exit_price, 
+                     pnl=round(pnl_val, 2), 
+                     exit_reason=reason
+                 )
+             else:
+                 # Fallback to symbol if no ID (edge case: trade not saved to DB)
+                 trade_repo.close_trade(
+                     symbol=symbol, 
+                     exit_price=exit_price, 
+                     pnl=round(pnl_val, 2), 
+                     exit_reason=reason
+                 )
              self.active_position = None
              logger.info("✅ Strategy State: Trade Closed.")
         except Exception as e:

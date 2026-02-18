@@ -50,7 +50,13 @@ class OHLStrategy:
 
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
-        if not self.gatekeeper.check_max_daily_loss(0): return
+        # FIX: Use real today's realized PnL instead of hardcoded 0
+        try:
+            today_trades = trade_repo.get_today_trades(mode="PAPER" if self.dry_run else "LIVE")
+            realized_pnl = sum(t.get('pnl', 0.0) or 0.0 for t in today_trades if t.get('status') == 'CLOSED')
+        except Exception:
+            realized_pnl = 0.0
+        if not self.gatekeeper.check_max_daily_loss(realized_pnl): return
         if self.gatekeeper.is_blackout_period(): return
         
         # 1. Fetch First 1-Minute Candle (09:15)

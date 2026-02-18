@@ -10,6 +10,8 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        self.MAX_TRADES_PER_DAY = 2    # Hard cap to prevent brokerage drain
+        # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
     def analyze_and_select(self):
         """
@@ -17,6 +19,19 @@ class DecisionEngine:
         Returns: (Strategy Name, Risk Multiplier) or (None, 1.0)
         """
         logger.info("\n>>> [Brain] 🧠 Analyzing Market Conditions...")
+
+        # 0. Daily Trade Limit Check (DB-backed — survives process restarts)
+        try:
+            from bot.core.trade_repo import trade_repo
+            mode = "PAPER" if self.dry_run else "LIVE"
+            today_trades = trade_repo.get_today_trades(mode=mode)
+            trades_today = len(today_trades)
+        except Exception:
+            trades_today = 0  # Fail open — don't block trading on DB error
+
+        if trades_today >= self.MAX_TRADES_PER_DAY:
+            logger.warning(f">>> [Brain] 🛑 Daily trade limit reached ({trades_today}/{self.MAX_TRADES_PER_DAY}). No new entries.")
+            return None, 1.0
 
         # 1. Check Capital & Mode
         available_cash = self.gatekeeper.get_current_capital()
@@ -136,4 +151,8 @@ class DecisionEngine:
                 return None, 1.0
         
         return selected_strategy, risk_multiplier
+
+    def record_trade(self):
+        """Kept for compatibility. The real gate is now DB-backed in analyze_and_select()."""
+        logger.info(f">>> [Brain] 📊 Trade recorded. DB will enforce the {self.MAX_TRADES_PER_DAY}/day limit on next cycle.")
 

@@ -54,6 +54,7 @@ class VWAPStrategy:
                 active_trade['qty'],
                 target,
                 sl,
+                fill,  # FIX: entry_price was missing — Risk-Free Pivot now works on resumed trades
                 active_trade['id'],
                 active_trade.get('sl_order_id'),
                 active_trade.get('leg')
@@ -222,16 +223,34 @@ class VWAPStrategy:
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                  logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
                  return
+             # FIX Obs #3: Explicit TIMEOUT handling — don't silently use quote_ltp as fill
+             if fill_result['status'] == 'TIMEOUT':
+                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting to avoid incorrect SL/target.")
+                 self.order_manager.cancel_order(oid, "NORMAL")
+                 return
 
              fill_price = fill_result['price'] or quote_ltp
              
-             # Risk Management: Structural SL
-             # For institutional setups, we use a 12% initial safety SL.
-             # But the REAL exit happens in monitor_position if price crosses VWAP/EMA back.
-             sl_price = round(fill_price * 0.88, 1) # 12% Safety Cap
-             target_price = round(fill_price * 1.25, 1) # 25% Target for ITM
+             # Risk Management: ATR-Based Structural SL (replaces arbitrary 12% cap)
+             # Fetch ATR from the 5-min candle data for a real volatility-adjusted SL
+             try:
+                 df_sl = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                 if df_sl is not None and len(df_sl) >= 5:
+                     tr = (df_sl['high'] - df_sl['low']).tail(5).mean()
+                     atr_sl_points = round(tr * 0.5, 1)  # Delta-adjusted (0.5) for options
+                 else:
+                     atr_sl_points = round(fill_price * 0.10, 1)  # 10% fallback
+             except Exception:
+                 atr_sl_points = round(fill_price * 0.10, 1)
              
-             logger.info(f">>> [Risk] Physical SL Cap: {sl_price} | Target: {target_price}")
+             # Floor: Never risk less than 5 points, never more than 15%
+             atr_sl_points = max(atr_sl_points, 5.0)
+             atr_sl_points = min(atr_sl_points, fill_price * 0.15)
+             
+             sl_price = round(fill_price - atr_sl_points, 1)
+             target_price = round(fill_price + (atr_sl_points * 2), 1)  # 1:2 RR
+             
+             logger.info(f">>> [Risk] ATR-Structural SL: {sl_price} (Risk: {atr_sl_points:.1f}pts) | Target: {target_price}")
              
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)
@@ -249,6 +268,7 @@ class VWAPStrategy:
         logger.info(f"VWAP: Monitoring. Target: {target} | SL: {sl} | Entry: {entry_price}")
         
         breakeven_hit = False
+        last_structure_check = 0  # Throttle: only check market structure every 30s
         
         while self.running:
             try:
@@ -278,13 +298,16 @@ class VWAPStrategy:
                     if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
                     break
                     
-                # 2. Dynamic Exit Check (Structural)
+                # 2. Dynamic Exit Check (Structural) — throttled to every 30s
                 # If price crosses back below VWAP/EMA, exit early to preserve capital.
-                trend, signal, index_ltp = self.analyze_market_structure()
-                if (leg_type == "CE" and trend == "BEARISH") or (leg_type == "PE" and trend == "BULLISH"):
-                    logger.info(f"VWAP: 🔄 Structural Exit Triggered (Trend Change). Closing at {ltp}.")
-                    self.exit_at_market(token, symbol, qty, "TREND_CHANGE", trade_id, sl_oid)
-                    break
+                import time as _time
+                if _time.time() - last_structure_check >= 30:
+                    last_structure_check = _time.time()
+                    trend, signal, index_ltp = self.analyze_market_structure()
+                    if (leg_type == "CE" and trend == "BEARISH") or (leg_type == "PE" and trend == "BULLISH"):
+                        logger.info(f"VWAP: 🔄 Structural Exit Triggered (Trend Change). Closing at {ltp}.")
+                        self.exit_at_market(token, symbol, qty, "TREND_CHANGE", trade_id, sl_oid)
+                        break
 
                 # 3. Target Check
                 if ltp >= target:

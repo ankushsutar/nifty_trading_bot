@@ -126,9 +126,11 @@ def run_bot():
     else:
         bot.execute(expiry=expiry, action="SELL")
 
-if __name__ == "__main__":
-    run_bot()
-
+    # 7. Record trade for daily limit tracking (only in auto mode)
+    # This increments the DecisionEngine's daily counter so the 2-trade cap works.
+    if args.auto and 'engine' in locals():
+        engine.record_trade()
+        logger.info(">>> [System] Trade recorded for daily limit tracking.")
 
 if __name__ == "__main__":
     run_bot()

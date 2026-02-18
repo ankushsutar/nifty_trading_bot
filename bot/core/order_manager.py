@@ -38,7 +38,7 @@ class OrderManager:
                 "duration": "DAY",
                 "quantity": qty,
                 "triggerprice": trigger_price, # Most Important for SL
-                "price": trigger_price # Required field for API even if SL-M
+                "price": 0  # Must be 0 for SL-Market orders per Angel One API spec
             }
             
             logger.info(f"🛡️ Placing Broker-Side SL (SL-M) for {symbol} @ {trigger_price}")
@@ -78,9 +78,15 @@ class OrderManager:
                 "exchange": "NFO"
             }
             rate_limiter.wait()
-            self.api.modifyOrder(orderparams)
-            logger.info(f"📝 Modified SL Order {order_id} -> {price}")
-            return True
+            response = self.api.modifyOrder(orderparams)
+            # Check API response status (modifyOrder returns full response dict)
+            if response and response.get('status') == True:
+                logger.info(f"📝 Modified SL Order {order_id} -> {price}")
+                return True
+            else:
+                err_msg = response.get('message', 'Unknown error') if response else 'No response'
+                logger.warning(f"⚠️ SL Modify Failed for {order_id}: {err_msg}")
+                return False
         except Exception as e:
             logger.error(f"Modify SL Error: {e}")
             return False
