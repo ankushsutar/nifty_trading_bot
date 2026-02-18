@@ -4,8 +4,8 @@ from bot.config.settings import Config
 from bot.core.safety_checks import SafetyGatekeeper
 from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
+from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
-
 
 class OHLStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -14,26 +14,23 @@ class OHLStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.data_fetcher = DataFetcher(self.api)
+        self.order_manager = OrderManager(self.api, dry_run=self.dry_run) # 1. Inject OrderManager
         self.running = True
-
 
     def execute(self, expiry, action="BUY"):
         """
         Executes Open High Low (OHL) Scalp.
         Time: 09:16 AM (After first 1-min candle 09:15-09:16)
         """
-        print(f"\n--- OHL SCALP STRATEGY ({expiry}) ---")
+        logger.info(f"--- OHL SCALP STRATEGY ({expiry}) ---")
 
         # Check for Resumption
         mode = "PAPER" if self.dry_run else "LIVE"
         active_trade = trade_repo.get_active_trade(mode=mode, strategy="OHL")
         
         if active_trade:
-            print(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
-            print(">>> [Resumption] Resuming Monitoring...")
-            # For OHL, we need target_price. We'll derive it or store it.
-            # Since we don't store target in DB yet, we'll recalculate or use 1:2 R:R from entry.
-            # Better: derive from sl_price in DB.
+            logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
+            
             fill = active_trade['entry_price']
             sl = active_trade['sl_price']
             opt_risk = abs(fill - sl)
@@ -45,7 +42,9 @@ class OHLStrategy:
                 active_trade['qty'], 
                 target, 
                 sl, 
-                active_trade['id']
+                active_trade['id'],
+                active_trade.get('sl_order_id'),
+                active_trade.get('leg')
             )
             return
 
@@ -57,7 +56,7 @@ class OHLStrategy:
         # 1. Fetch First 1-Minute Candle (09:15)
         candle = self.get_first_minute_candle()
         if not candle:
-            print(">>> [Error] Could not fetch 09:15 Candle.")
+            logger.error(">>> [Error] Could not fetch 09:15 Candle.")
             return
 
         c_open = candle['open']
@@ -65,235 +64,146 @@ class OHLStrategy:
         c_low = candle['low']
         c_close = candle['close']
         
-        print(f">>> [Market] 09:15 Candle | O: {c_open} H: {c_high} L: {c_low} C: {c_close}")
+        logger.info(f">>> [Market] 09:15 Candle | O: {c_open} H: {c_high} L: {c_low} C: {c_close}")
 
         # 2. Logic Check
         signal = None
-        stop_loss_level = 0.0
-        
-        # Buffer for 'equal' comparison (e.g. within 0.5 points)
+        index_sl_level = 0.0
         buffer = 1.0 
         
         if abs(c_open - c_low) <= buffer:
-            # Open ~ Low -> Bullish
-            print(">>> [Signal] OPEN ~= LOW (Strong Buying) 🐂")
+            logger.info(">>> [Signal] OPEN ~= LOW (Strong Buying) 🐂")
             signal = "BUY_CE"
-            stop_loss_level = c_low # SL is Candle Low
+            index_sl_level = c_low 
             
         elif abs(c_open - c_high) <= buffer:
-            # Open ~ High -> Bearish
-            print(">>> [Signal] OPEN ~= HIGH (Strong Selling) 🐻")
+            logger.info(">>> [Signal] OPEN ~= HIGH (Strong Selling) 🐻")
             signal = "BUY_PE"
-            stop_loss_level = c_high # SL is Candle High
+            index_sl_level = c_high 
         else:
-            print(">>> [Signal] No clear OHL Pattern.")
+            logger.info(">>> [Signal] No clear OHL Pattern.")
             return
 
-        # 3. Calculate Quantity (VIX Adjusted)
-        mult = self.gatekeeper.get_vix_adjustment()
-        adjusted_lots = max(1, int(mult))
-        qty = int(Config.NIFTY_LOT_SIZE * adjusted_lots)
+        # Apply Compounding (Exponential Scaling)
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
+        qty = lots * Config.NIFTY_LOT_SIZE
+        
+        logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
+        strike = round(c_close / 50) * 50
 
         # 4. Entry
-        strike = round(c_close / 50) * 50
-        print(f">>> [Trade] Target Strike: {strike} | Qty: {qty}")
-        
         if signal == "BUY_CE":
-            self.place_entry(expiry, strike, "CE", qty, stop_loss_level, direction="UP")
+            self.place_entry(expiry, strike, "CE", qty, index_sl_level)
         elif signal == "BUY_PE":
-            self.place_entry(expiry, strike, "PE", qty, stop_loss_level, direction="DOWN")
+            self.place_entry(expiry, strike, "PE", qty, index_sl_level)
 
-    def place_entry(self, expiry, strike, leg_type, qty, index_sl_level, direction):
+    def place_entry(self, expiry, strike, leg_type, qty, index_sl_level):
         # 1. Get Token
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type)
         if not token: 
-             print(">>> [Error] Token Not Found")
+             logger.error(">>> [Error] Token Not Found")
              return
 
-        if self.dry_run:
-             print(f">>> [Dry Run] Buy {symbol} | Index SL: {index_sl_level}")
-             # Save
-             fill_price = self.get_nifty_ltp() or 22000.0
-             sl_price = fill_price * 0.9
-             mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
+        # Viability Check: Option Premium vs Brokerage
+        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
+             return
              
-             # Calculate Target for Monitor
-             # Logic copied from real trade block generally
-             curr_index = self.get_nifty_ltp() or 22000.0
-             points_risk = abs(curr_index - index_sl_level)
-             option_risk = points_risk * 0.5 
-             target_price = round(fill_price + (option_risk * 2), 1)
-
-             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid)
+        estimated_cost = quote_ltp * qty
+        
+        if not self.dry_run and not self.gatekeeper.check_trade_margin(estimated_cost):
              return
 
-        # 2. Buy Order
+        # 2. Place Order (Using OrderManager)
+        logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty})")
+        
         try:
              orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-             order_id = self.api.placeOrder(orderparams)
-             if not order_id:
-                 print(">>> [Error] Entry Order Failed (None returned)")
-                 return
-
-             print(f">>> [Success] Entry Order: {order_id}")
              
-             # 3. Wait for Fill
-             print(">>> [Trade] Waiting for fill...")
-             fill_result = self.wait_for_fill(order_id)
+             # Use OrderManager to Place & Wait
+             oid = self.order_manager.place_order(orderparams)
+             if not oid: return
+
+             fill_result = self.wait_for_fill(oid) # Reuse local or OrderManager? Local is fine, but OrderManager has none.
+             # Actually, OrderManager place_order returns ID. We need to wait for fill manually or add helper?
+             # MomentumStrategy has wait_for_fill. Let's keep a local wait_for_fill for now or move it to OrderManager later.
+             # Reusing local wait_for_fill logic (improved)
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                 print(f"❌ Order {order_id} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
                  return
 
              fill_price = fill_result['price']
-             if not fill_price:
-                 fill_price = self.get_nifty_ltp() # Fallback
-                 print(f"OHL: Fill not caught (Status: {fill_result['status']}), using: {fill_price}")
+             if not fill_price: fill_price = quote_ltp
              
-             # 4. Calculate Option SL & Target
-             # NOTE: SL is based on Index Level. Option Price SL is approximate.
-             # Option Delta approx 0.5 (ATM).
-             # Risk = (Entry Index - SL Index). Option Risk ~= Risk * 0.5.
+             # 3. Calculate Option SL (Structural with 5pt Buffer)
+             curr_index = self.get_nifty_ltp() or c_close
+             points_risk = abs(curr_index - index_sl_level) + 5.0 # Added 5pt buffer for noise
+             option_risk = points_risk * 0.5 
              
-             # Get Index LTP to calculate Points Risk
-             curr_index = self.get_nifty_ltp() 
-             points_risk = abs(curr_index - index_sl_level)
-             option_risk = points_risk * 0.5 # Delta 0.5 assumption
-             
-             sl_price = round(fill_price - option_risk, 1)
+             sl_price = max(0.1, round(fill_price - option_risk, 1))
              target_price = round(fill_price + (option_risk * 2), 1) # 1:2 R:R
              
-             print(f">>> [Risk] Index Risk: {points_risk:.1f} pts. Option Risk: {option_risk:.1f} pts.")
-             print(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
+             logger.info(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
              
-             # 5. Place SL Order
-             sl_oid = self.place_sl_order(token, symbol, sl_price, qty)
-             
-             # Save
+             # 4. Save Trade
              mode = "PAPER" if self.dry_run else "LIVE"
              tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
 
-             # 6. Monitor
-             self.monitor_trade(token, symbol, qty, target_price, sl_price, tid, sl_oid)
-
-        except Exception as e:
-             print(f">>> [Error] Entry Failed: {e}")
-
-    def get_first_minute_candle(self):
-        """Fetches the 09:15 one-minute candle using DataFetcher."""
-        try:
-             # Use the centralized DataFetcher which already handles AB1004 alignment
-             df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+             # 5. Place Broker-Side SL
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
              
-             if df is not None and not df.empty:
-                  # Look for the 09:15 candle in the last 10 minutes of data
-                  for index, row in df.iterrows():
-                      if "09:15" in str(row['timestamp']):
-                          return {'open': row['open'], 'high': row['high'], 'low': row['low'], 'close': row['close']}
+             # 6. Monitor
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, tid, sl_oid, leg_type)
+
         except Exception as e:
-            logger.error(f"OHL: Candle Fetch Error: {e}")
-            
-        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
-        if is_mock_api: return self.get_mock_candle()
-        return None
+             logger.error(f">>> [Error] Entry Failed: {e}")
 
-        
-        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
-        if is_mock_api: return self.get_mock_candle()
-        return None
-
-    def get_mock_candle(self):
-         # Return a Bullish OHL candle
-         return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
-
-    def wait_for_fill(self, order_id):
-        """Polls for order completion. Returns dict with status and price."""
-        if not order_id: return {'status': 'ERROR', 'price': None}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        logger.info(f"OHL: Waiting for order {order_id} to fill...")
-        
-        for _ in range(10):
-            try:
-                time.sleep(1)
-                book = self.api.orderBook()
-                if book and book.get('data'):
-                    for o in book['data']:
-                        if o['orderid'] == order_id:
-                            if o['status'] == 'complete':
-                                fill_price = float(o['averageprice'])
-                                logger.info(f"OHL: Order Filled at ₹{fill_price}")
-                                return {'status': 'FILLED', 'price': fill_price}
-                            elif o['status'] == 'rejected':
-                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
-                            elif o['status'] == 'cancelled':
-                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
-            except: pass
-        
-        logger.warning(f"OHL: Order {order_id} fill timeout.")
-        return {'status': 'TIMEOUT', 'price': None}
-
-    def get_nifty_ltp(self):
-        try:
-            from backend.market_service import market_service
-            data = market_service.get_market_data()
-            return data.get('nifty', 0.0)
-        except: pass
-        
-        is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
-        if is_mock_api: return 22040.0 
-        return None
-
-    def place_sl_order(self, token, symbol, price, qty):
-        # SL for Buy is SELL STOP
-        try:
-            # Trigger slightly higher than limit price for SELL
-            trig = round(price + 0.5, 1)
-            orderparams = {
-                "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
-                "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
-            }
-            oid = self.api.placeOrder(orderparams)
-            logger.info(f"OHL: SL Order Placed: {oid} at {price}")
-            return oid
-        except Exception as e:
-            logger.error(f"OHL: SL Order Failed: {e}")
-            return None
-
-    def monitor_trade(self, token, symbol, qty, target, sl, trade_id=None, sl_oid=None):
-         logger.info(f"OHL: Monitoring Trade. Target: {target} | SL: {sl}")
+    def monitor_trade(self, token, symbol, qty, target, sl, entry_price, trade_id, sl_oid, leg_type):
+         logger.info(f"OHL: Monitoring Trade. Target: {target} | SL: {sl} | Entry: {entry_price}")
+         
+         breakeven_hit = False
          
          while self.running:
             try:
-                time.sleep(0.5) # Veteran Speed
+                time.sleep(0.5) 
                 
-                # 1. Fetch Current Price
-                from backend.market_service import market_service
-                ltp = market_service.get_ltp("NFO", symbol, token)
-                if ltp == 0: continue
+                ltp = self.data_fetcher.get_ltp(token)
+                if not ltp: continue
                 
-                # 2. Check Target Hit (Exit at Market)
+                # Risk-Free Pivot (Breakeven) Logic
+                # If Price moves 1:1 RR in our favor, move SL to Entry.
+                if not breakeven_hit:
+                    # Risk = Entry - SL
+                    risk = abs(entry_price - sl)
+                    threshold = entry_price + risk if leg_type == "CE" else entry_price - risk
+                    
+                    if (leg_type == "CE" and ltp >= threshold) or (leg_type == "PE" and ltp <= threshold):
+                        logger.info(f"OHL: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
+                        if sl_oid and not self.dry_run:
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                        
+                        sl = entry_price # Update local SL for monitoring
+                        if trade_id: trade_repo.update_sl(trade_id, sl)
+                        breakeven_hit = True
+                # Check Target (Exit Market)
                 if ltp >= target:
-                     logger.info(f"OHL: 🎯 Target Hit ({ltp} >= {target}). Closing Position.")
+                     logger.info(f"OHL: 🎯 Target Hit ({ltp} >= {target}). Closing.")
                      self.exit_at_market(token, symbol, qty, "TARGET", trade_id, sl_oid)
                      break
 
-
-                # 3. Check SL Hit (The Broker SL should already trigger, but we monitor for state sync)
+                # Check SL Hit (Broker SL would trigger, but we monitor)
                 if ltp <= sl:
                      logger.info(f"OHL: 🛑 Stop Loss Hit ({ltp} <= {sl}).")
-                     # We assume the broker SL order closed this. 
-                     # We just need to ensure the DB is updated.
+                     # Assume broker fired. Sync DB.
                      if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
                      break
 
-                # 4. Time Check (15:15)
+                # Check Time Exit
                 if datetime.datetime.now().time() >= datetime.time(15, 15):
                      logger.info("OHL: ⏰ Time 15:15. Closing.")
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
@@ -301,60 +211,73 @@ class OHLStrategy:
                 
             except Exception as e:
                   logger.error(f"OHL Monitor Error: {e}")
-                  time.sleep(10)
-
-    def stop(self):
-        """Signal strategy to stop monitoring and exit."""
-        logger.info("OHL: Strategy Stop Signal Received.")
-        self.running = False
+                  time.sleep(5)
 
     def exit_at_market(self, token, symbol, qty, reason, trade_id=None, sl_oid=None):
-        """Exits position at market price."""
+        """Exits position at market price using OrderManager."""
         try:
-            if self.dry_run:
-                logger.info(f"OHL: [Dry Run] Exit {symbol} ({reason})")
-                if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
-                return
+            # 1. Cancel SL if exists
+            if sl_oid:
+                self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
 
+            # 2. Place Exit Order
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-            oid = self.api.placeOrder(orderparams)
             
-            if not oid:
-                logger.error("OHL: Exit Order Failed (None returned).")
-                return 
+            oid = self.order_manager.place_order(orderparams)
+            
+            if oid:
+                logger.info(f"OHL: Exit Order Placed: {oid}")
+                # Wait for fill?
+                fill = self.wait_for_fill(oid)
+                exit_price = fill.get('price', 0.0)
+                
+                if trade_id:
+                     trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
+            else:
+                logger.error("OHL: Exit Failed.")
 
-            logger.info(f"OHL: Market Exit Order: {oid} ({reason})")
-            
-            # --- VERIFY EXIT ---
-            fill_result = self.wait_for_fill(oid)
-            
-            if fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                 logger.error(f"❌ OHL Exit REJECTED. Reason: {fill_result.get('message')}")
-                 
-                 msg = str(fill_result.get('message', '')).lower()
-                 if "no open position" in msg or "no net position" in msg:
-                     logger.warning("OHL: Broker says no position. Force closing local state.")
-                     # Proceed
-                 else:
-                     logger.warning("OHL: Exit Failed. Keeping position active.")
-                     return # Keep Active
-
-            exit_price = fill_result.get('price', 0.0)
-            
-            # Cancel SL
-            if sl_oid:
-                try:
-                    self.api.cancelOrder(sl_oid, "STOPLOSS")
-                    logger.info(f"OHL: Cancelled SL {sl_oid}")
-                except: pass
-            
-            if trade_id:
-                 trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
-                 
         except Exception as e:
             logger.error(f"OHL Exit Failed: {e}")
+
+    # --- Helpers ---
+    def get_first_minute_candle(self):
+        try:
+             df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+             if df is not None and not df.empty:
+                  # Naive check for 09:15
+                  mask = df['timestamp'].astype(str).str.contains("09:15")
+                  rows = df[mask]
+                  if not rows.empty:
+                      return rows.iloc[0].to_dict()
+        except: pass
+        if self.dry_run: return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
+        return None
+
+    def get_nifty_ltp(self):
+        return self.data_fetcher.get_ltp("99926000")
+
+    def wait_for_fill(self, order_id):
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        
+        for _ in range(10):
+            try:
+                time.sleep(0.5)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] in ['rejected', 'cancelled']:
+                                return {'status': o['status'].upper(), 'message': o.get('text')}
+            except: pass
+        return {'status': 'TIMEOUT', 'price': None}
+
+    def stop(self):
+        self.running = False
 

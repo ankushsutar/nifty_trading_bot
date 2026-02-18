@@ -1,6 +1,7 @@
 import argparse
 import sys
 import signal
+import datetime
 from bot.core.angel_connect import get_angel_session
 from bot.utils.token_lookup import TokenLookup
 from bot.strategies.nifty_straddle import NiftyStrategy
@@ -11,25 +12,22 @@ from bot.strategies.momentum_strategy import MomentumStrategy
 from bot.strategies.vwap_strategy import VWAPStrategy
 from bot.strategies.ohl_strategy import OHLStrategy
 from bot.strategies.inside_bar_strategy import InsideBarStrategy
-from bot.strategies.inside_bar_strategy import InsideBarStrategy
 from bot.core.decision_engine import DecisionEngine
+from bot.utils.logger import logger
 
 # Global variable for graceful shutdown
 bot_instance = None
 
 def signal_handler(sig, frame):
     """Handles Ctrl+C and Termination Signals"""
-    print(f"\n>>> [System] Signal Received ({sig}). Initiating Graceful Shutdown...")
-    sys.stdout.flush()
+    logger.info(f"\n>>> [System] Signal Received ({sig}). Initiating Graceful Shutdown...")
     
     if bot_instance:
-        print(">>> [System] Cleaning up Active Positions...")
+        logger.info(">>> [System] Cleaning up Active Positions...")
         if hasattr(bot_instance, 'stop'):
              bot_instance.stop()
         else:
-             print(">>> [Warning] Strategy does not support graceful '.stop()'. Checking if active...")
-             # Fallback for strategies without stop() method (if any)
-             pass
+             logger.warning(">>> [Warning] Strategy does not support graceful '.stop()'. Checking if active...")
              
     sys.exit(0)
 
@@ -48,93 +46,89 @@ def run_bot():
     args = parser.parse_args()
 
     if args.test:
-        print("\n>>> [System] STARTING IN MOCK MODE 🟢")
+        logger.info("\n>>> [System] STARTING IN MOCK MODE 🟢")
         api = MockSmartConnect()
         loader = MockTokenLookup()
-        loader.load_scrip_master() # Just to be consistent with the interface
+        loader.load_scrip_master() 
     else:
         # 1. Initialize Connection
         if args.dry_run:
-            print("\n>>> [System] STARTING IN DRY RUN MODE 🟡") 
-            print("    (Real Data, No Orders)")
+            logger.info("\n>>> [System] STARTING IN DRY RUN MODE 🟡") 
+            logger.info("    (Real Data, No Orders)")
         
         api = get_angel_session()
         if not api:
+            logger.error(">>> [System] Failed to establish API session. Exiting.")
             return
 
         # 2. Initialize Data Loader
         loader = TokenLookup()
         loader.load_scrip_master()
 
+    risk_multiplier = 1.0
+
     # 3. Smart Auto-Selection (The Brain)
     if args.auto:
-        print("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
+        logger.info("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
         engine = DecisionEngine(api, loader, dry_run=args.dry_run)
-        selected_strategy = engine.analyze_and_select()
+        selected_strategy, risk_multiplier = engine.analyze_and_select()
         
         if selected_strategy:
-            print(f">>> [Auto] 🤖 Brain selected: {selected_strategy}")
+            logger.info(f">>> [Auto] 🤖 Brain selected: {selected_strategy} (Risk Multiplier: {risk_multiplier:.2f}x)")
             args.strategy = selected_strategy
         else:
-            print(">>> [Auto] ❌ Brain could not select a strategy (Low Funds or Market Closed). Exiting.")
+            logger.warning(">>> [Auto] ❌ Brain could not select a strategy (Low Funds or Market Closed). Exiting.")
             return
 
-    # 4. Initialize Strategy Strategies logic...
-    # In test mode, api and loader are mocks. Strategy should work transparently.
-    # In dry_run mode, we pass True to dry_run arg of Strategy
-    
+    # 4. Initialize Strategy
     if args.strategy == "ORB":
-        print(f"\n>>> [Strategy] Selected: Open Range Breakout (ORB)")
+        logger.info(f"\n>>> [Strategy] Selected: Open Range Breakout (ORB)")
         bot = ORBStrategy(api, loader, dry_run=args.dry_run)
     elif args.strategy == "MOMENTUM":
-        print(f"\n>>> [Strategy] Selected: Momentum (EMA Crossover) ⚡")
+        logger.info(f"\n>>> [Strategy] Selected: Momentum (EMA Crossover) ⚡")
         bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
     elif args.strategy == "VWAP":
-        print(f"\n>>> [Strategy] Selected: VWAP Institutional Trend (Pro Mode) 🚀")
+        logger.info(f"\n>>> [Strategy] Selected: VWAP Institutional Trend (Pro Mode) 🚀")
         bot = VWAPStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
     elif args.strategy == "OHL":
-        print(f"\n>>> [Strategy] Selected: Open High Low (OHL) Scalp 🎯")
+        logger.info(f"\n>>> [Strategy] Selected: Open High Low (OHL) Scalp 🎯")
         bot = OHLStrategy(api, loader, dry_run=args.dry_run)
     elif args.strategy == "INSIDE_BAR":
-        print(f"\n>>> [Strategy] Selected: Inside Bar Breakout 🔥")
+        logger.info(f"\n>>> [Strategy] Selected: Inside Bar Breakout 🔥")
         bot = InsideBarStrategy(api, loader, dry_run=args.dry_run)
     else:
-        print(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
+        logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
         
-    bot_instance = bot # Assign to global for signal handler
+    bot_instance = bot 
 
-    # 4. Input Trade Parameters
-    print("\n--- NIFTY OPTION TRADER ---")
-    
-    # Calculate Dynamic Weekly Expiry (Next Tuesday)
+    # 5. Setup Parameters
+    logger.info("\n--- NIFTY OPTION TRADER ---")
     expiry = get_next_weekly_expiry()
-    print(f">>> [Setup] Target Expiry: {expiry}")
+    logger.info(f">>> [Setup] Target Expiry: {expiry}")
     
-    # SAFEGUARD: Prevent using past expiry (stale process check)
-    import datetime
+    # SAFEGUARD: Prevent using past expiry
     try:
         exp_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
         if exp_date < datetime.date.today():
-             print(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
-             print(">>> Check system time or 'get_next_weekly_expiry' logic.")
+             logger.critical(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
              return
     except Exception as e:
-        print(f">>> [Warning] Expiry Date Parsing Failed: {e}")
+        logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
-    
-    # 5. Execute Strategy
-    # WARNING: This places a REAL order if credentials are valid (and not in test mode).
-    # Strike is now calculated dynamically (ATM)
-    
+    # 6. Execute Strategy
     if args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
-        # Directional buying
         bot.execute(expiry=expiry, action="BUY")
     elif args.strategy == "MOMENTUM":
         bot.execute(expiry=expiry)
     else:
-        # Straddle (Short)
         bot.execute(expiry=expiry, action="SELL")
+
+if __name__ == "__main__":
+    run_bot()
+
 
 if __name__ == "__main__":
     run_bot()

@@ -1,5 +1,6 @@
 import datetime
 import time
+from bot.utils.logger import logger
 
 class SafetyGatekeeper:
     def __init__(self, api, dry_run=False):
@@ -18,7 +19,7 @@ class SafetyGatekeeper:
         
         if start <= now <= end:
             return True
-        print(f">>> [Gatekeeper] Market Closed. Current Time: {now}")
+        logger.warning(f">>> [Gatekeeper] Market Closed. Current Time: {now}")
         return False
 
     def check_data_freshness(self, tick_timestamp):
@@ -27,7 +28,7 @@ class SafetyGatekeeper:
         tick_timestamp: datetime object of the tick
         """
         if not tick_timestamp:
-            print(">>> [Gatekeeper] Error: No Timestamp provided.")
+            logger.error(">>> [Gatekeeper] Error: No Timestamp provided.")
             return False
             
         now = datetime.datetime.now()
@@ -36,14 +37,11 @@ class SafetyGatekeeper:
         
         if diff < 2.0:
             return True
-        print(f">>> [Gatekeeper] Data Stale! Delay: {diff:.2f}s")
+        logger.warning(f">>> [Gatekeeper] Data Stale! Delay: {diff:.2f}s")
         return False
 
-    def check_funds(self, required_margin_per_lot=150000):
-        """
-        Rule: Available Cash > Required Margin * 1.1 (10% Buffer)
-        Note: required_margin_per_lot is an estimate.
-        """
+    def get_current_capital(self):
+        """Returns the available trading capital (Net Margin)."""
         try:
             available_cash = 0.0
             
@@ -51,7 +49,6 @@ class SafetyGatekeeper:
             if self.dry_run:
                 from bot.config.settings import Config
                 available_cash = Config.SIMULATION_CAPITAL
-                # print(f">>> [Gatekeeper] 🟡 DRY RUN: Using Simulation Capital: ₹{available_cash}")
             else:
                 # REAL MODE CHECK
                 # Check cache (10 seconds validity)
@@ -68,34 +65,31 @@ class SafetyGatekeeper:
                 if limit and limit.get('status'):
                      available_cash = float(limit['data']['net'])
                 else:
-                     print(">>> [Gatekeeper] Could not fetch RMS Data.")
-                     return False
+                     logger.error(">>> [Gatekeeper] Could not fetch RMS Data.")
+                     return 0.0
 
+            return available_cash
+        except Exception as e:
+            logger.error(f">>> [Gatekeeper] Capital Check Error: {e}")
+            return 0.0
+
+    def check_funds(self, required_margin_per_lot=150000):
+        """
+        Rule: Available Cash > Required Margin * 1.1 (10% Buffer)
+        Note: required_margin_per_lot is an estimate.
+        """
+        try:
+            available_cash = self.get_current_capital()
             required_total = required_margin_per_lot * 1.1 # 10% Buffer
             
             if available_cash >= required_total:
-                print(f"\n    ------------------------------------")
-                print(f"    [ GATEKEEPER ] ACCOUNT HEALTH 🛡️")
-                print(f"    ------------------------------------")
-                print(f"    Active Mode:      {'🟡 SIMULATION' if self.dry_run else '🟢 REAL MONEY'}")
-                print(f"    Available Cash:   ₹ {available_cash:,.2f}")
-                print(f"    Required Margin:  ₹ {required_total:,.2f}")
-                print(f"    Buffer Status:    ✅ ADEQUATE")
-                print(f"    ------------------------------------\n")
                 return True
             else:
-                print(f"\n    ------------------------------------")
-                print(f"    [ GATEKEEPER ] ACCOUNT HEALTH 🛡️")
-                print(f"    ------------------------------------")
-                print(f"    Active Mode:      {'🟡 SIMULATION' if self.dry_run else '🟢 REAL MONEY'}")
-                print(f"    Available Cash:   ₹ {available_cash:,.2f}")
-                print(f"    Required Margin:  ₹ {required_total:,.2f}")
-                print(f"    Buffer Status:    ❌ LOW FUNDS")
-                print(f"    ------------------------------------\n")
+                logger.warning(f">>> [Gatekeeper] ❌ LOW FUNDS. Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}")
                 return False
 
         except Exception as e:
-            print(f">>> [Gatekeeper] Fund Check Error: {e}")
+            logger.error(f">>> [Gatekeeper] Fund Check Error: {e}")
             return False
 
     def check_trade_margin(self, estimated_cost):
@@ -114,7 +108,6 @@ class SafetyGatekeeper:
                 if time.time() - self.last_rms_time < 10 and self.cached_rms:
                     limit = self.cached_rms
                 else:
-                    # Small delay
                     time.sleep(0.5)
                     limit = self.api.rmsLimit()
                     self.cached_rms = limit
@@ -123,18 +116,18 @@ class SafetyGatekeeper:
                 if limit and limit.get('status'):
                     available_cash = float(limit['data']['net'])
                 else:
-                    print(">>> [Gatekeeper] Error fetching RMS for Trade Check.")
+                    logger.error(">>> [Gatekeeper] Error fetching RMS for Trade Check.")
                     return False
 
             if available_cash >= estimated_cost:
-                print(f">>> [Gatekeeper] Margin Check Passed: ₹{available_cash:,.2f} >= ₹{estimated_cost:,.2f}")
+                logger.info(f">>> [Gatekeeper] Margin Check Passed: ₹{available_cash:,.2f} >= ₹{estimated_cost:,.2f}")
                 return True
             else:
-                print(f">>> [Gatekeeper] ❌ Insufficient Funds for Trade. Available: ₹{available_cash:,.2f}, Required: ₹{estimated_cost:,.2f}")
+                logger.warning(f">>> [Gatekeeper] ❌ Insufficient Funds for Trade. Available: ₹{available_cash:,.2f}, Required: ₹{estimated_cost:,.2f}")
                 return False
 
         except Exception as e:
-            print(f">>> [Gatekeeper] Trade Margin Check Error: {e}")
+            logger.error(f">>> [Gatekeeper] Trade Margin Check Error: {e}")
             return False
 
     def check_no_open_orders(self, symbol):
@@ -146,21 +139,20 @@ class SafetyGatekeeper:
             if book and book.get('status'):
                 for order in book['data']:
                     if order['tradingsymbol'] == symbol and order['status'] in ['open', 'pending']:
-                        print(f">>> [Gatekeeper] Active Order exists for {symbol}. Blocking duplicate.")
+                        logger.warning(f">>> [Gatekeeper] Active Order exists for {symbol}. Blocking duplicate.")
                         return False
             return True
         except Exception as e:
-            print(f">>> [Gatekeeper] OrderBook Check Error: {e}")
+            logger.error(f">>> [Gatekeeper] OrderBook Check Error: {e}")
             return False
 
     def check_max_daily_loss(self, current_pnl):
         """
         Rule: Stop trading if loss > ₹2,000 (per lot).
-        Note: current_pnl should be negative for loss.
         """
         MAX_LOSS = -2000
         if current_pnl <= MAX_LOSS:
-             print(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl}). Halting Trading.")
+             logger.critical(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl}). Halting Trading.")
              return False
         return True
 
@@ -173,63 +165,82 @@ class SafetyGatekeeper:
         end = datetime.time(13, 0)
         
         if start <= now <= end:
-            print(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
+            logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
             return True
         return False
 
     def get_vix_adjustment(self):
         """
         Rule: If India VIX > 25, reduce quantity by 50%.
-        Returns multiplier (1.0 or 0.5).
         """
         try:
-            # Try to fetch INDIA VIX. Token for INDIA VIX on NSE is usually 26009 or similar, 
-            # but depends on broker mapping. 
-            # Angel One token for 'INDIA VIX' is '99926009' (check if valid) or we search scrip.
-            # For now, we will try a standard token or mock it if it fails.
-            
-            # Assuming 99926009 is India VIX based on Nifty being 99926000
             vix_token = "99926017" 
-            
             response = self.api.ltpData("NSE", "INDIA VIX", vix_token)
             if response and response.get('status'):
                 vix = float(response['data']['ltp'])
-                # print(f">>> [Market] India VIX: {vix}")
-                
                 if vix > 25.0:
-                    print(f">>> [Risk] ⚠️ High VIX ({vix} > 25). Reducing Quantity by 50%.")
+                    logger.warning(f">>> [Risk] ⚠️ High VIX ({vix} > 25). Reducing Quantity by 50%.")
                     return 0.5
-            else:
-                # print(">>> [Risk] Could not fetch VIX. Assuming Normal.")
-                pass
-                
         except Exception as e:
-            # print(f">>> [Risk] VIX Check Error: {e}")
-            pass
+            logger.error(f">>> [Risk] VIX Check Error: {e}")
             
         return 1.0
 
     def check_sentiment_risk(self, direction="LONG"):
         """
         Rule: 
-        - Block LONG if Sentiment is VERY BEARISH (<-0.5).
-        - Block SHORT if Sentiment is VERY BULLISH (>0.5).
+        - Block LONG if Sentiment is BEARISH (<-0.2).
+        - Block SHORT if Sentiment is BULLISH (>0.2).
         """
         try:
             from backend.news_service import news_service
             score = news_service.get_sentiment_score()
             
             if direction == "LONG" and score < -0.2:
-                print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BEARISH ({score}).")
+                logger.warning(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BEARISH ({score}).")
                 return False
             
             if direction == "SHORT" and score > 0.2:
-                 print(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BULLISH ({score}).")
+                 logger.warning(f">>> [Gatekeeper] 🛑 Trade Blocked. Sentiment is BULLISH ({score}).")
                  return False
-                 
-            # print(f">>> [Gatekeeper] Sentiment Check Passed ({score}).")
             return True
-            
         except Exception as e:
-            # print(f">>> [Gatekeeper] Sentiment Check Error: {e}")
+            logger.warning(f">>> [Gatekeeper] Sentiment Check Error: {e}")
             return True
+
+    def get_compounded_lots(self, margin_per_lot):
+        """
+        Calculates exponential lot size based on current capital.
+        Lots = floor(Net_Margin / (Margin_Per_Lot * 1.2))
+        """
+        try:
+            capital = self.get_current_capital()
+            if capital < 5000: return 0
+            
+            # Use a 20% margin buffer for safety
+            lots = int(capital / (margin_per_lot * 1.2))
+            
+            # Floor at 1 lot for small accounts
+            if capital >= 5000 and lots < 1:
+                lots = 1
+                
+            return lots
+        except Exception as e:
+            logger.error(f"Compounding Error: {e}")
+            return 1
+
+    def check_trade_viability(self, premium, qty):
+        """
+        Rule: Brokerage should not exceed 10% of the trade value.
+        Brokerage is ~₹60 per round-trip (Buy+Sell).
+        """
+        trade_value = premium * qty
+        if trade_value <= 0: return False
+        
+        brokerage_ratio = 60.0 / trade_value
+        if brokerage_ratio > 0.10:
+            logger.warning(f">>> [Gatekeeper] ⚠️ Trade Viability Low: Brokerage is {brokerage_ratio*100:.1f}% of trade value. Skipping.")
+            return False
+            
+        return True
+

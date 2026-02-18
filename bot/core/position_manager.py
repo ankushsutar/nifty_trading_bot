@@ -2,6 +2,11 @@ import time
 import datetime
 from bot.config.settings import Config
 from bot.core.trade_repo import trade_repo
+from bot.utils.logger import logger
+
+# [LEGACY CODE] 
+# This module is deprecated. Use OrderManager and local Strategy monitor loops instead.
+# Retained for backward compatibility with unrefactored custom experiments.
 
 class PositionManager:
     def __init__(self, api, dry_run=False):

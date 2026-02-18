@@ -12,18 +12,22 @@ from bot.utils.rate_limiter import rate_limiter
 # ----------------- ROOT CAUSE FIX: SDK PATCHING -----------------
 def patch_sdk():
     """
-    Overrides the hardcoded IPs in SmartConnect library with the REAL environment IPs.
-    This prevents being pooled into a shared rate limit with other users.
+    Overrides the hardcoded IPs in SmartConnect library.
+    Prioritizes Config.STATIC_IP if provided, otherwise detects dynamically.
     """
     try:
-        # Detect Real Public IP
-        public_ip = requests.get('https://api.ipify.org', timeout=5).text.strip()
+        if Config.STATIC_IP:
+            public_ip = Config.STATIC_IP
+            logger.info(f">>> [System] Using Configured Static IP: {public_ip} 🛡️")
+        else:
+            # Detect Real Public IP
+            public_ip = requests.get('https://api.ipify.org', timeout=5).text.strip()
+            logger.info(f">>> [System] SDK Patched. Detected IP: {public_ip} 🌐")
         
         # Override Class Attributes (used by SmartConnect to generate headers)
         SmartConnect.clientPublicIp = public_ip
         SmartConnect.clientLocalIp = "127.0.0.1" 
         
-        logger.info(f">>> [System] SDK Patched. Public IP: {public_ip} 🌐")
     except Exception as e:
         logger.warning(f">>> [System] IP Detection failed, using default: {e}")
 

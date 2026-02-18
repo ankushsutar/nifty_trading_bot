@@ -4,6 +4,9 @@ import pandas as pd
 from bot.config.settings import Config
 from bot.core.safety_checks import SafetyGatekeeper
 from bot.core.trade_repo import trade_repo
+from bot.core.data_fetcher import DataFetcher
+from bot.core.order_manager import OrderManager
+from bot.utils.logger import logger
 
 class InsideBarStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -11,9 +14,8 @@ class InsideBarStrategy:
         self.token_loader = token_loader
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.active_trade = None
-        from bot.core.data_fetcher import DataFetcher
         self.data_fetcher = DataFetcher(self.api)
+        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.running = True
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
@@ -22,33 +24,7 @@ class InsideBarStrategy:
         return self.data_fetcher.fetch_latest_candles(token, interval=interval)
 
     def get_nifty_ltp(self):
-        try:
-            resp = self.api.ltpData("NSE", "Nifty 50", "99926000")
-            if resp and resp.get('status'):
-                return float(resp['data']['ltp'])
-        except: pass
-        return 0.0
-
-    def wait_for_fill(self, order_id):
-        """Polls for order completion. Returns dict with status and price."""
-        if not order_id: return {'status': 'ERROR', 'price': None}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        for _ in range(10):
-            try:
-                time.sleep(1)
-                book = self.api.orderBook()
-                if book and book.get('data'):
-                    for o in book['data']:
-                        if o['orderid'] == order_id:
-                            if o['status'] == 'complete':
-                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                            elif o['status'] == 'rejected':
-                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
-                            elif o['status'] == 'cancelled':
-                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
-            except: pass
-        return {'status': 'TIMEOUT', 'price': None}
+        return self.data_fetcher.get_ltp("99926000")
 
     def execute(self, expiry, action="BUY"):
         """
@@ -56,22 +32,34 @@ class InsideBarStrategy:
         Timeframe: 15-Minute Candles.
         Pattern: Mother Candle, then Baby Candle inside Mother's High/Low.
         """
-        print(f"\n--- INSIDE BAR STRATEGY ({expiry}) ---")
+        logger.info(f"--- INSIDE BAR STRATEGY ({expiry}) ---")
 
         # Check for Resumption
         mode = "PAPER" if self.dry_run else "LIVE"
-        self.active_trade = trade_repo.get_active_trade(mode=mode, strategy="INSIDE_BAR")
+        active_trade = trade_repo.get_active_trade(mode=mode, strategy="INSIDE_BAR")
         
-        if self.active_trade:
-            print(f">>> [Resumption] Found Open Trade: {self.active_trade['symbol']} (ID: {self.active_trade['id']})")
-            print(">>> [Resumption] Resuming Monitoring...")
-            self.monitor_trailing(
-                self.active_trade['token'], 
-                self.active_trade['symbol'], 
-                self.active_trade['qty'], 
-                "RECOVERED", 
-                self.active_trade['id']
+        if active_trade:
+            logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
+            
+            # Recalculate Target/SL from DB or defaults
+            fill = active_trade['entry_price']
+            sl = active_trade['sl_price']
+            # Re-derive Index Level SL approx if needed, or just use stored SL price.
+            # Target 1:2
+            risk = abs(fill - sl)
+            target = round(fill + (risk * 2), 1)
+            
+            self.monitor_trade(
+                active_trade['token'], 
+                active_trade['symbol'], 
+                active_trade['qty'], 
+                target, 
+                sl,
+                active_trade['id'],
+                active_trade.get('sl_order_id'),
+                active_trade.get('leg')
             )
+            return
 
         # 0. Risk Checks
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
@@ -81,167 +69,202 @@ class InsideBarStrategy:
         # 1. Fetch Data (15 Min Candles)
         df = self.fetch_candles("FIFTEEN_MINUTE")
         if df is None or len(df) < 2:
-             print(">>> [Error] Insufficient Data.")
+             logger.error(">>> [Error] Insufficient Data.")
              return
-
-        # 2. Identify Pattern (Last 2 completed candles)
-        # df.iloc[-1] is the current running candle? Usually API returns completed or snapshot.
-        # Assuming we check the *completed* formation.
-        # Let's assess the last two CLOSED candles.
         
+        # 2. Identify Pattern (Last 2 completed candles)
         mother = df.iloc[-2]
         baby = df.iloc[-1]
         
-        print(f">>> [Analysis] Checking Inside Bar Pattern...")
-        print(f"    Mother ({-2}): H:{mother['high']} L:{mother['low']}")
-        print(f"    Baby   ({-1}): H:{baby['high']} L:{baby['low']}")
+        logger.info(f">>> [Analysis] Checking Inside Bar Pattern...")
+        logger.info(f"    Mother ({-2}): H:{mother['high']} L:{mother['low']}")
+        logger.info(f"    Baby   ({-1}): H:{baby['high']} L:{baby['low']}")
 
         is_inside_bar = (baby['high'] <= mother['high']) and (baby['low'] >= mother['low'])
         
         if not is_inside_bar:
-            print(">>> [Result] No Inside Bar Pattern detected.")
+            logger.info(">>> [Result] No Inside Bar Pattern detected.")
             return
             
-        print(">>> [Signal] 🔥 INSIDE BAR DETECTED!")
+        logger.info(">>> [Signal] 🔥 INSIDE BAR DETECTED!")
         
         # 3. Check Breakout (Current Market Price vs Mother Range)
-        # We need LIVE LTP now to see if it breaks Mother High/Low
         ltp = self.get_nifty_ltp()
-        print(f">>> [Market] Current Price: {ltp}")
+        logger.info(f">>> [Market] Current Price: {ltp}")
         
         signal = None
+        index_sl_level = 0.0
+        
         if ltp > mother['high']:
-            print(">>> [Breakout] Price broke Mother HIGH -> BUY CE")
+            logger.info(">>> [Breakout] Price broke Mother HIGH -> BUY CE")
             signal = "BUY_CE"
-            sl_level = mother['low'] # SL is opposite end
+            index_sl_level = mother['low'] # SL is opposite end
         elif ltp < mother['low']:
-            print(">>> [Breakout] Price broke Mother LOW -> BUY PE")
+            logger.info(">>> [Breakout] Price broke Mother LOW -> BUY PE")
             signal = "BUY_PE"
-            sl_level = mother['high']
+            index_sl_level = mother['high']
         else:
-            print(">>> [Wait] Pattern formed but NO BREAKOUT yet.")
+            logger.info(">>> [Wait] Pattern formed but NO BREAKOUT yet.")
             return
 
-        # 4. Entry
-        mult = self.gatekeeper.get_vix_adjustment()
-        adjusted_lots = max(1, int(mult))
-        qty = int(Config.NIFTY_LOT_SIZE * adjusted_lots)
-        strike = round(ltp / 50) * 50
+        # Apply Compounding (Exponential Scaling)
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
+        qty = lots * Config.NIFTY_LOT_SIZE
         
-        if signal == "BUY_CE":
-            self.place_trade(expiry, strike, "CE", qty, sl_level, "UP")
-        elif signal == "BUY_PE":
-            self.place_trade(expiry, strike, "PE", qty, sl_level, "DOWN")
+        logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
-    def place_trade(self, expiry, strike, leg, qty, index_sl, direction):
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
-        if not token: return
-        
-        # Place Buy Order
-        print(f">>> [Trade] Entering {symbol} (Qty: {qty})")
-        mode = "PAPER" if self.dry_run else "LIVE"
-        
-        if self.dry_run:
-             # Save Dry Run
-             fill = self.get_nifty_ltp()
-             sl_price = fill * 0.9
-             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price, mode=mode, strategy="INSIDE_BAR")
-             self.monitor_trailing(token, symbol, qty, "dry_run_oid", tid)
+        # 5. Entry
+        if signal == "BUY_CE":
+            self.place_trade(expiry, strike, "CE", qty, index_sl_level)
+        elif signal == "BUY_PE":
+            self.place_trade(expiry, strike, "PE", qty, index_sl_level)
+
+    def place_trade(self, expiry, strike, leg_type, qty, index_sl_level):
+        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type)
+        if not token: 
+             logger.error(">>> [Error] Token Not Found")
              return
         
+        # Viability Check: Option Premium vs Brokerage
+        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
+             return
+             
+        # Pre-Trade Margin Check
+        estimated_cost = quote_ltp * qty
+        if not self.dry_run and not self.gatekeeper.check_trade_margin(estimated_cost):
+             return
+
+        # Place Buy Order
+        logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty})")
+        
         try:
-             # Basic Entry Logic
              orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                 "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-             oid = self.api.placeOrder(orderparams)
-             print(f">>> [Success] Order: {oid}")
              
-             # 4. Wait for Fill
-             fill_result = self.wait_for_fill(oid)
+             oid = self.order_manager.place_order(orderparams)
+             if not oid: return
+
+             # Wait for Fill
+             fill_result = self.wait_for_fill(oid) 
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                 logger.error(f"❌ Order {oid} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
-                 return # Abort
+                  logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
+                  return
 
-             fill = fill_result['price']
-             if not fill:
-                 # Fallback to current LTP if fill price isn't available (e.g., timeout)
-                 fill = self.get_nifty_ltp() 
-                 logger.warning(f"InsideBar: Fill not caught (Status: {fill_result['status']}), using current LTP: {fill}")
-
-             # Approx Option SL based on Index SL difference
-             curr = self.get_nifty_ltp()
-             diff = abs(curr - index_sl)
-             opt_diff = diff * 0.5
-             sl_price = round(fill - opt_diff, 1)
+             fill_price = fill_result['price'] or quote_ltp
              
-             sl_oid = self.place_sl(token, symbol, sl_price, qty)
+             # Calculate Option SL (Structural with 5pt Buffer)
+             curr_index = self.get_nifty_ltp() or 22000.0
+             points_risk = abs(curr_index - index_sl_level) + 5.0 # Added 5pt buffer for noise
+             option_risk = points_risk * 0.5
+             
+             sl_price = max(0.1, round(fill_price - option_risk, 1))
+             target_price = round(fill_price + (option_risk * 2), 1)
+             
+             logger.info(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
              
              # Save
-             tid = trade_repo.save_trade(symbol, token, leg, qty, fill, sl_price, mode=mode, strategy="INSIDE_BAR")
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="INSIDE_BAR")
 
-             # Trailing Logic
-             self.monitor_trailing(token, symbol, qty, oid, tid, sl_oid)
+             # Place Broker SL
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
+             
+             # Monitor
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, tid, sl_oid, leg_type)
              
         except Exception as e:
-             print(f">>> [Error] {e}")
+             logger.error(f">>> [Error] Entry Failed: {e}")
 
-    def place_sl(self, token, symbol, price, qty):
+    def monitor_trade(self, token, symbol, qty, target, sl, entry_price, trade_id, sl_oid, leg_type):
+         logger.info(f"InsideBar: Monitoring. Target: {target} | SL: {sl} | Entry: {entry_price}")
+         
+         breakeven_hit = False
+         
+         while self.running:
+            try:
+                time.sleep(0.5) 
+                
+                ltp = self.data_fetcher.get_ltp(token)
+                if not ltp: continue
+                
+                # Risk-Free Pivot (Breakeven) Logic
+                # If Price moves 1:1 RR in our favor, move SL to Entry.
+                if not breakeven_hit:
+                    # Risk = Entry - SL
+                    risk = abs(entry_price - sl)
+                    threshold = entry_price + risk if leg_type == "CE" else entry_price - risk
+                    
+                    if (leg_type == "CE" and ltp >= threshold) or (leg_type == "PE" and ltp <= threshold):
+                        logger.info(f"InsideBar: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
+                        if sl_oid and not self.dry_run:
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                        
+                        sl = entry_price # Update local SL for monitoring
+                        if trade_id: trade_repo.update_sl(trade_id, sl)
+                        breakeven_hit = True
+                # Check Target 
+                if ltp >= target:
+                     logger.info(f"InsideBar: 🎯 Target Hit ({ltp}). Closing.")
+                     self.exit_at_market(token, symbol, qty, "TARGET", trade_id, sl_oid)
+                     break
+
+                # Check SL Hit
+                if ltp <= sl:
+                     logger.info(f"InsideBar: 🛑 SL Hit ({ltp}).")
+                     if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
+                     break
+
+                # Time Exit
+                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                     logger.info("InsideBar: ⏰ Time Exit.")
+                     self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
+                     break
+                
+            except Exception as e:
+                  logger.error(f"InsideBar Monitor: {e}")
+                  time.sleep(5)
+
+    def exit_at_market(self, token, symbol, qty, reason, trade_id, sl_oid):
         try:
-             # Buy SL for Sell Entry? No, Inside Bar is direction based.
-             # If Entry was BUY, SL is SELL STOP.
-             # Trigger slightly below price (for Sell SL).
-             trig = round(price + 0.5, 1) # Assuming Sell SL Trigger > Price? No.
-             # Sell SL: Trigger = 100, Price = 99.
-             # But SmartAPI might want Trigger=99.5, Price=99.
-             
-             trig = round(price + 0.5, 1) 
-
-             orderparams = {
-                "variety": "STOPLOSS", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "STOPLOSS_LIMIT",
-                "producttype": "INTRADAY", "duration": "DAY", "triggerprice": trig, "price": price, "quantity": qty
+            if sl_oid: self.order_manager.cancel_order(sl_oid, "STOPLOSS")
+            
+            orderparams = {
+                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-             oid = self.api.placeOrder(orderparams)
-             print(f">>> [Risk] SL Placed {symbol} | Price: {price} | ID: {oid}")
+            oid = self.order_manager.place_order(orderparams)
+            
+            if oid and trade_id:
+                 # Ideally wait for fill logic
+                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+                 
         except Exception as e:
-             print(f">>> [Error] SL Place: {e}")
+            logger.error(f"InsideBar Exit Failed: {e}")
 
-    def monitor_trailing(self, token, symbol, qty, entry_oid, trade_id=None, sl_oid=None):
-        """
-        Monitor using shared PositionManager (TSL + Target).
-        """
-        print(">>> [Monitor] Trade Active. Handing over to PositionManager.")
-        from bot.core.position_manager import PositionManager
-        manager = PositionManager(self.api, self.dry_run)
+    def wait_for_fill(self, order_id):
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
         
-        # Determine Entry Price
-        entry_price = 0.0
-        if self.active_trade: entry_price = self.active_trade.get('entry_price', 0.0)
-        if entry_price == 0:
-             # Try fetching from Repo or use a fallback if just entered
-             pass 
-
-        # We need entry price for PositionManager. 
-        # It's passed in calling context usually, but here we might need to look it up if resuming.
-        # But wait, execute() calls this with trade_id.
-        
-        # Retrieve trade details if needed
-        if trade_id and entry_price == 0:
-             trade = trade_repo.get_active_trade(mode="PAPER" if self.dry_run else "LIVE", strategy="INSIDE_BAR")
-             if trade: entry_price = trade['entry_price']
-        
-        manager.monitor([{
-           'symbol': symbol, 'token': token, 
-           'entry_price': entry_price, 'qty': qty,
-           'id': trade_id,
-           'sl_order_id': sl_oid
-        }])
+        for _ in range(10):
+            try:
+                time.sleep(0.5)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] in ['rejected', 'cancelled']:
+                                return {'status': o['status'].upper(), 'message': o.get('text')}
+            except: pass
+        return {'status': 'TIMEOUT', 'price': None}
 
     def stop(self):
-        """Signal strategy to stop monitoring and exit."""
-        print(">>> [System] Stopping Strategy...")
+        logger.info("InsideBar: Stop Signal.")
         self.running = False

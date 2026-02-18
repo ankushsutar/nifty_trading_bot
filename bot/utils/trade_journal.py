@@ -8,7 +8,8 @@ class TradeJournal:
     HEADERS = [
         "timestamp", "strategy", "symbol", "action", "qty", 
         "entry_price", "exit_price", "pnl", "pnl_percent", "result", "exit_reason",
-        "entry_ema9", "entry_ema21", "entry_rsi", "entry_adx", "htf_trend"
+        "entry_ema9", "entry_ema21", "entry_rsi", "entry_adx", "htf_trend",
+        "entry_atr", "entry_bbw", "oi_pcr", "oi_sentiment"
     ]
 
     @staticmethod

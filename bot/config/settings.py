@@ -18,8 +18,18 @@ class Config:
     # Simulation Settings
     SIMULATION_CAPITAL = 500000.0 # 5 Lakhs default for Paper Trading
 
-    # MongoDB Settings for Historical Trade Persistence
-    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017")
+    # MongoDB Settings for Historical Trade    # MongoDB
+    MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     MONGO_DB = os.getenv("MONGO_DB", "nifty_bot")
     MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "trades")
 
+    # Notifications
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+    # Risk Management
+    RISK_PER_TRADE_PERCENT = 0.01  # 1% Risk per trade of Total Capital
+    MAX_CAPITAL_USAGE_PERCENT = 0.20 # Max 20% capital allocation per trade
+
+    # Infrastructure
+    STATIC_IP = os.getenv("STATIC_IP") # Optional: Your whitelisted static IP
