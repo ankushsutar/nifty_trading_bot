@@ -73,7 +73,9 @@ class OIAnalyzer:
             if not snapshots:
                 logger.info(">>> [System] Creating Daily OI Snapshot... 📸")
                 for item in fetched_data:
-                    snapshots[item['symbolToken']] = item['opnInterest']
+                    # FIX Issue 3: Skip tokens with OI=0 — Angel One has ~5min lag at open
+                    if item['opnInterest'] > 0:
+                        snapshots[item['symbolToken']] = item['opnInterest']
                 self._save_oi_snapshot(snapshots)
 
             # 5. Calculate Sentiment
@@ -89,7 +91,10 @@ class OIAnalyzer:
                 
                 delta_oi = current_oi - prev_oi
                 opt_info = token_map.get(token)
-                
+                # FIX Issue 2: Guard against None — API may return tokens not in our map
+                if not opt_info:
+                    continue
+
                 if opt_info['type'] == 'CE':
                     total_ce_oi += current_oi
                     total_ce_delta += delta_oi
@@ -99,12 +104,15 @@ class OIAnalyzer:
 
             # Calculations
             pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0
-            delta_ratio = total_pe_delta / total_ce_delta if total_ce_delta > 0 else 1.0
-            
+            # FIX Issue 1: Use abs() — negative CE delta is bearish, not a fallback to 1.0
+            delta_ratio = abs(total_pe_delta) / abs(total_ce_delta) if total_ce_delta != 0 else 1.0
+
+            # FIX Issue 4: Tightened thresholds — 1.2/0.8 was too wide, rarely triggered
+            # Normal Nifty PCR range: 0.85–1.15. These thresholds now fire on real signals.
             bias = "NEUTRAL"
-            if pcr > 1.2 or delta_ratio > 1.5:
+            if pcr > 1.1 or delta_ratio > 1.2:
                 bias = "BULLISH"
-            elif pcr < 0.8 or delta_ratio < 0.6:
+            elif pcr < 0.9 or delta_ratio < 0.8:
                 bias = "BEARISH"
                 
             logger.info(f">>> [Sentiment] PCR: {round(pcr, 2)} | Delta Ratio: {round(delta_ratio, 2)} | Bias: {bias}")
