@@ -148,11 +148,13 @@ class SafetyGatekeeper:
 
     def check_max_daily_loss(self, current_pnl):
         """
-        Rule: Stop trading if loss > ₹2,000 (per lot).
+        Rule: Stop trading if loss exceeds MAX_DAILY_LOSS from Config.
+        Tuned for ₹8,000 capital: -₹500 (6.25% of capital).
         """
-        MAX_LOSS = -2000
-        if current_pnl <= MAX_LOSS:
-             logger.critical(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl}). Halting Trading.")
+        from bot.config.settings import Config
+        max_loss = Config.MAX_DAILY_LOSS  # e.g. -500.0
+        if current_pnl <= max_loss:
+             logger.critical(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl} <= {max_loss}). Halting Trading.")
              return False
         return True
 
@@ -210,20 +212,24 @@ class SafetyGatekeeper:
 
     def get_compounded_lots(self, margin_per_lot):
         """
-        Calculates exponential lot size based on current capital.
-        Lots = floor(Net_Margin / (Margin_Per_Lot * 1.2))
+        Calculates lot size based on current capital.
+        Tuned for ₹8,000: uses 10% buffer (not 20%) so 1 lot fits within capital.
+        Formula: Lots = floor(Capital / (margin_per_lot * 1.1))
         """
         try:
+            from bot.config.settings import Config
             capital = self.get_current_capital()
-            if capital < 5000: return 0
-            
-            # Use a 20% margin buffer for safety
-            lots = int(capital / (margin_per_lot * 1.2))
-            
+            if capital < Config.MIN_CAPITAL_THRESHOLD: 
+                logger.warning(f">>> [Gatekeeper] Capital ₹{capital:.0f} below minimum ₹{Config.MIN_CAPITAL_THRESHOLD:.0f}. No lots.")
+                return 0
+
+            # Use 10% margin buffer (was 20% — too tight for ₹8k)
+            lots = int(capital / (margin_per_lot * 1.1))
+
             # Floor at 1 lot for small accounts
-            if capital >= 5000 and lots < 1:
+            if capital >= Config.MIN_CAPITAL_THRESHOLD and lots < 1:
                 lots = 1
-                
+
             return lots
         except Exception as e:
             logger.error(f"Compounding Error: {e}")
@@ -231,16 +237,19 @@ class SafetyGatekeeper:
 
     def check_trade_viability(self, premium, qty):
         """
-        Rule: Brokerage should not exceed 10% of the trade value.
+        Rule: Brokerage should not exceed 15% of the trade value.
         Brokerage is ~₹60 per round-trip (Buy+Sell).
+        Threshold raised from 10% to 15% for ₹8,000 accounts where
+        options may be cheaper (₹50–₹80 range).
+        Min viable premium: ₹60 / (0.15 * 65) = ₹6.15 per share.
         """
         trade_value = premium * qty
         if trade_value <= 0: return False
-        
+
         brokerage_ratio = 60.0 / trade_value
-        if brokerage_ratio > 0.10:
-            logger.warning(f">>> [Gatekeeper] ⚠️ Trade Viability Low: Brokerage is {brokerage_ratio*100:.1f}% of trade value. Skipping.")
+        if brokerage_ratio > 0.15:
+            logger.warning(f">>> [Gatekeeper] ⚠️ Trade Viability Low: Brokerage is {brokerage_ratio*100:.1f}% of trade value (>{15}%). Skipping.")
             return False
-            
+
         return True
 
