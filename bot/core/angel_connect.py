@@ -49,27 +49,33 @@ def get_angel_session(force_refresh=False):
         try:
             with open(SESSION_FILE, "r") as f:
                 sess_data = json.load(f)
-            
-            # Check if session is from today (Angel One sessions are usually valid for 24h)
+
             sess_time = datetime.datetime.fromisoformat(sess_data['timestamp'])
-            if sess_time.date() == datetime.date.today():
+            session_age_hours = (datetime.datetime.now() - sess_time).total_seconds() / 3600
+
+            # Angel One JWT tokens expire in ~4 hours — refresh proactively
+            # Only reuse if: same day AND less than 4 hours old
+            if sess_time.date() == datetime.date.today() and session_age_hours < 4:
                 api = SmartConnect(api_key=Config.API_KEY)
                 api.setAccessToken(sess_data['jwtToken'])
                 api.setRefreshToken(sess_data['refreshToken'])
                 api.setFeedToken(sess_data.get('feedToken', ''))
-                
-                # Verify session
+
+                # Verify session is still valid
                 from bot.utils.rate_limiter import rate_limiter
                 rate_limiter.wait()
-                
+
                 profile = api.getProfile(sess_data['refreshToken'])
                 if profile and profile.get('status'):
-                    print(">>> [System] Reusing Persistent Session ✅")
+                    print(f">>> [System] Reusing Session (age: {session_age_hours:.1f}h) ✅")
                     return api
                 else:
-                    print(">>> [System] Persistent Session Invalid. Re-logging...")
+                    print(">>> [System] Session invalid. Re-logging...")
+            elif session_age_hours >= 4:
+                print(f">>> [System] Session expired ({session_age_hours:.1f}h old). Refreshing...")
+            else:
+                print(">>> [System] Session is from a previous day. Re-logging...")
         except Exception as e:
-            # print(f">>> [Warning] Session Load Error: {e}")
             pass
 
     # 2. Generate New Session (Rate Limited Action)

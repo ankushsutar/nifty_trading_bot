@@ -4,7 +4,7 @@ import datetime
 from bot.utils.logger import logger
 
 class TradeJournal:
-    FILE_PATH = "logs/trade_journal.csv"
+    FILE_PATH = os.path.join(os.getcwd(), "logs", "trade_journal.csv")
     HEADERS = [
         "timestamp", "strategy", "symbol", "action", "qty", 
         "entry_price", "exit_price", "pnl", "pnl_percent", "result", "exit_reason",

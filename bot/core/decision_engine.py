@@ -27,11 +27,30 @@ class DecisionEngine:
             today_trades = trade_repo.get_today_trades(mode=mode)
             trades_today = len(today_trades)
         except Exception:
+            today_trades = []
             trades_today = 0  # Fail open — don't block trading on DB error
 
         if trades_today >= self.MAX_TRADES_PER_DAY:
             logger.warning(f">>> [Brain] 🛑 Daily trade limit reached ({trades_today}/{self.MAX_TRADES_PER_DAY}). No new entries.")
             return None, 1.0
+
+        # 0b. Consecutive Loss Circuit Breaker
+        # Halt after 2 consecutive losses — prevents compounding in a bad session
+        MAX_CONSECUTIVE_LOSSES = 2
+        try:
+            closed_today = [t for t in today_trades if t.get('status') == 'CLOSED']
+            if len(closed_today) >= MAX_CONSECUTIVE_LOSSES:
+                recent = closed_today[-MAX_CONSECUTIVE_LOSSES:]
+                all_losses = all(t.get('pnl', 0) < 0 for t in recent)
+                if all_losses:
+                    total_loss = sum(t.get('pnl', 0) for t in recent)
+                    logger.critical(
+                        f">>> [Brain] 🛑 CONSECUTIVE LOSS BREAKER: {MAX_CONSECUTIVE_LOSSES} losses in a row "
+                        f"(₹{total_loss:.0f}). Halting for the day. Manual reset required."
+                    )
+                    return None, 1.0
+        except Exception:
+            pass  # Fail open — don't block on DB error
 
         # 1. Check Capital & Mode
         available_cash = self.gatekeeper.get_current_capital()

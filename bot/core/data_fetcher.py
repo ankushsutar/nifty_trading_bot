@@ -3,7 +3,9 @@ import datetime
 import pandas as pd
 import json
 import os
+import fcntl
 from bot.utils.logger import logger
+from bot.utils.expiry_calculator import is_trading_day
 
 import threading
 
@@ -19,6 +21,7 @@ class DataFetcher:
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
                 cls._instance.cache_duration = 115 # seconds (Increased to ~2 mins)
                 cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
+                cls._instance.disk_cache_lock = os.path.join(os.getcwd(), "data", "cache_candles.lock")
                 cls._instance.last_session_check = time.time()
             elif api is not None:
                 # Update API if a new one is provided (e.g. session refreshed)
@@ -110,9 +113,14 @@ class DataFetcher:
             if now >= market_open:
                 aligned_from = market_open
             else:
-                # If before market open, get from yesterday's 09:15
-                aligned_from = market_open - datetime.timedelta(days=1)
-            
+                # Before market open — walk back to the last valid trading day
+                # (avoids requesting Saturday/Sunday data on Monday mornings)
+                prev_day = now.date() - datetime.timedelta(days=1)
+                while not is_trading_day(prev_day):
+                    prev_day -= datetime.timedelta(days=1)
+                aligned_from = datetime.datetime.combine(
+                    prev_day, datetime.time(9, 15)
+                )
         from_date = aligned_from.strftime("%Y-%m-%d %H:%M")
         to_date = aligned_to.strftime("%Y-%m-%d %H:%M")
 
@@ -259,53 +267,59 @@ class DataFetcher:
 
 
     def _read_disk_cache(self, cache_key, force_fresh=True):
-        """Reads candle data from shared disk cache."""
+        """Reads candle data from shared disk cache (with file lock for multi-process safety)."""
         try:
             if not os.path.exists(self.disk_cache_path):
                 return None
-                
-            # Check if file is fresh (for fallback, we might accept older)
-            max_age = self.cache_duration if force_fresh else 600 # 10 mins fallback
+
+            max_age = self.cache_duration if force_fresh else 600
             if time.time() - os.path.getmtime(self.disk_cache_path) > max_age and force_fresh:
                 return None
 
-            with open(self.disk_cache_path, "r") as f:
-                full_cache = json.load(f)
-                
+            lock_fd = os.open(self.disk_cache_lock, os.O_RDWR | os.O_CREAT)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_SH)  # Shared lock for reads
+                with open(self.disk_cache_path, "r") as f:
+                    full_cache = json.load(f)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+
             if cache_key in full_cache:
                 entry = full_cache[cache_key]
-                # Check if specific entry is fresh
                 if time.time() - entry['timestamp'] < self.cache_duration:
                     df = pd.DataFrame(entry['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                     df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
                     return df
-        except Exception as e:
-            # logger.error(f"Disk Cache Read Error: {e}")
+        except Exception:
             pass
         return None
 
     def _write_disk_cache(self, cache_key, df):
-        """Writes candle data to shared disk cache."""
+        """Writes candle data to shared disk cache (with exclusive file lock for multi-process safety)."""
         try:
-            full_cache = {}
-            if os.path.exists(self.disk_cache_path):
-                try:
-                    with open(self.disk_cache_path, "r") as f:
-                        full_cache = json.load(f)
-                except: pass
-            
-            # Use list records format for JSON serialization
-            full_cache[cache_key] = {
-                "timestamp": time.time(),
-                "data": df.values.tolist()
-            }
-            
-            if not os.path.exists(os.path.dirname(self.disk_cache_path)):
-                os.makedirs(os.path.dirname(self.disk_cache_path))
-                
-            with open(self.disk_cache_path, "w") as f:
-                json.dump(full_cache, f)
-        except Exception as e:
-            # logger.error(f"Disk Cache Write Error: {e}")
+            os.makedirs(os.path.dirname(self.disk_cache_path), exist_ok=True)
+            lock_fd = os.open(self.disk_cache_lock, os.O_RDWR | os.O_CREAT)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Exclusive lock for write
+                full_cache = {}
+                if os.path.exists(self.disk_cache_path):
+                    try:
+                        with open(self.disk_cache_path, "r") as f:
+                            full_cache = json.load(f)
+                    except Exception:
+                        pass
+
+                full_cache[cache_key] = {
+                    "timestamp": time.time(),
+                    "data": df.values.tolist()
+                }
+
+                with open(self.disk_cache_path, "w") as f:
+                    json.dump(full_cache, f)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+        except Exception:
             pass

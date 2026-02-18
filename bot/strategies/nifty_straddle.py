@@ -5,6 +5,7 @@ from bot.core.safety_checks import SafetyGatekeeper
 from bot.core.trade_repo import trade_repo
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.order_manager import OrderManager
+from bot.core.data_fetcher import DataFetcher
 from bot.utils.logger import logger
 
 class NiftyStrategy:
@@ -14,6 +15,7 @@ class NiftyStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
+        self.data_fetcher = DataFetcher(self.api)
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         
         self.sl_orders = {} # { 'CE': order_id, 'PE': order_id }
@@ -292,19 +294,23 @@ class NiftyStrategy:
         return None
 
     def get_ltp(self, token):
+        """
+        Returns LTP using DataFetcher (WebSocket cache first, API fallback).
+        Uses 1s throttle cache to avoid hammering the API during the monitor loop.
+        """
         try:
-            # throttle to 1s
             now = time.time()
-            if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
+            if token in self._ltp_cache:
                 last_time, last_val = self._ltp_cache[token]
-                if now - last_time < 0.9: return last_val
+                if now - last_time < 0.9:
+                    return last_val
 
-            resp = self.api.ltpData("NFO", "token_lookup", token)
-            if resp and resp.get('status'):
-                val = float(resp['data']['ltp'])
+            val = self.data_fetcher.get_ltp(token)
+            if val:
                 self._ltp_cache[token] = (now, val)
                 return val
-        except: pass
+        except Exception as e:
+            logger.warning(f"Straddle get_ltp error: {e}")
         return None
 
     def wait_for_fill(self, order_id):

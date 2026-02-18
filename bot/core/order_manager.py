@@ -70,7 +70,7 @@ class OrderManager:
                 "ordertype": "MARKET",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
-                "price": price,
+                "price": 0,           # SL-M: price MUST be 0 (non-zero = SL-Limit, wrong order type)
                 "quantity": qty,
                 "triggerprice": price,
                 "tradingsymbol": symbol,

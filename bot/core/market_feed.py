@@ -173,16 +173,25 @@ class MarketFeedService:
         new_tokens = set()
         for key, info in bucket.items():
             new_tokens.add(info['token'])
-            
-        # Add Nifty Spot
+
+        # Always keep Nifty Spot
         new_tokens.add("99926000")
-        
-        # Identify changes
+
+        # Unsubscribe tokens that have drifted out of range
+        to_unsubscribe = self.subscribed_tokens - new_tokens - {"99926000"}
+        if to_unsubscribe:
+            unsub_list = [{"exchangeType": 2, "tokens": list(to_unsubscribe)}]
+            try:
+                self.sws.unsubscribe("cor_id_options", 3, unsub_list)
+                self.subscribed_tokens -= to_unsubscribe
+                logger.info(f">>> [MarketFeed] Unsubscribed {len(to_unsubscribe)} stale tokens.")
+            except Exception as e:
+                logger.warning(f">>> [MarketFeed] Unsubscribe failed (non-critical): {e}")
+
+        # Subscribe new tokens
         to_subscribe = new_tokens - self.subscribed_tokens
-        # to_unsubscribe = self.subscribed_tokens - new_tokens # Optional: Unsub old to save bandwidth
-        
         if to_subscribe:
-            token_list = [{"exchangeType": 2, "tokens": list(to_subscribe)}] # Exchange 2 = NFO
+            token_list = [{"exchangeType": 2, "tokens": list(to_subscribe)}]  # Exchange 2 = NFO
             self.sws.subscribe("cor_id_options", 3, token_list)
             logger.info(f">>> [MarketFeed] Subscribed to {len(to_subscribe)} new Options.")
             self.subscribed_tokens.update(to_subscribe)
@@ -278,10 +287,40 @@ class MarketFeedService:
         self.subscribed_tokens.clear()
         
     def get_ltp(self, token):
+        """
+        Returns LTP for the given token.
+        If WebSocket data is fresh (<10s), returns it directly.
+        If stale (disconnected), returns last known value with a warning log.
+        Returns None only if no data has ever been received for this token.
+        """
         data = self.latest_data.get(token)
-        if data and time.time() - data.get('timestamp', 0) < 10: # 10s freshness
-            return data.get('ltp')
-        return None
+        if not data:
+            return None
+
+        age = time.time() - data.get('timestamp', 0)
+        if age < 10:
+            return data.get('ltp')  # Fresh data — normal path
+
+        # Stale data (WebSocket likely disconnected) — return last known value
+        # Strategies use this for SL management during reconnect; better than None
+        logger.warning(
+            f">>> [MarketFeed] Stale LTP for token {token} ({age:.0f}s old). "
+            f"WebSocket may be disconnected. Using last known: {data.get('ltp')}"
+        )
+        return data.get('ltp')
+
+    def get_ltp_safe(self, token):
+        """
+        Returns (ltp, is_stale) tuple.
+        is_stale=True means WebSocket data is >10s old (disconnected).
+        is_stale=False means data is fresh.
+        Returns (None, False) if token has never been seen.
+        """
+        data = self.latest_data.get(token)
+        if not data:
+            return None, False
+        age = time.time() - data.get('timestamp', 0)
+        return data.get('ltp'), age >= 10
 
     def get_quote(self, token):
         """Returns full quote including Bid/Ask"""

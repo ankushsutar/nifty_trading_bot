@@ -119,6 +119,9 @@ class InsideBarStrategy:
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
+        # ATM Strike (rounded to nearest 50)
+        strike = round(ltp / 50) * 50
+
         # 5. Entry
         if signal == "BUY_CE":
             self.place_trade(expiry, strike, "CE", qty, index_sl_level)

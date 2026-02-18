@@ -1,5 +1,6 @@
 import requests
 import os
+import datetime
 from bot.config.settings import Config
 from bot.utils.logger import logger
 
@@ -40,7 +41,7 @@ class TelegramNotifier:
             f"*Side:* `{side}`\n"
             f"*Qty:* `{qty}`\n"
             f"*Price:* `₹{price:.2f}`\n"
-            f"*Time:* `{os.popen('date').read().strip()}`"
+            f"*Time:* `{datetime.datetime.now().strftime('%H:%M:%S')}`"
         )
         self.send_message(msg)
 
