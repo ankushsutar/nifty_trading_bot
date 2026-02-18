@@ -149,22 +149,30 @@ class NiftyStrategy:
 
         # 6. Wait for Fills & Capture Prices
         print(">>> [Trade] Waiting for fills to set SL...")
-        ce_price = self.wait_for_fill(ce_order, symbol=ce_symbol, token=ce_token)
-        pe_price = self.wait_for_fill(pe_order, symbol=pe_symbol, token=pe_token)
+        ce_result = self.wait_for_fill(ce_order, symbol=ce_symbol, token=ce_token)
+        pe_result = self.wait_for_fill(pe_order, symbol=pe_symbol, token=pe_token)
 
         mode = "PAPER" if self.dry_run else "LIVE"
         
-        if ce_price:
+        # Handle CE Fill
+        if ce_result['status'] == 'FILLED':
+             ce_price = ce_result['price']
              self.entry_prices['CE'] = ce_price
              self.legs_active['CE'] = True
              tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_price, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
              self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': tid}
+        else:
+             print(f"❌ CE Order {ce_result['status']}: {ce_result.get('message', 'Unknown')}")
              
-        if pe_price:
+        # Handle PE Fill
+        if pe_result['status'] == 'FILLED':
+             pe_price = pe_result['price']
              self.entry_prices['PE'] = pe_price
              self.legs_active['PE'] = True
              tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_price, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
              self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': tid}
+        else:
+             print(f"❌ PE Order {pe_result['status']}: {pe_result.get('message', 'Unknown')}")
 
         # 7. Place Initial Stop Loss (25%)
         # For Sell Order, SL is Buy Stop Limit at (Price * 1.25)
@@ -362,16 +370,18 @@ class NiftyStrategy:
             return None
 
     def wait_for_fill(self, order_id, exchange="NFO", symbol=None, token=None):
-        if not order_id: return None
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        
         if self.dry_run:
             # In Dry Run, we use REAL Market Price at time of "entry"
+            fill_price = 150.0
             if symbol and token:
                 try:
                     resp = self.api.ltpData(exchange, symbol, token)
                     if resp and resp.get('status'):
-                        return float(resp['data']['ltp'])
+                        fill_price = float(resp['data']['ltp'])
                 except: pass
-            return 150.0 # Fallback
+            return {'status': 'FILLED', 'price': fill_price}
         
         # Simple polling
         for _ in range(5):
@@ -379,11 +389,16 @@ class NiftyStrategy:
                  book = self.api.orderBook()
                  if book and book.get('data'):
                      for o in book['data']:
-                         if o['orderid'] == order_id and o['status'] == 'complete':
-                             return float(o['averageprice'])
+                         if o['orderid'] == order_id:
+                             if o['status'] == 'complete':
+                                 return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                             elif o['status'] == 'rejected':
+                                 return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                             elif o['status'] == 'cancelled':
+                                 return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
              except: pass
              time.sleep(1)
-        return None
+        return {'status': 'TIMEOUT', 'price': None}
 
     def get_order_status(self, order_id):
         if not order_id: return None

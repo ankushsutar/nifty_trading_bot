@@ -762,10 +762,17 @@ class MomentumStrategy:
              logger.info(f"Success: Order Placed: {oid}")
             
              # 5. Wait for Fill (New Resilience Logic)
-             fill_price = self.wait_for_fill(oid)
+             fill_result = self.wait_for_fill(oid)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 logger.error(f"❌ Order {oid} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 return # Abort Trade
+
+             fill_price = fill_result['price']
              if not fill_price:
-                  fill_price = quote_ltp # Fallback to estimate if poll fails
-                  logger.warning(f"Momentum: Fill price not captured, using estimate: ₹{fill_price}")
+                 # TIMEOUT or Unknown
+                 fill_price = quote_ltp # Fallback to estimate
+                 logger.warning(f"Momentum: Fill price not captured (Status: {fill_result['status']}), using estimate: ₹{fill_price}")
 
              # Recalculate SL based on ACTUAL fill
              actual_sl = max(0.1, fill_price - actual_sl_points)
@@ -790,9 +797,9 @@ class MomentumStrategy:
              logger.error(f"Enter Order Failure: {e}")
 
     def wait_for_fill(self, order_id):
-        """Polls for order completion to get average fill price."""
-        if not order_id: return None
-        if self.dry_run: return 100.0
+        """Polls for order completion. Returns dict with status and price."""
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
         
         for _ in range(10):
             try:
@@ -802,11 +809,13 @@ class MomentumStrategy:
                     for o in book['data']:
                         if o['orderid'] == order_id:
                             if o['status'] == 'complete':
-                                return float(o['averageprice'])
-                            elif o['status'] in ['rejected', 'cancelled']:
-                                return None
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
             except: pass
-        return None
+        return {'status': 'TIMEOUT', 'price': None}
 
     def place_stop_loss(self, token, symbol, price, qty):
         """Places a Hard Stop Loss Order."""

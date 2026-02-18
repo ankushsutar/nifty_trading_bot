@@ -1,1 +1,1 @@
-{"timestamp": "2026-02-17T16:04:08.057618", "nifty_ltp": 25716.0, "vix": 12.67, "analysis": {"regime": "VOLATILE", "trend": "NEUTRAL", "adx": 17.75, "rsi": 49.44, "atr": 23.47, "bbw": 0.0026, "ema9": 25719.16, "ema21": 25718.08}, "sentiment": "NEUTRAL", "pcr": 1.12, "oi_delta_ratio": 1.0}
+{"timestamp": "2026-02-18T11:34:27.523462", "nifty_ltp": 25688.0, "vix": 12.24, "analysis": {"regime": "TRENDING", "trend": "BEARISH", "adx": 49.5, "rsi": 45.14, "atr": 24.7, "bbw": 0.0029, "ema9": 25690.65, "ema21": 25693.49}, "sentiment": "NEUTRAL", "pcr": 0.86, "oi_delta_ratio": 1.0}

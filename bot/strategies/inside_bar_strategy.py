@@ -30,17 +30,25 @@ class InsideBarStrategy:
         return 0.0
 
     def wait_for_fill(self, order_id):
-        if self.dry_run: return 100.0
-        for _ in range(5):
-             try:
-                 book = self.api.orderBook()
-                 if book and book.get('data'):
-                     for o in book['data']:
-                         if o['orderid'] == order_id and o['status'] == 'complete':
-                             return float(o['averageprice'])
-             except: pass
-             time.sleep(1)
-        return 0.0
+        """Polls for order completion. Returns dict with status and price."""
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        
+        for _ in range(10):
+            try:
+                time.sleep(1)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
+            except: pass
+        return {'status': 'TIMEOUT', 'price': None}
 
     def execute(self, expiry, action="BUY"):
         """
@@ -151,8 +159,19 @@ class InsideBarStrategy:
              oid = self.api.placeOrder(orderparams)
              print(f">>> [Success] Order: {oid}")
              
-             # Calculate SL price roughly
-             fill = self.wait_for_fill(oid)
+             # 4. Wait for Fill
+             fill_result = self.wait_for_fill(oid)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 logger.error(f"❌ Order {oid} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 return # Abort
+
+             fill = fill_result['price']
+             if not fill:
+                 # Fallback to current LTP if fill price isn't available (e.g., timeout)
+                 fill = self.get_nifty_ltp() 
+                 logger.warning(f"InsideBar: Fill not caught (Status: {fill_result['status']}), using current LTP: {fill}")
+
              # Approx Option SL based on Index SL difference
              curr = self.get_nifty_ltp()
              diff = abs(curr - index_sl)

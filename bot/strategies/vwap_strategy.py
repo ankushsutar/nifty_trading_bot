@@ -222,34 +222,50 @@ class VWAPStrategy:
              
              # Risk Management: Tighter SL for Pro setup
              # Pros minimize loss. Standard 10% is okay, but Trailing is better.
-             # We start with 10% fixed.
-             fill_price = self.wait_for_fill(order_id)
-             if fill_price:
-                 sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+             # 4. Wait for Fill
+             fill_result = self.wait_for_fill(order_id)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 print(f"❌ Order {order_id} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 return
+
+             fill_price = fill_result['price']
+             if not fill_price:
+                 fill_price = ltp
+                 print(f"VWAP: Fill not caught (Status: {fill_result['status']}), using: {fill_price}")
                  
-                 # Save
-                 mode = "PAPER" if self.dry_run else "LIVE"
-                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="VWAP")
-                 
-                 self.monitor_position(symbol, token, fill_price, tid, sl_oid)
+             sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+             
+             # Save
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="VWAP")
+             
+             self.monitor_position(symbol, token, fill_price, tid, sl_oid)
 
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
 
     # Reused Helpers (Ideally refactor to a Mixin)
     def wait_for_fill(self, order_id):
-        attempts = 0
-        while attempts < 5 and self.running:
+        """Polls for order completion. Returns dict with status and price."""
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        
+        for _ in range(5):
             try:
+                time.sleep(1)
                 book = self.api.orderBook()
                 if book and book.get('data'):
                     for o in book['data']:
-                        if o['orderid'] == order_id and o['status'] == 'complete':
-                            return float(o['averageprice'])
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
             except: pass
-            time.sleep(1)
-            attempts += 1
-        return 120.0 # Fallback
+        return {'status': 'TIMEOUT', 'price': None}
         
     def place_stop_loss(self, token, symbol, buy_price, qty):
         """Places a Hard Stop Loss Order."""

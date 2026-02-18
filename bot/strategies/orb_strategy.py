@@ -175,56 +175,58 @@ class ORBStrategy:
              
              # Stop Loss Logic (Wait for Fill -> Place SL)
              print(">>> [ORB] Waiting for fill to place Stop Loss...")
-             fill_price = self.wait_for_fill(order_id)
-             if fill_price:
-                 # Use Range High/Low as SL if logical, or fixed %?
-                 # Strategy says: Buy CE -> SL = Range Low. Buy PE -> SL = Range High.
-                 # Let's derive SL Price based on Option Premium or Spot? 
-                 # Usually Spot SL is better for ORB, but we can only place Option SL orders.
-                 # Let's stick to the User Request "STOP loss application... Copy logic from Straddle".
-                 # Straddle uses fixed 10%. User prompt for Strategy B says "SL is Low of range".
-                 # Since we trade Options, mapping Spot Range Levels to Option Premiums is complex without Delta.
-                 # COMPROMISE: We will safely use the robust 10% Premium SL for now to ensure safety,
-                 # as calculating the exact Option Price for the Spot Level is error-prone without Greeks.
-                 sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
-                 
-                 # Save to DB
-                 mode = "PAPER" if self.dry_run else "LIVE"
-                 tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="ORB")
-                 
-                 # START MONITORING
-                 self.monitor_position(symbol, token, fill_price, tid, sl_oid)
+             fill_result = self.wait_for_fill(order_id)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 print(f"❌ Order {order_id} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 return
+
+             fill_price = fill_result['price']
+             if not fill_price:
+                 fill_price = current_ltp
+                 print(f"ORB: Fill not caught (Status: {fill_result['status']}), using: {fill_price}")
+
+             # Use Range High/Low as SL if logical, or fixed %?
+             # Strategy says: Buy CE -> SL = Range Low. Buy PE -> SL = Range High.
+             # Let's derive SL Price based on Option Premium or Spot? 
+             # Usually Spot SL is better for ORB, but we can only place Option SL orders.
+             # Let's stick to the User Request "STOP loss application... Copy logic from Straddle".
+             # Straddle uses fixed 10%. User prompt for Strategy B says "SL is Low of range".
+             # Since we trade Options, mapping Spot Range Levels to Option Premiums is complex without Delta.
+             # COMPROMISE: We will safely use the robust 10% Premium SL for now to ensure safety,
+             # as calculating the exact Option Price for the Spot Level is error-prone without Greeks.
+             sl_oid = self.place_stop_loss(token, symbol, fill_price, Config.NIFTY_LOT_SIZE)
+             
+             # Save to DB
+             mode = "PAPER" if self.dry_run else "LIVE"
+             tid = trade_repo.save_trade(symbol, token, option_type, Config.NIFTY_LOT_SIZE, fill_price, 0.0, mode=mode, strategy="ORB")
+             
+             # START MONITORING
+             self.monitor_position(symbol, token, fill_price, tid, sl_oid)
              
         except Exception as e:
             print(f">>> [Error] Order Failed: {e}")
 
     def wait_for_fill(self, order_id):
-        """
-        Polls the order book until the order is 'complete' (filled).
-        Returns the average filled price.
-        """
-        attempts = 0
-        max_attempts = 5 # Retry 5 times
-        while attempts < max_attempts and self.running:
-            try:
-                # 1. Fetch Order Book
-                book = self.api.orderBook()
-                if book and book.get('status'):
-                    for order in book['data']:
-                        if order['orderid'] == order_id:
-                            if order['status'] == 'complete':
-                                avg_price = float(order['averageprice'])
-                                print(f">>> [Fill] Order {order_id} filled at ₹{avg_price}")
-                                return avg_price
-                            
-            except Exception as e:
-                print(f">>> [Wait] Error fetching order book: {e}")
-            
-            time.sleep(1)
-            attempts += 1
+        """Polls for order completion. Returns dict with status and price."""
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
         
-        print(f">>> [Error] Order {order_id} failed to fill after waiting.")
-        return None
+        for _ in range(5):
+            try:
+                time.sleep(1)
+                book = self.api.orderBook()
+                if book and book.get('data'):
+                    for o in book['data']:
+                        if o['orderid'] == order_id:
+                            if o['status'] == 'complete':
+                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
+            except: pass
+        return {'status': 'TIMEOUT', 'price': None}
 
     def place_stop_loss(self, token, symbol, buy_price, quantity, sl_percent=0.10):
         """

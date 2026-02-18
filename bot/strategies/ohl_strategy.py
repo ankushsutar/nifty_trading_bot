@@ -144,8 +144,16 @@ class OHLStrategy:
              
              # 3. Wait for Fill
              print(">>> [Trade] Waiting for fill...")
-             fill_price = self.wait_for_fill(order_id)
-             if not fill_price: return
+             fill_result = self.wait_for_fill(order_id)
+             
+             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                 print(f"❌ Order {order_id} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                 return
+
+             fill_price = fill_result['price']
+             if not fill_price:
+                 fill_price = self.get_nifty_ltp() # Fallback
+                 print(f"OHL: Fill not caught (Status: {fill_result['status']}), using: {fill_price}")
              
              # 4. Calculate Option SL & Target
              # NOTE: SL is based on Index Level. Option Price SL is approximate.
@@ -204,18 +212,12 @@ class OHLStrategy:
          return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
 
     def wait_for_fill(self, order_id):
-        """
-        Polls the order book until the order is 'complete' or times out.
-        Returns the average fill price or None.
-        """
-        if not order_id: return None
-        if self.dry_run:
-            time.sleep(1)
-            return 100.0 # Mock fill
-
+        """Polls for order completion. Returns dict with status and price."""
+        if not order_id: return {'status': 'ERROR', 'price': None}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        
         logger.info(f"OHL: Waiting for order {order_id} to fill...")
         
-        # Poll for 10 seconds
         for _ in range(10):
             try:
                 time.sleep(1)
@@ -223,19 +225,18 @@ class OHLStrategy:
                 if book and book.get('data'):
                     for o in book['data']:
                         if o['orderid'] == order_id:
-                            status = o['status']
-                            if status == 'complete':
+                            if o['status'] == 'complete':
                                 fill_price = float(o['averageprice'])
                                 logger.info(f"OHL: Order Filled at ₹{fill_price}")
-                                return fill_price
-                            elif status in ['rejected', 'cancelled']:
-                                logger.error(f"OHL: Order {status}! Reason: {o.get('text')}")
-                                return None
-            except Exception as e:
-                logger.error(f"OHL Fill Poll Error: {e}")
+                                return {'status': 'FILLED', 'price': fill_price}
+                            elif o['status'] == 'rejected':
+                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] == 'cancelled':
+                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
+            except: pass
         
         logger.warning(f"OHL: Order {order_id} fill timeout.")
-        return None
+        return {'status': 'TIMEOUT', 'price': None}
 
     def get_nifty_ltp(self):
         try:
