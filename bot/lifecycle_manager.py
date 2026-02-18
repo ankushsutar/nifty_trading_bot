@@ -5,6 +5,7 @@ import sys
 import os
 import threading
 from bot.utils.logger import logger
+from bot.utils.expiry_calculator import is_trading_day
 
 class LifecycleManager:
     def __init__(self, dry_run=False, test_mode=False):
@@ -12,6 +13,7 @@ class LifecycleManager:
         self.test_mode = test_mode
         self.current_process = None
         self.ohl_attempted = False
+        self._current_date = None   # Track date for day-change reset
         self.running = False
         self.thread = None
         self.output_thread = None
@@ -116,7 +118,20 @@ class LifecycleManager:
         try:
             while self.running:
                 now = datetime.datetime.now().time()
-                
+                today = datetime.date.today()
+
+                # DAY-CHANGE RESET: reset ohl_attempted when a new trading day starts
+                if self._current_date != today:
+                    self._current_date = today
+                    self.ohl_attempted = False
+                    self.log(f"📅 New trading day detected: {today}. State reset.")
+
+                # WEEKEND / HOLIDAY GUARD: don't trade on non-trading days
+                if not is_trading_day(today):
+                    self.log(f"🚫 Today ({today}) is a weekend or NSE holiday. Sleeping 1 hour...")
+                    time.sleep(3600)
+                    continue
+
                 # 1. MONITOR CHILD PROCESS
                 if self.current_process:
                     return_code = self.current_process.poll()
