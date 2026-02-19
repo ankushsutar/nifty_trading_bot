@@ -218,20 +218,23 @@ class MomentumStrategy:
                                 qty = self.active_position['qty']
                                 
                                 curr_ltp = 0
-                                now = time.time()
-                                if hasattr(self, '_ltp_cache') and token in self._ltp_cache:
-                                     last_time, last_val = self._ltp_cache[token]
-                                     if now - last_time < 0.9: curr_ltp = last_val
+                                # 1. Try WebSocket Feed (Fast & Free)
+                                ws_ltp = market_feed.get_ltp(token)
+                                if ws_ltp:
+                                    curr_ltp = ws_ltp
                                 
+                                # 2. Fallback to REST API (Costly)
                                 if curr_ltp == 0:
                                      from bot.utils.rate_limiter import rate_limiter
                                      if rate_limiter.check_circuit_breaker() == 0:
                                          ltp_check = self.api.ltpData("NFO", symbol, token)
                                          if ltp_check and ltp_check.get('status'):
                                              curr_ltp = float(ltp_check['data']['ltp'])
-                                             self._ltp_cache[token] = (now, curr_ltp)
+                                             # Push to market_feed cache to avoid immediate re-fetch
+                                             # (Actually market_feed is read-only for us, but this helps logic flow)
                                      else:
                                          pass
+
 
                                 if curr_ltp > 0:
                                     curr_pnl = (curr_ltp - entry_price) * qty
