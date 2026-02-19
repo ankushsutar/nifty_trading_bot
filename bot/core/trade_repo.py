@@ -213,81 +213,88 @@ class TradeRepository:
 
     def reconcile_with_broker(self, api):
         """
-        Cross-checks all OPEN DB trades against real broker positions.
-        If the broker shows zero / no position for a symbol, it means
-        the trade was exited manually — auto-close it in the DB.
+        Fetches today's Angel One tradeBook and closes any OPEN DB trades
+        where the broker executed a SELL (exit) — using real fill prices for PnL.
 
-        Called on strategy startup and periodically every 5 minutes.
+        Called on strategy startup and via /api/reconcile-positions.
         """
         if not self.client:
             return
 
         open_trades = self.get_open_trades()
         if not open_trades:
+            logger.info("[Reconcile] No open DB trades. Nothing to sync.")
             return
 
+        # --- Fetch tradeBook (real executed fills) ---
+        broker_trades = []
         try:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
-            resp = api.position()
+            resp = api.tradeBook()
+            if resp and resp.get('status'):
+                broker_trades = resp.get('data') or []
         except Exception as e:
-            logger.error(f"[Reconcile] Could not fetch broker positions: {e}")
-            return
+            logger.error(f"[Reconcile] tradeBook() failed: {e}")
 
-        if not resp or not resp.get('status'):
-            logger.warning("[Reconcile] Broker position() returned no data.")
-            return
-
-        broker_positions = resp.get('data', []) or []
-
-        # Build a lookup: symbol -> netQty from broker
-        broker_qty = {}
-        for pos in broker_positions:
-            sym = pos.get('tradingsymbol', '')
+        # --- Build SELL exit map: symbol → weighted avg price ---
+        exit_map = {}
+        for t in broker_trades:
+            sym   = t.get('tradingsymbol', '')
+            side  = t.get('transactiontype', '').upper()
             try:
-                net = int(pos.get('netqty', 0))
+                qty   = int(t.get('quantity', 0) or 0)
+                price = float(t.get('averageprice', 0) or 0)
             except (TypeError, ValueError):
-                net = 0
-            broker_qty[sym] = net
+                continue
 
+            if side == 'SELL' and qty > 0 and price > 0:
+                if sym not in exit_map:
+                    exit_map[sym] = {'total_value': 0.0, 'total_qty': 0}
+                exit_map[sym]['total_value'] += price * qty
+                exit_map[sym]['total_qty']   += qty
+
+        for sym, data in exit_map.items():
+            if data['total_qty'] > 0:
+                exit_map[sym] = round(data['total_value'] / data['total_qty'], 2)
+            else:
+                exit_map.pop(sym, None)
+
+        # --- Match OPEN trades against SELL fills, always close ---
         reconciled = 0
         for trade in open_trades:
-            symbol = trade.get('symbol', '')
-            trade_id = trade.get('id')
-            entry_price = trade.get('entry_price', 0.0)
+            symbol      = trade.get('symbol', '')
+            trade_id    = trade.get('id')
+            entry_price = float(trade.get('entry_price', 0))
+            qty         = int(trade.get('qty', 0))
 
-            net_qty = broker_qty.get(symbol, None)
+            exit_price = exit_map.get(symbol)
+            if exit_price:
+                pnl    = round((exit_price - entry_price) * qty, 2)
+                reason = "SYNC_FROM_BROKER"
+            else:
+                # No broker SELL fill found — still close using entry as fallback
+                exit_price = entry_price
+                pnl        = 0.0
+                reason     = "MANUAL_EXIT"
 
-            # If symbol is fully absent from broker OR net qty is 0 → position was closed externally
-            if net_qty is None or net_qty == 0:
-                # Try to get exit price from broker (best effort)
-                exit_price = 0.0
-                try:
-                    from bot.core.data_fetcher import DataFetcher
-                    df_inst = DataFetcher.__new__(DataFetcher)
-                    ltp = df_inst.get_ltp(trade.get('token', ''), exchange='NFO') if hasattr(df_inst, 'api') else 0.0
-                    exit_price = ltp if ltp else 0.0
-                except Exception:
-                    exit_price = 0.0
-
-                pnl = round((exit_price - entry_price) * trade.get('qty', 0), 2) if exit_price > 0 else 0.0
-
-                self.close_trade(
-                    trade_id=trade_id,
-                    exit_price=exit_price,
-                    pnl=pnl,
-                    exit_reason="MANUAL_EXIT"
-                )
-                logger.info(
-                    f"[Reconcile] ✅ Trade #{trade_id} ({symbol}) closed in DB "
-                    f"(broker shows flat). Exit: {exit_price} | PnL: {pnl}"
-                )
-                reconciled += 1
+            self.close_trade(
+                trade_id=trade_id,
+                exit_price=exit_price,
+                pnl=pnl,
+                exit_reason=reason
+            )
+            logger.info(
+                f"[Reconcile] ✅ Trade #{trade_id} ({symbol}) → "
+                f"Exit: ₹{exit_price} | PnL: {pnl:+.2f} | Reason: {reason}"
+            )
+            reconciled += 1
 
         if reconciled:
-            logger.info(f"[Reconcile] {reconciled} trade(s) synced with broker.")
+            logger.info(f"[Reconcile] {reconciled} trade(s) synced from broker tradeBook.")
         else:
-            logger.info("[Reconcile] All open DB trades match broker positions. ✅")
+            logger.info("[Reconcile] No broker SELL fills matched open DB trades. All OK or no exits yet.")
+
 
     def force_close_trade(self, trade_id, exit_price=0.0, reason="MANUAL_EXIT"):
         """

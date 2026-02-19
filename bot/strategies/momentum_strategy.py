@@ -261,13 +261,24 @@ class MomentumStrategy:
                     trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
                     htf_trend = self.calculate_htf_trend()
                     
-                    bbw = 0
+                    # Optimization: Reuse the DF from analyze_market_trend for BBW
+                    # This saves one redundant API call every 5 minutes.
+                    bbw = 0.0
                     try:
-                        bbw = self.calculate_bbw(
-                            self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
-                        ).iloc[-1]
-                    except: pass
-
+                        _bbw_df = getattr(self, '_last_df', None)
+                        if _bbw_df is not None and not _bbw_df.empty:
+                            bbw = self.calculate_bbw(_bbw_df).iloc[-1]
+                        else:
+                            # Fallback if _last_df missing/empty
+                            from bot.utils.rate_limiter import rate_limiter
+                            if rate_limiter.check_circuit_breaker() == 0:
+                                df_fallback = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                                if df_fallback is not None:
+                                    bbw = self.calculate_bbw(df_fallback).iloc[-1]
+                    except Exception as e:
+                         # logger.debug(f"BBW Calc Warning: {e}")
+                         pass
+                    
                     pcr = self.oi_data.get('pcr', 0.0)
                     sentiment_bias = self.oi_data.get('bias', 'NEUTRAL')
 
@@ -833,6 +844,8 @@ class MomentumStrategy:
         if not ltp:
              try:
                  # Fallback if WS not available for this token
+                 from bot.utils.rate_limiter import rate_limiter
+                 rate_limiter.wait()
                  q_resp = self.api.ltpData("NFO", symbol, token)
                  if q_resp and q_resp.get('status'):
                      ltp = float(q_resp['data']['ltp'])

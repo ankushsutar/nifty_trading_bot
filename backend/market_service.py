@@ -66,7 +66,11 @@ class MarketService:
                     logger.info("MarketService: Session Refreshed Successfully 🟢")
                     
                     # Update Components with new API instance
-                    if self.data_fetcher: self.data_fetcher.api = self.api
+                    if self.data_fetcher: 
+                        self.data_fetcher.api = self.api
+                    else:
+                        self.data_fetcher = DataFetcher(self.api)
+                        
                     if self.oi_engine: self.oi_engine.api = self.api
                     
                     # Remove Flag
@@ -82,6 +86,10 @@ class MarketService:
                 self.api = get_angel_session()
                 if self.api:
                     logger.info("MarketService: Connected to Angel One 🟢")
+                    if not self.data_fetcher:
+                        self.data_fetcher = DataFetcher(self.api)
+                    else:
+                        self.data_fetcher.api = self.api
             except Exception as e:
                 logger.error(f"MarketService Connection Failed: {e}")
 
@@ -92,12 +100,13 @@ class MarketService:
         Returns dict: { nifty: float, vix: float, pnl: float }
         """
         # Cache Check (Quick Read)
-        if time.time() - self.last_fetch_time < self.cache_expiry and self.cached_data:
+        # Increased cache to 3s to further reduce load (Combined with DataFetcher 5s cache)
+        if time.time() - self.last_fetch_time < 3 and self.cached_data:
             return self.cached_data
             
         with self._lock:
             # Double-Checked Locking
-            if time.time() - self.last_fetch_time < self.cache_expiry and self.cached_data:
+            if time.time() - self.last_fetch_time < 3 and self.cached_data:
                 return self.cached_data
 
             # 1. Child Mode: Try loading shared intelligence from master first
@@ -149,7 +158,8 @@ class MarketService:
             }
 
         try:
-            # 2. Fetch LTPs using centralized throttle
+            # 2. Fetch LTPs using centralized DataFetcher (with 5s Cache)
+            # This prevents 1 req/sec polling from UI saturating the API
             nifty_ltp = self.get_ltp("NSE", "Nifty 50", "99926000")
             
             vix_ltp = 0.0
@@ -178,24 +188,20 @@ class MarketService:
 
     def get_ltp(self, exchange, symbol, token):
         """
-        Generic method to fetch LTP for any token with strict global rate limiting.
+        Generic method to fetch LTP for any token.
+        Delegates to DataFetcher to ensure global rate limiting and caching (5s).
         """
         self._ensure_connection()
-        if not self.api: return 0.0
         
-        try:
-            # --- GLOBAL RATE LIMITING ---
-            from bot.utils.rate_limiter import rate_limiter
-            rate_limiter.wait()
+        # FIX: Use DataFetcher instead of direct API call
+        # DataFetcher handles:
+        # 1. 5-second In-Memory Cache (prevents spam from UI)
+        # 2. Rate Limiting
+        # 3. Connection Checking
+        if not self.data_fetcher:
+            self.data_fetcher = DataFetcher(self.api)
             
-            resp = self.api.ltpData(exchange, symbol, token)
-            if resp and resp.get('status'):
-                return float(resp['data']['ltp'])
-        except Exception as e:
-            # logger.error(f"LTP Fetch Error ({symbol}): {e}")
-            pass 
-            
-        return 0.0
+        return self.data_fetcher.get_ltp(token, exchange)
 
     def _heartbeat_loop(self):
         """Background loop to keep the Angel One session alive."""
