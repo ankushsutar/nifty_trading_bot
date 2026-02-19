@@ -2,6 +2,7 @@
 import time
 from bot.utils.logger import logger
 from bot.utils.rate_limiter import rate_limiter
+from bot.core.kill_switch import is_kill_switch_active
 
 class OrderManager:
     def __init__(self, api):
@@ -9,6 +10,10 @@ class OrderManager:
 
     def place_order(self, order_params):
         """Places an order with rate limiting and error handling."""
+        if is_kill_switch_active():
+            logger.critical("🛑 KILL SWITCH ACTIVE. Order Rejected.")
+            return None
+
         try:
             rate_limiter.wait()
             oid = self.api.placeOrder(order_params)
@@ -22,6 +27,10 @@ class OrderManager:
         Places a STOPLOSS_MARKET order.
         transaction_type: "SELL" (for Long Exit) or "BUY" (for Short Exit)
         """
+        if is_kill_switch_active():
+            logger.critical("🛑 KILL SWITCH ACTIVE. SL Order Rejected.")
+            return None
+
         try:
             # Round SL to 0.05 tick size
             price = round(sl_price / 0.05) * 0.05
@@ -50,6 +59,10 @@ class OrderManager:
 
     def cancel_order(self, order_id, variety="STOPLOSS"):
         """Cancels an order."""
+        if is_kill_switch_active():
+            logger.critical("🛑 KILL SWITCH ACTIVE. Cancellation Rejected.")
+            return False
+
         try:
             rate_limiter.wait()
             self.api.cancelOrder(order_id, variety)
@@ -61,6 +74,10 @@ class OrderManager:
 
     def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty):
         """Modifies an existing SL Order."""
+        if is_kill_switch_active():
+            logger.critical("🛑 KILL SWITCH ACTIVE. Modification Rejected.")
+            return False
+
         try:
             price = round(new_trigger_price / 0.05) * 0.05
             

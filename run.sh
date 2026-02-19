@@ -26,6 +26,8 @@ trap cleanup SIGINT
 # 0. Pre-start Cleanup: Clear ports 8000 and 3000
 echo -e "${BLUE}>>> Cleaning up existing processes on ports 8000 and 3000...${NC}"
 fuser -k 8000/tcp 3000/tcp 2>/dev/null
+rm -f .stop_signal  # Clear any previous kill switch lock
+
 
 # 1. Start Backend
 echo -e "${GREEN}>>> Launching Backend API (Port 8000)...${NC}"

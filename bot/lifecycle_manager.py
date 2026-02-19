@@ -80,6 +80,9 @@ class LifecycleManager:
 
     def start_lifecycle(self):
         """Starts the lifecycle loop in a separate thread."""
+        from bot.core.kill_switch import deactivate_kill_switch
+        deactivate_kill_switch()
+        
         if self.running: return
         self.running = True
         self.thread = threading.Thread(target=self._run_loop)
@@ -88,6 +91,9 @@ class LifecycleManager:
 
     def stop_lifecycle(self):
         """Stops the lifecycle and kills any child processes."""
+        from bot.core.kill_switch import activate_kill_switch
+        activate_kill_switch()
+        
         self.log("Stopping Lifecycle Manager...")
         self.running = False
         if self.current_process:

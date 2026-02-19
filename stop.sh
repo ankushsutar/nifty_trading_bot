@@ -33,4 +33,9 @@ echo -e "Cleaning ports 8000 and 3000..."
 fuser -k 8000/tcp 2>/dev/null
 fuser -k 3000/tcp 2>/dev/null
 
+# 5. Global Kill Switch Lock (Fallback)
+touch .stop_signal
+echo -e "🔒 Global Kill Switch Activated (.stop_signal created)"
+
+
 echo -e "${GREEN}>>> System Shutdown Complete. ✅${NC}"

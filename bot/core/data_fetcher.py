@@ -60,7 +60,7 @@ class DataFetcher:
         cache_key = (token, "LTP")
         if cache_key in self.data_cache:
             last_time, cached_ltp = self.data_cache[cache_key]
-            if time.time() - last_time < 5: # LTP cache is short (5s)
+            if time.time() - last_time < 15: # LTP cache is longer (15s) to avoid AB1004
                 return cached_ltp
 
         try:

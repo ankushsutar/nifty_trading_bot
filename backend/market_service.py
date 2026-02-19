@@ -100,13 +100,13 @@ class MarketService:
         Returns dict: { nifty: float, vix: float, pnl: float }
         """
         # Cache Check (Quick Read)
-        # Increased cache to 3s to further reduce load (Combined with DataFetcher 5s cache)
-        if time.time() - self.last_fetch_time < 3 and self.cached_data:
+        # Increased cache to 10s to further reduce load (Combined with DataFetcher 15s cache)
+        if time.time() - self.last_fetch_time < 10 and self.cached_data:
             return self.cached_data
             
         with self._lock:
             # Double-Checked Locking
-            if time.time() - self.last_fetch_time < 3 and self.cached_data:
+            if time.time() - self.last_fetch_time < 10 and self.cached_data:
                 return self.cached_data
 
             # 1. Child Mode: Try loading shared intelligence from master first

@@ -1,1 +1,1 @@
-{"timestamp": "2026-02-19T11:37:07.700979", "analysis": {"ema9": 25712.19, "ema21": 25740.73, "rsi": 22.94, "htf_trend": "NEUTRAL", "adx": 65.13, "atr": 25.92, "regime": "TRENDING", "bbw": 0.0, "pcr": 0.0, "sentiment": "NEUTRAL"}, "oi_data": {}, "active_position": null, "dry_run": false}
+{"timestamp": "2026-02-19T15:10:30.561374", "analysis": {"ema9": 25607.34, "ema21": 25633.8, "rsi": 39.97, "htf_trend": "BEARISH", "adx": 64.67, "atr": 23.31, "regime": "TRENDING", "bbw": 0.0057, "pcr": 0.0, "sentiment": "NEUTRAL"}, "oi_data": {}, "active_position": null, "dry_run": false}
