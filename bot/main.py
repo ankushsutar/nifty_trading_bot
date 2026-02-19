@@ -65,6 +65,15 @@ def run_bot():
         loader = TokenLookup()
         loader.load_scrip_master()
 
+        # 2a. Broker Position Reconciliation (Startup Sync)
+        # Closes any DB trades that were manually exited on the broker platform.
+        try:
+            from bot.core.trade_repo import trade_repo
+            trade_repo.cleanup_stale_trades()  # Close overnight leftovers
+            trade_repo.reconcile_with_broker(api)  # Sync manually closed trades
+        except Exception as e:
+            logger.warning(f">>> [System] Startup reconciliation warning: {e}")
+
     risk_multiplier = 1.0
 
     # 3. Smart Auto-Selection (The Brain)

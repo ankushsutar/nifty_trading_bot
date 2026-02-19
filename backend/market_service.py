@@ -103,21 +103,40 @@ class MarketService:
             # 1. Child Mode: Try loading shared intelligence from master first
             is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
             if not is_master:
+                # --- FIX: Startup Sequencing Guard ---
+                # On first call, poll for the shared file for up to 15s so the
+                # backend master process has time to write its first analysis.
+                # This prevents child processes from firing REST calls at startup
+                # simultaneously with the backend.
+                state_file = "data/market_analysis.json"
+                if not os.path.exists(state_file) or time.time() - os.path.getmtime(state_file) > 300:
+                    # File missing or very stale — wait for backend to warm up
+                    startup_wait_start = time.time()
+                    while time.time() - startup_wait_start < 15:
+                        if os.path.exists(state_file) and time.time() - os.path.getmtime(state_file) < 300:
+                            break
+                        time.sleep(1)
+
                 try:
-                    state_file = "data/market_analysis.json"
                     if os.path.exists(state_file):
                         # Only read if file is fresh (< 3 mins)
                         if time.time() - os.path.getmtime(state_file) < 185:
-                             with open(state_file, "r") as f:
-                                 shared_state = json.load(f)
-                                 self.analysis_data = shared_state.get('analysis', {})
-                                 self.oi_data = shared_state.get('oi_data', {})
-                                 logger.info("MarketService: Consumed Shared Intelligence 📡")
-
+                            with open(state_file, "r") as f:
+                                shared_state = json.load(f)
+                                self.analysis_data = shared_state.get('analysis', {})
+                                # Read oi_data dict (new format) or fall back to legacy flat keys
+                                if 'oi_data' in shared_state:
+                                    self.oi_data = shared_state['oi_data']
+                                else:
+                                    # Legacy format compatibility
+                                    self.oi_data = {
+                                        "bias": shared_state.get("sentiment", "NEUTRAL"),
+                                        "pcr": shared_state.get("pcr", 1.0),
+                                        "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
+                                    }
+                                logger.info("MarketService: Consumed Shared Intelligence 📡")
                 except Exception as e:
-
-                    # logger.error(f"Intelligence Sharing Error: {e}")
-                    pass
+                    logger.warning(f"Intelligence Sharing Error: {e}")
 
             self._ensure_connection()
         
@@ -237,6 +256,14 @@ class MarketService:
                                 "nifty_ltp": ltp,
                                 "vix": vix_ltp,
                                 "analysis": self.analysis_data,
+                                "oi_data": {
+                                    "bias": analysis.get("bias", "NEUTRAL"),
+                                    "pcr": analysis.get("pcr", 1.0),
+                                    "delta_ratio": analysis.get("delta_ratio", 1.0),
+                                    "total_ce_oi": analysis.get("total_ce_oi", 0),
+                                    "total_pe_oi": analysis.get("total_pe_oi", 0),
+                                },
+                                # Keep legacy flat keys for any other consumers
                                 "sentiment": analysis.get("bias", "NEUTRAL"),
                                 "pcr": analysis.get("pcr", 1.0),
                                 "oi_delta_ratio": analysis.get("delta_ratio", 1.0)

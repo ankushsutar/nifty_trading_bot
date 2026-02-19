@@ -1,8 +1,14 @@
 import datetime
 import time
+import os
+import json
 from bot.utils.logger import logger
 
 class SafetyGatekeeper:
+    # Class-level VIX cache — shared across all instances (all strategies same process)
+    _vix_cache_time = 0
+    _vix_multiplier = 1.0
+
     def __init__(self, api, dry_run=False):
         self.api = api
         self.dry_run = dry_run
@@ -174,19 +180,46 @@ class SafetyGatekeeper:
     def get_vix_adjustment(self):
         """
         Rule: If India VIX > 25, reduce quantity by 50%.
+        Reads VIX from shared market_analysis.json (written by backend every 3 min).
+        Falls back to ltpData only if shared file is missing/stale. Result cached 60s.
         """
+        # 1. Return cached multiplier if still fresh (60s)
+        if time.time() - SafetyGatekeeper._vix_cache_time < 60:
+            return SafetyGatekeeper._vix_multiplier
+
+        vix = 0.0
         try:
-            vix_token = "99926017" 
-            response = self.api.ltpData("NSE", "INDIA VIX", vix_token)
-            if response and response.get('status'):
-                vix = float(response['data']['ltp'])
-                if vix > 25.0:
-                    logger.warning(f">>> [Risk] ⚠️ High VIX ({vix} > 25). Reducing Quantity by 50%.")
-                    return 0.5
+            # 2. Primary: read from shared intelligence file (no API call)
+            state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+            if os.path.exists(state_file):
+                age = time.time() - os.path.getmtime(state_file)
+                if age < 600:  # fresh enough (< 10 min)
+                    with open(state_file, "r") as f:
+                        shared = json.load(f)
+                    vix = float(shared.get("vix", 0.0))
         except Exception as e:
-            logger.error(f">>> [Risk] VIX Check Error: {e}")
-            
-        return 1.0
+            logger.warning(f">>> [Risk] VIX shared read error: {e}")
+
+        # 3. Fallback: ltpData only if shared file gave nothing
+        if vix == 0.0:
+            try:
+                from bot.utils.rate_limiter import rate_limiter
+                if rate_limiter.check_circuit_breaker() == 0:
+                    response = self.api.ltpData("NSE", "INDIA VIX", "99926017")
+                    if response and response.get('status'):
+                        vix = float(response['data']['ltp'])
+            except Exception as e:
+                logger.error(f">>> [Risk] VIX ltpData fallback error: {e}")
+
+        # 4. Apply rule and cache result
+        multiplier = 1.0
+        if vix > 25.0:
+            logger.warning(f">>> [Risk] ⚠️ High VIX ({vix:.1f} > 25). Reducing Quantity by 50%.")
+            multiplier = 0.5
+
+        SafetyGatekeeper._vix_cache_time = time.time()
+        SafetyGatekeeper._vix_multiplier = multiplier
+        return multiplier
 
     def check_sentiment_risk(self, direction="LONG"):
         """

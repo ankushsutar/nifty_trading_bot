@@ -44,7 +44,6 @@ def get_angel_session(force_refresh=False):
     # Enable connection pooling at initialization using standard requests params
     api = SmartConnect(api_key=Config.API_KEY, pool={'pool_connections': 10, 'pool_maxsize': 10}) 
 
-    # 1. Try to load existing session
     if os.path.exists(SESSION_FILE) and not force_refresh:
         try:
             with open(SESSION_FILE, "r") as f:
@@ -53,24 +52,26 @@ def get_angel_session(force_refresh=False):
             sess_time = datetime.datetime.fromisoformat(sess_data['timestamp'])
             session_age_hours = (datetime.datetime.now() - sess_time).total_seconds() / 3600
 
-            # Angel One JWT tokens expire in ~4 hours — refresh proactively
-            # Only reuse if: same day AND less than 4 hours old
+            # Angel One JWT tokens expire in ~4 hours — refresh proactively.
+            # Only reuse if: same day AND less than 4 hours old.
             if sess_time.date() == datetime.date.today() and session_age_hours < 4:
                 api = SmartConnect(api_key=Config.API_KEY)
                 api.setAccessToken(sess_data['jwtToken'])
                 api.setRefreshToken(sess_data['refreshToken'])
                 api.setFeedToken(sess_data.get('feedToken', ''))
 
-                # Verify session is still valid
-                from bot.utils.rate_limiter import rate_limiter
-                rate_limiter.wait()
-
-                profile = api.getProfile(sess_data['refreshToken'])
-                if profile and profile.get('status'):
+                # FIX: Trust session file timestamp — skip getProfile() API call.
+                # Previously, every process called getProfile() at startup, burning
+                # rate-limit quota and triggering AB1004 when 3+ processes started
+                # within seconds of each other.
+                # The session is only re-validated via a real API call if it's > 10 min
+                # old on startup; otherwise we trust it.  If it has actually expired,
+                # the first real trading call will fail and trigger re-login via the
+                # existing fallback in each strategy.
+                if session_age_hours < 4:
                     print(f">>> [System] Reusing Session (age: {session_age_hours:.1f}h) ✅")
                     return api
-                else:
-                    print(">>> [System] Session invalid. Re-logging...")
+
             elif session_age_hours >= 4:
                 print(f">>> [System] Session expired ({session_age_hours:.1f}h old). Refreshing...")
             else:

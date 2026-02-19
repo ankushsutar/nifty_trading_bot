@@ -16,7 +16,13 @@ class TradeRepository:
 
     def _init_db(self):
         try:
-            self.client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=5000)
+            self.client = MongoClient(
+                Config.MONGO_URI,
+                serverSelectionTimeoutMS=10000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=30000,
+                retryWrites=True
+            )
             self.db = self.client[Config.MONGO_DB]
             self.collection = self.db[Config.MONGO_COLLECTION]
             self.counters = self.db["counters"]
@@ -204,5 +210,107 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"TradeRepository Cleanup Error: {e}")
             return 0
+
+    def reconcile_with_broker(self, api):
+        """
+        Cross-checks all OPEN DB trades against real broker positions.
+        If the broker shows zero / no position for a symbol, it means
+        the trade was exited manually — auto-close it in the DB.
+
+        Called on strategy startup and periodically every 5 minutes.
+        """
+        if not self.client:
+            return
+
+        open_trades = self.get_open_trades()
+        if not open_trades:
+            return
+
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            resp = api.position()
+        except Exception as e:
+            logger.error(f"[Reconcile] Could not fetch broker positions: {e}")
+            return
+
+        if not resp or not resp.get('status'):
+            logger.warning("[Reconcile] Broker position() returned no data.")
+            return
+
+        broker_positions = resp.get('data', []) or []
+
+        # Build a lookup: symbol -> netQty from broker
+        broker_qty = {}
+        for pos in broker_positions:
+            sym = pos.get('tradingsymbol', '')
+            try:
+                net = int(pos.get('netqty', 0))
+            except (TypeError, ValueError):
+                net = 0
+            broker_qty[sym] = net
+
+        reconciled = 0
+        for trade in open_trades:
+            symbol = trade.get('symbol', '')
+            trade_id = trade.get('id')
+            entry_price = trade.get('entry_price', 0.0)
+
+            net_qty = broker_qty.get(symbol, None)
+
+            # If symbol is fully absent from broker OR net qty is 0 → position was closed externally
+            if net_qty is None or net_qty == 0:
+                # Try to get exit price from broker (best effort)
+                exit_price = 0.0
+                try:
+                    from bot.core.data_fetcher import DataFetcher
+                    df_inst = DataFetcher.__new__(DataFetcher)
+                    ltp = df_inst.get_ltp(trade.get('token', ''), exchange='NFO') if hasattr(df_inst, 'api') else 0.0
+                    exit_price = ltp if ltp else 0.0
+                except Exception:
+                    exit_price = 0.0
+
+                pnl = round((exit_price - entry_price) * trade.get('qty', 0), 2) if exit_price > 0 else 0.0
+
+                self.close_trade(
+                    trade_id=trade_id,
+                    exit_price=exit_price,
+                    pnl=pnl,
+                    exit_reason="MANUAL_EXIT"
+                )
+                logger.info(
+                    f"[Reconcile] ✅ Trade #{trade_id} ({symbol}) closed in DB "
+                    f"(broker shows flat). Exit: {exit_price} | PnL: {pnl}"
+                )
+                reconciled += 1
+
+        if reconciled:
+            logger.info(f"[Reconcile] {reconciled} trade(s) synced with broker.")
+        else:
+            logger.info("[Reconcile] All open DB trades match broker positions. ✅")
+
+    def force_close_trade(self, trade_id, exit_price=0.0, reason="MANUAL_EXIT"):
+        """
+        Forcefully closes a specific trade by ID — used when user manually
+        exits on broker and wants to sync the DB immediately via the API.
+        """
+        if not self.client:
+            return False
+        try:
+            trade = self.collection.find_one({"id": trade_id})
+            if not trade:
+                logger.warning(f"[ForceClose] Trade #{trade_id} not found.")
+                return False
+
+            entry_price = trade.get('entry_price', 0.0)
+            qty = trade.get('qty', 0)
+            pnl = round((exit_price - entry_price) * qty, 2) if exit_price > 0 else 0.0
+
+            self.close_trade(trade_id=trade_id, exit_price=exit_price, pnl=pnl, exit_reason=reason)
+            logger.info(f"[ForceClose] Trade #{trade_id} ({trade.get('symbol')}) force-closed. Exit: {exit_price} | PnL: {pnl}")
+            return True
+        except Exception as e:
+            logger.error(f"[ForceClose] Error: {e}")
+            return False
 
 trade_repo = TradeRepository()

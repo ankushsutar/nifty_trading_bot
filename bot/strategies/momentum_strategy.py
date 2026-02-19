@@ -172,9 +172,13 @@ class MomentumStrategy:
             logger.info("📡 Performing Initial Market Analysis Pulse...")
             trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
             htf_trend = self.calculate_htf_trend()
-            bbw = self.calculate_bbw(
-                self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
-            ).iloc[-1]
+            # Reuse the candle df already fetched by analyze_market_trend (stored in self._last_df)
+            # This avoids a duplicate FIVE_MINUTE REST call for BBW calculation.
+            _bbw_df = getattr(self, '_last_df', None)
+            if _bbw_df is not None and len(_bbw_df) > 0:
+                bbw = self.calculate_bbw(_bbw_df).iloc[-1]
+            else:
+                bbw = 0.0
 
             pcr = self.oi_data.get('pcr', 0.0)
             sentiment_bias = self.oi_data.get('bias', 'NEUTRAL')
@@ -371,6 +375,8 @@ class MomentumStrategy:
             df = self.get_mock_df()
         else:
             df = self.data_fetcher.fetch_latest_candles("99926000")
+            # Cache df for reuse within the same analysis cycle (e.g., BBW calculation)
+            self._last_df = df
             
         if df is None or df.empty: 
             return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
@@ -407,19 +413,49 @@ class MomentumStrategy:
         )
 
     def calculate_htf_trend(self):
-        # FIX Obs #1: Always use real data — random values made dry run results meaningless
-        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
-        
-        if df is None or len(df) < 22: 
+        """
+        Derives Higher-Timeframe (15m) trend direction.
+        Prefers shared market_analysis.json (written by MASTER backend every 3 min)
+        to avoid firing a separate FIFTEEN_MINUTE REST call that triggers AB1004.
+        Falls back to REST only if the shared file is stale or missing.
+        """
+        # --- PRIMARY: Read from shared intelligence file (no API call) ---
+        try:
+            state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+            if os.path.exists(state_file):
+                age = time.time() - os.path.getmtime(state_file)
+                if age < 600:  # Use if < 10 mins old
+                    with open(state_file, "r") as f:
+                        shared = json.load(f)
+                    analysis = shared.get("analysis", {})
+                    trend = analysis.get("trend", "NEUTRAL")
+                    regime = analysis.get("regime", "UNKNOWN")
+                    if regime != "UNKNOWN" and trend != "NEUTRAL":
+                        logger.debug(f"[HTF] Using shared intelligence: {trend}")
+                        return trend
+        except Exception as e:
+            logger.warning(f"[HTF] Could not read shared state: {e}")
+
+        # --- FALLBACK: REST call (only if shared file unavailable/stale) ---
+        from bot.utils.rate_limiter import rate_limiter
+        if rate_limiter.check_circuit_breaker() > 0:
+            logger.warning("[HTF] Circuit breaker active — returning NEUTRAL")
             return "NEUTRAL"
-            
-        df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
-        
-        last_closed = df.iloc[-2]
+
+        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
+
+        if df is None or len(df) < 3:
+            return "NEUTRAL"
+
+        df['EMA9'] = df['close'].ewm(span=min(9, len(df)), adjust=False).mean()
+        df['EMA21'] = df['close'].ewm(span=min(21, len(df)), adjust=False).mean()
+
+        # Use last confirmed closed candle (iloc[-2]) if available, else last
+        idx = -2 if len(df) >= 2 else -1
+        last_closed = df.iloc[idx]
         ema9 = last_closed['EMA9']
         ema21 = last_closed['EMA21']
-        
+
         if ema9 > ema21: return "BULLISH"
         if ema9 < ema21: return "BEARISH"
         return "NEUTRAL"

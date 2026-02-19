@@ -19,10 +19,16 @@ class DataFetcher:
                 cls._instance = super(DataFetcher, cls).__new__(cls)
                 cls._instance.api = api
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
-                cls._instance.cache_duration = 115 # seconds (Increased to ~2 mins)
+                # 290s cache = just under one 5-min candle period.
+                # WebSocket keeps prices live, so we only need REST for historical context.
+                cls._instance.cache_duration = 360  # 6 min — covers one full 5-min candle + buffer
                 cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
                 cls._instance.disk_cache_lock = os.path.join(os.getcwd(), "data", "cache_candles.lock")
                 cls._instance.last_session_check = time.time()
+                # Per-key in-flight lock: prevents multiple strategies from firing
+                # simultaneous REST calls for the same token+interval.
+                cls._instance._inflight_locks = {}
+                cls._instance._inflight_lock_guard = threading.Lock()
             elif api is not None:
                 # Update API if a new one is provided (e.g. session refreshed)
                 cls._instance.api = api
@@ -73,8 +79,22 @@ class DataFetcher:
     def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange="NSE"):
         """
         Fetches historic candle data and returns a DataFrame.
-        Uses caching to prevent hitting unnecessary API limits.
+        Priority: WebSocket ring-buffer (ONE_MINUTE) → In-Memory Cache → Disk Cache → REST.
+        Uses in-flight deduplication so only ONE REST call fires per token+interval.
         """
+        # 0. WebSocket Fast Path for ONE_MINUTE (ORB/OHL opening range)
+        # market_feed builds 1-min candles from ticks in real-time — no REST needed.
+        if interval == "ONE_MINUTE":
+            try:
+                from bot.core.market_feed import market_feed
+                ws_candles = market_feed.get_1min_candles(symbol_token)
+                if ws_candles is not None and len(ws_candles) >= 1:
+                    logger.debug(f"DataFetcher: ONE_MINUTE from WebSocket ring-buffer ({len(ws_candles)} candles)")
+                    return ws_candles
+            except Exception as e:
+                logger.debug(f"DataFetcher: WebSocket 1-min path unavailable: {e}")
+            # Fall through to REST if WebSocket buffer is empty
+
         # 1. Check In-Memory Cache first
         cache_key = f"{symbol_token}_{interval}_{days}"
         if cache_key in self.data_cache:
@@ -89,6 +109,26 @@ class DataFetcher:
             # Update in-memory cache
             self.data_cache[cache_key] = (time.time(), disk_data)
             return self._merge_live_candle(disk_data.copy(), symbol_token, interval)
+
+        # 3. In-Flight Deduplication: only ONE REST call per unique cache_key at a time.
+        # If another strategy is already fetching this token+interval, wait for it
+        # and return the result from the shared cache — no second REST call fired.
+        with self._inflight_lock_guard:
+            if cache_key not in self._inflight_locks:
+                self._inflight_locks[cache_key] = threading.Event()
+                is_leader = True
+            else:
+                is_leader = False
+                wait_event = self._inflight_locks[cache_key]
+
+        if not is_leader:
+            logger.info(f"DataFetcher: Waiting for in-flight fetch of {cache_key}...")
+            wait_event.wait(timeout=30)
+            # After the leader finishes, try the cache again
+            if cache_key in self.data_cache:
+                _, cached_df = self.data_cache[cache_key]
+                return self._merge_live_candle(cached_df.copy(), symbol_token, interval)
+            return None  # leader failed — return None gracefully
 
         max_retries = 3
         now = datetime.datetime.now()
@@ -159,6 +199,11 @@ class DataFetcher:
                     
                     self.data_cache[cache_key] = (time.time(), df)
                     self._write_disk_cache(cache_key, df)
+                    # Release in-flight lock so waiting threads get the cached result
+                    with self._inflight_lock_guard:
+                        ev = self._inflight_locks.pop(cache_key, None)
+                    if ev:
+                        ev.set()
                     return self._merge_live_candle(df, symbol_token, interval)
                 else:
                     err_code = response.get('errorcode')
@@ -202,9 +247,17 @@ class DataFetcher:
         stale_data = self._read_disk_cache(cache_key, force_fresh=False)
         if stale_data is not None:
              logger.warning(f"!!! [System] All retries failed. Returning STALE cached data for {symbol_token} as fallback.")
-             return self._merge_live_candle(stale_data, symbol_token, interval)
-             
-        return None
+             result = self._merge_live_candle(stale_data, symbol_token, interval)
+        else:
+             result = None
+
+        # Always release the in-flight lock so waiting threads unblock
+        with self._inflight_lock_guard:
+            ev = self._inflight_locks.pop(cache_key, None)
+        if ev:
+            ev.set()
+
+        return result
 
     def _merge_live_candle(self, df, token, interval):
         """Appends real-time forming candle from MarketFeed if available."""

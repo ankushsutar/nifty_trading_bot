@@ -3,6 +3,7 @@ import time
 import threading
 import json
 import datetime
+import pandas as pd
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from bot.config.settings import Config
 from bot.utils.logger import logger
@@ -38,9 +39,11 @@ class MarketFeedService:
         self.current_atm = 0
         
         # Real-Time Candle Construction
-        self.candle_cache = {} # Key: Token, Value: 1-min candle
-        self.candle_cache_5m = {} # Key: Token, Value: 5-min candle
+        self.candle_cache = {} # Key: Token, Value: current forming 1-min candle
+        self.candle_cache_5m = {} # Key: Token, Value: current forming 5-min candle
         self.last_vol_cache = {} # Key: Token, Value: Total Day Volume
+        # Closed candle ring buffer — up to 100 candles per token (full intraday)
+        self._1min_history = {} # Key: Token, Value: list of closed candle dicts
         
     def start(self):
         """Starts the WebSocket connection in a background thread."""
@@ -245,6 +248,17 @@ class MarketFeedService:
                     current = self.candle_cache.get(token)
                     
                     if not current or current['minute_ts'] != minute_ts:
+                        # A new minute started — archive the completed candle
+                        if current and current['minute_ts'] != minute_ts:
+                            history = self._1min_history.setdefault(token, [])
+                            history.append({
+                                'timestamp': current['timestamp'],
+                                'open': current['open'], 'high': current['high'],
+                                'low': current['low'], 'close': current['close'],
+                                'volume': current['volume']
+                            })
+                            if len(history) > 100:  # ring buffer cap
+                                self._1min_history[token] = history[-100:]
                         self.candle_cache[token] = {
                             'minute_ts': minute_ts,
                             'timestamp': timestamp_str,
@@ -334,5 +348,32 @@ class MarketFeedService:
         if interval_min == 5:
             return self.candle_cache_5m.get(token)
         return self.candle_cache.get(token)
+
+    def get_1min_candles(self, token):
+        """
+        Returns a DataFrame of closed 1-min candles from the ring buffer,
+        with the current forming candle appended as the last row.
+        Returns None if no history is available yet (WebSocket not yet connected
+        or no candle boundary crossed \u2014 fall back to REST in that case).
+        """
+        history = self._1min_history.get(token, [])
+        current = self.candle_cache.get(token)
+
+        rows = list(history)
+        if current:
+            rows.append({
+                'timestamp': current['timestamp'],
+                'open': current['open'], 'high': current['high'],
+                'low': current['low'], 'close': current['close'],
+                'volume': current['volume']
+            })
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric, errors='coerce')
+        return df
 
 market_feed = MarketFeedService()

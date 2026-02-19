@@ -14,67 +14,79 @@ class RegimeClassifier:
         """
         Classifies the market regime based on technical indicators.
         Returns a dict with regime and metadata.
+        Degrades gracefully for early-session low candle counts (< 22).
         """
-        if df is None or len(df) < 22:
+        if df is None or len(df) < 5:
+            logger.warning(f"[Regime] Insufficient candles ({len(df) if df is not None else 0}). Returning UNKNOWN.")
             return {
-                "regime": "UNKNOWN",
-                "trend": "NEUTRAL",
-                "adx": 0,
-                "rsi": 50,
-                "atr": 0,
-                "bbw": 0,
-                "ema9": 0,
-                "ema21": 0
+                "regime": "UNKNOWN", "trend": "NEUTRAL",
+                "adx": 0, "rsi": 50, "atr": 0, "bbw": 0, "ema9": 0, "ema21": 0
             }
 
         df = df.copy()
+        n = len(df)
 
-        # 1. Calculate Indicators
+        # 1. Calculate Indicators (period auto-clamped to available candles)
         df['RSI'] = self._calculate_rsi(df)
-        df['ADX'] = self._calculate_adx(df)
         df['ATR'] = self._calculate_atr(df)
-        df['BBW'] = self._calculate_bbw(df)
-        df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
-        df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
+        df['EMA9'] = df['close'].ewm(span=min(9, n), adjust=False).mean()
+        df['EMA21'] = df['close'].ewm(span=min(21, n), adjust=False).mean()
+
+        # ADX and BBW need more data — use simplified logic if not enough bars
+        has_full_data = n >= 22
+        if has_full_data:
+            df['ADX'] = self._calculate_adx(df)
+            df['BBW'] = self._calculate_bbw(df)
+        else:
+            df['ADX'] = 0.0
+            df['BBW'] = 0.0
 
         last = df.iloc[-1]
-
-        adx = last['ADX']
-        rsi = last['RSI']
-        atr = last['ATR']
-        bbw = last['BBW']
+        adx  = last['ADX']
+        rsi  = last['RSI']
+        atr  = last['ATR']
+        bbw  = last['BBW']
         ema9 = last['EMA9']
-        ema21 = last['EMA21']
+        ema21= last['EMA21']
 
-        # 2. Classification Logic
-        # FIX Issue 2: BBW threshold corrected from 0.0015 → 0.02 for Nifty 15m
-        # (Nifty BBW typically ranges 0.005–0.03; 0.0015 was 20× too small)
-        # FIX Issue 3: Made all ADX boundary zones explicit — no silent gaps
-        if adx > 25:
-            regime = "TRENDING"
-        elif adx >= 20 and bbw > 0.02:
-            regime = "VOLATILE"
-        elif adx < 20:
-            regime = "CHOP"
+        # 2. Early-Session Simplified Regime (< 22 candles, ~110 mins after open)
+        # We have enough price action to determine basic trend via EMA + RSI,
+        # but not enough for reliable ADX. Default to TRENDING when EMAs diverge.
+        if not has_full_data:
+            ema_spread = abs(ema9 - ema21) / (ema21 + 1e-10)
+            if ema_spread > 0.002:  # 0.2% divergence → trending
+                regime = "TRENDING"
+            else:
+                regime = "SIDEWAYS"
+            logger.info(
+                f"[Regime] Early-Session Mode ({n} candles). "
+                f"EMA spread={ema_spread:.4f} → {regime}"
+            )
         else:
-            # ADX 20–25, low BBW — transition zone, treat conservatively as SIDEWAYS
-            regime = "SIDEWAYS"
+            # 3. Full Classification Logic (22+ candles)
+            if adx > 25:
+                regime = "TRENDING"
+            elif adx >= 20 and bbw > 0.02:
+                regime = "VOLATILE"
+            elif adx < 20:
+                regime = "CHOP"
+            else:
+                regime = "SIDEWAYS"
 
-        # 3. Trend Direction
-        # FIX Issue 4: RSI now reinforces trend direction (was computed but never used)
+        # 4. Trend Direction (works at all candle counts)
         trend = "NEUTRAL"
-        if regime == "TRENDING":
+        if regime in ("TRENDING", "SIDEWAYS"):
             if ema9 > ema21 and rsi > 50:
                 trend = "BULLISH"
             elif ema9 < ema21 and rsi < 50:
                 trend = "BEARISH"
             elif ema9 > ema21:
-                trend = "BULLISH"   # EMA signal takes precedence if RSI is ambiguous
+                trend = "BULLISH"
             elif ema9 < ema21:
                 trend = "BEARISH"
 
         logger.debug(
-            f"[Regime] ADX={adx:.1f} RSI={rsi:.1f} BBW={bbw:.4f} "
+            f"[Regime] n={n} ADX={adx:.1f} RSI={rsi:.1f} BBW={bbw:.4f} "
             f"EMA9={ema9:.1f} EMA21={ema21:.1f} → {regime}/{trend}"
         )
 

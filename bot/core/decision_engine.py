@@ -10,7 +10,7 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.MAX_TRADES_PER_DAY = 2    # Hard cap to prevent brokerage drain
+        self.MAX_TRADES_PER_DAY = 3    # Hard cap to prevent brokerage drain
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
     def analyze_and_select(self):

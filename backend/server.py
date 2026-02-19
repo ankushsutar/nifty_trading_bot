@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
 import uvicorn
 import sys
 import os
@@ -129,6 +130,63 @@ def get_news():
 @app.get("/api/sentiment")
 def get_sentiment():
     return {"score": news_service.get_sentiment_score()}
+
+
+# ── Trade Management Endpoints ────────────────────────────────────────────────
+
+@app.get("/api/open-trades")
+def get_open_trades():
+    """Returns all DB trades currently marked OPEN."""
+    from bot.core.trade_repo import trade_repo
+    trades = trade_repo.get_open_trades()
+    # Convert ObjectId and datetime to serializable form
+    result = []
+    for t in trades:
+        t.pop("_id", None)
+        for k, v in t.items():
+            if hasattr(v, 'isoformat'):
+                t[k] = v.isoformat()
+        result.append(t)
+    return {"open_trades": result, "count": len(result)}
+
+
+class ForceCloseRequest(BaseModel):
+    trade_id: int
+    exit_price: Optional[float] = 0.0
+    reason: Optional[str] = "MANUAL_EXIT"
+
+
+@app.post("/api/force-close-trade")
+def force_close_trade(req: ForceCloseRequest):
+    """
+    Manually force-closes a trade in the DB.
+    Use this when you exited a trade on the broker platform directly
+    and the bot DB still shows it as OPEN.
+    """
+    from bot.core.trade_repo import trade_repo
+    success = trade_repo.force_close_trade(
+        trade_id=req.trade_id,
+        exit_price=req.exit_price or 0.0,
+        reason=req.reason or "MANUAL_EXIT"
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Trade #{req.trade_id} not found or already closed.")
+    return {"status": "ok", "message": f"Trade #{req.trade_id} force-closed in DB."}
+
+
+@app.post("/api/reconcile-positions")
+def reconcile_positions():
+    """
+    Triggers an immediate broker position reconciliation.
+    Closes any OPEN DB trades that the broker no longer holds.
+    """
+    from bot.core.trade_repo import trade_repo
+    from bot.core.angel_connect import get_angel_session
+    api = get_angel_session()
+    if not api:
+        raise HTTPException(status_code=503, detail="No active Angel One session.")
+    trade_repo.reconcile_with_broker(api)
+    return {"status": "ok", "message": "Reconciliation complete. Check logs."}
 
 @app.websocket("/ws/logs")
 async def websocket_endpoint(websocket: WebSocket):
