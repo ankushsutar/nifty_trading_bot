@@ -152,10 +152,10 @@ class LifecycleManager:
                     # Heartbeat?
                     pass
 
-                # B. MARKET OPEN (09:15 - 09:20) -> OHL SCALP
-                elif datetime.time(9, 15) <= now < datetime.time(9, 20):
+                # B. MARKET OPEN (09:16 - 09:20) -> OHL SCALP
+                elif datetime.time(9, 16) <= now < datetime.time(9, 20):
                     if not self.ohl_attempted and not self.current_process:
-                        self.log("⏰ Time 09:15 Noticed. Attempting OHL Scalp...")
+                        self.log("⏰ Time 09:16 Noticed. Attempting OHL Scalp...")
                         self.current_process = self.run_strategy(strategy_name="OHL")
                         self.ohl_attempted = True
 

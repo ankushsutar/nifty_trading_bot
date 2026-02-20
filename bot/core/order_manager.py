@@ -5,8 +5,9 @@ from bot.utils.rate_limiter import rate_limiter
 from bot.core.kill_switch import is_kill_switch_active
 
 class OrderManager:
-    def __init__(self, api):
+    def __init__(self, api, dry_run=False):
         self.api = api
+        self.dry_run = dry_run
 
     def place_order(self, order_params):
         """Places an order with rate limiting and error handling."""
@@ -15,9 +16,22 @@ class OrderManager:
             return None
 
         try:
+            if self.dry_run:
+                logger.info(f"🧪 [DRY RUN] Simulating Order: {order_params.get('tradingsymbol')} {order_params.get('transactiontype')} {order_params.get('quantity')}")
+                return f"DRY_{int(time.time())}"
+
             rate_limiter.wait()
-            oid = self.api.placeOrder(order_params)
-            return oid
+            response = self.api.placeOrder(order_params)
+            
+            if isinstance(response, dict):
+                if response.get('status') == True:
+                    oid = response.get('data', {}).get('orderid')
+                    logger.info(f"✅ Order Placed Successfully: {oid}")
+                    return oid
+                else:
+                    logger.error(f"❌ Order Placement Rejected: {response.get('message')}")
+                    return None
+            return response # Mock returns string ID directly
         except Exception as e:
             logger.error(f"Order Placement Error: {e}")
             return None
@@ -57,15 +71,29 @@ class OrderManager:
             logger.error(f"SL Order Error: {e}")
             return None
 
-    def cancel_order(self, order_id, variety="STOPLOSS"):
-        """Cancels an order."""
+    def cancel_order(self, order_id, variety="NORMAL"):
+        """Cancels an existing order."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Cancellation Rejected.")
             return False
 
         try:
+            if self.dry_run:
+                logger.info(f"🧪 [DRY RUN] Simulating Cancel: {order_id}")
+                return True
+
             rate_limiter.wait()
-            self.api.cancelOrder(order_id, variety)
+            response = self.api.cancelOrder(order_id, variety)
+            
+            if isinstance(response, dict):
+                if response.get('status') == True:
+                    logger.info(f"🚫 Cancelled Order: {order_id}")
+                    return True
+                else:
+                    logger.warning(f"⚠️ Cancel Failed for {order_id}: {response.get('message')}")
+                    return False
+            
+            # Mock might return something else, assume True if no exception
             logger.info(f"🚫 Cancelled Order: {order_id}")
             return True
         except Exception as e:
@@ -94,16 +122,58 @@ class OrderManager:
                 "symboltoken": token,
                 "exchange": "NFO"
             }
+            if self.dry_run:
+                logger.info(f"🧪 [DRY RUN] Simulating Modify: {order_id} -> {price}")
+                return True
+
             rate_limiter.wait()
             response = self.api.modifyOrder(orderparams)
-            # Check API response status (modifyOrder returns full response dict)
-            if response and response.get('status') == True:
-                logger.info(f"📝 Modified SL Order {order_id} -> {price}")
-                return True
-            else:
-                err_msg = response.get('message', 'Unknown error') if response else 'No response'
-                logger.warning(f"⚠️ SL Modify Failed for {order_id}: {err_msg}")
-                return False
+            
+            if isinstance(response, dict):
+                # Check API response status (modifyOrder returns full response dict)
+                if response and response.get('status') == True:
+                    logger.info(f"📝 Modified SL Order {order_id} -> {price}")
+                    return True
+                else:
+                    err_msg = response.get('message', 'Unknown error') if response else 'No response'
+                    logger.warning(f"⚠️ SL Modify Failed for {order_id}: {err_msg}")
+                    return False
+            
+            # Mock might return something else, assume True if no exception
+            logger.info(f"📝 Modified SL Order {order_id} -> {price}")
+            return True
         except Exception as e:
             logger.error(f"Modify SL Error: {e}")
             return False
+
+    # --- Throttled API Read Methods ---
+
+    def get_order_book(self):
+        """Fetches order book with rate limiting."""
+        try:
+            if self.dry_run: return {"status": True, "data": []}
+            rate_limiter.wait()
+            return self.api.orderBook()
+        except Exception as e:
+            logger.error(f"OrderBook Fetch Error: {e}")
+            return None
+
+    def get_positions(self):
+        """Fetches positions with rate limiting."""
+        try:
+            if self.dry_run: return {"status": True, "data": []}
+            rate_limiter.wait()
+            return self.api.position()
+        except Exception as e:
+            logger.error(f"Position Fetch Error: {e}")
+            return None
+
+    def get_rms_limit(self):
+        """Fetches RMS limits (funds) with rate limiting."""
+        try:
+            if self.dry_run: return {"status": True, "data": {"net": "1000000"}}
+            rate_limiter.wait()
+            return self.api.rmsLimit()
+        except Exception as e:
+            logger.error(f"RMS Limit Fetch Error: {e}")
+            return None

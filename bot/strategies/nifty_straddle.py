@@ -231,13 +231,13 @@ class NiftyStrategy:
         new_trigger = entry_price
         new_price = round(entry_price + 1.0, 1)
         
-        success = self.order_manager.modify_order(sl_oid, new_price, new_trigger)
+        success = self.order_manager.modify_sl_order(sl_oid, new_price, symbol, token, quantity)
         if success:
              logger.info(f"    >>> Modified {leg_type} SL to {entry_price}")
         else:
              logger.error(f"    >>> Modification Failed. Cancelling and Replacing.")
-             self.order_manager.cancel_order(sl_oid, "STOPLOSS")
-             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type, transaction_type="BUY")
+             self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type)
              if new_id: self.sl_orders[leg_type] = new_id
 
     def exit_all_market(self, quantity, reason):
@@ -253,7 +253,7 @@ class NiftyStrategy:
 
     def exit_leg(self, token, symbol, qty, reason, trade_id, sl_oid):
         # 1. Cancel SL
-        if sl_oid: self.order_manager.cancel_order(sl_oid, "STOPLOSS")
+        if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
         
         # 2. Buy to Cover
         orderparams = {
@@ -275,7 +275,7 @@ class NiftyStrategy:
         # Direct API call for now or update OrderManager to expose `get_order_status`.
         # Simplest:
         try:
-             book = self.api.orderBook()
+             book = self.order_manager.get_order_book()
              if book and book.get('data'):
                  for o in book['data']:
                      if o['orderid'] == oid:
@@ -320,14 +320,14 @@ class NiftyStrategy:
         for _ in range(10):
             try:
                 time.sleep(0.5)
-                book = self.api.orderBook()
+                book = self.order_manager.get_order_book()
                 if book and book.get('data'):
                     for o in book['data']:
                         if o['orderid'] == order_id:
                             if o['status'] == 'complete':
                                 return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                            elif o['status'] == 'rejected':
-                                return {'status': 'REJECTED', 'message': o.get('text')}
+                            elif o['status'] in ['rejected', 'cancelled']:
+                                return {'status': o['status'].upper(), 'message': o.get('text')}
             except: pass
         return {'status': 'TIMEOUT', 'price': None}
         

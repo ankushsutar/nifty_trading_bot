@@ -34,6 +34,19 @@ class MarketService:
             cls._instance.oi_data = {}
             cls._instance.last_analysis_time = 0
             
+            # --- STARTUP WARM-UP: Load Last Known Intelligence ---
+            # This ensures /api/market-data is populated immediately for the UI
+            try:
+                state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+                if os.path.exists(state_file):
+                    with open(state_file, "r") as f:
+                        shared_state = json.load(f)
+                        cls._instance.analysis_data = shared_state.get('analysis', {})
+                        cls._instance.oi_data = shared_state.get('oi_data', {})
+                        logger.info("MarketService: Startup Intelligence Loaded from disk 💾")
+            except Exception as e:
+                logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
+
             # Start Background Analysis Thread only in MASTER process (Designated Backend)
             is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
             if is_master:
@@ -100,13 +113,13 @@ class MarketService:
         Returns dict: { nifty: float, vix: float, pnl: float }
         """
         # Cache Check (Quick Read)
-        # Increased cache to 10s to further reduce load (Combined with DataFetcher 15s cache)
-        if time.time() - self.last_fetch_time < 10 and self.cached_data:
+        # Increased cache to 20s to further reduce load (Combined with DataFetcher 15s cache)
+        if time.time() - self.last_fetch_time < 20 and self.cached_data:
             return self.cached_data
             
         with self._lock:
             # Double-Checked Locking
-            if time.time() - self.last_fetch_time < 10 and self.cached_data:
+            if time.time() - self.last_fetch_time < 20 and self.cached_data:
                 return self.cached_data
 
             # 1. Child Mode: Try loading shared intelligence from master first
@@ -129,7 +142,7 @@ class MarketService:
                 try:
                     if os.path.exists(state_file):
                         # Only read if file is fresh (< 3 mins)
-                        if time.time() - os.path.getmtime(state_file) < 185:
+                        if time.time() - os.path.getmtime(state_file) < 310:  # FIX: match 300s backend refresh cadence (+10s buffer)
                             with open(state_file, "r") as f:
                                 shared_state = json.load(f)
                                 self.analysis_data = shared_state.get('analysis', {})
@@ -226,10 +239,18 @@ class MarketService:
 
 
     def _analysis_loop(self):
-        """Background loop to refresh Regime and OI analysis every 3 minutes."""
-        time.sleep(10) # Wait 10s for system to settle (prevent startup burst)
+        """Background loop to refresh Regime and OI analysis every 5 minutes."""
+        import random
+        # 1. Startup De-sync Jitter: prevent master/child overlapping on startup
+        time.sleep(random.uniform(5, 15)) 
+        
         while True:
             try:
+                # 2. Strict Master Check: only designated BACKEND may fetch
+                is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+                if not is_master:
+                    logger.warning("MarketService Analysis Loop: [CHILD] Detected. Halting child loop.")
+                    break
                 self._ensure_connection()
                 if self.api:
                     if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
@@ -285,7 +306,7 @@ class MarketService:
                     else:
                         logger.warning("MarketService: Skipping refresh - No candle data available.")
                 
-                time.sleep(180) # Run every 3 minutes
+                time.sleep(300) # Run every 5 minutes
 
             except Exception as e:
                 logger.error(f"MarketService Analysis Loop Error: {e}")

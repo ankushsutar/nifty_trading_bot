@@ -54,16 +54,17 @@ class DecisionEngine:
 
         # 1. Check Capital & Mode
         available_cash = self.gatekeeper.get_current_capital()
+        logger.info(f">>> [Brain] Current available capital: ₹{available_cash:,.2f}")
         is_small_account = available_cash < 15000
         
         if is_small_account:
             logger.info(">>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)")
 
-        funds_for_straddle = self.gatekeeper.check_funds(required_margin_per_lot=150000)
-        funds_for_buying = self.gatekeeper.check_funds(required_margin_per_lot=5000)
+        funds_for_straddle = self.gatekeeper.check_funds(required_margin_per_lot=150000, silent=True)
+        funds_for_buying = self.gatekeeper.check_funds(required_margin_per_lot=5000, silent=True)
 
         if not funds_for_buying:
-            logger.warning(">>> [Brain] ❌ Insufficient Capital for ANY strategy (< ₹5k).")
+            logger.warning(f">>> [Brain] ❌ Insufficient Capital for ANY strategy. Available: ₹{available_cash:,.2f} (Need: ~₹5.5k for 1 lot buys).")
             return None, 1.0
 
         # 2. Check Time
@@ -99,12 +100,16 @@ class DecisionEngine:
                  confidence_high = True
                  risk_multiplier *= 1.2
 
-        # 6. Small Account "A+" Filter
+        # 6. Small Account "A+ Filter"
         if is_small_account:
-            # Rule: Only take trades if Regime is TRENDING and Trend aligns with Sentiment
-            if not confidence_high:
-                logger.warning(">>> [Brain] 🛑 Skipping Trade: No A+ Setup found for small account.")
+            # Rule: Only take trades if Regime is TRENDING and (Trend aligns with Sentiment OR Trend is Strong)
+            adx = regime_data.get('adx', 0)
+            if not confidence_high and adx <= 25:
+                reason = "Trend-Bias Misalignment" if not confidence_high else "Weak Trend (ADX < 25)"
+                logger.warning(f">>> [Brain] 🛑 Skipping Trade: {reason}. Waiting for A+ Setup.")
                 return None, 1.0
+            elif not confidence_high and adx > 25:
+                logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
 
         # 6. Smart Selection Matrix
         selected_strategy = "MOMENTUM" # Default Fallback
@@ -155,7 +160,7 @@ class DecisionEngine:
         }
 
         required = MARGIN_MAP.get(selected_strategy, 5500)
-        if not self.gatekeeper.check_funds(required_margin_per_lot=required):
+        if not self.gatekeeper.check_funds(required_margin_per_lot=required, silent=True):
             logger.warning(f">>> [Brain] ⚠️ Insufficient Funds for {selected_strategy} (Need ~₹{required}).")
             
             # Fallback Logic

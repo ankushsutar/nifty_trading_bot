@@ -28,7 +28,7 @@ class MomentumStrategy:
         self.data_fetcher = DataFetcher(self.api)
         self.regime_classifier = RegimeClassifier()
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
-        self.order_manager = OrderManager(self.api)
+        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         
         self.data_failure_count = 0
         self.active_position = None
@@ -92,7 +92,7 @@ class MomentumStrategy:
                  logger.warning(f"⚠️ Sync Skipped due to Circuit Breaker (Wait {wait_time:.1f}s)")
                  return
 
-             pos_resp = self.api.position()
+             pos_resp = self.order_manager.get_positions()
              
              if pos_resp and pos_resp.get('status') and pos_resp.get('data'):
                  found_active = None
@@ -105,7 +105,7 @@ class MomentumStrategy:
                          qty = int(pos['netqty'])
                          
                          found_active = {
-                             'leg': "CE" if "CE" in pos['symbolnm'] else "PE", 
+                             'leg': "CE" if "CE" in pos['symbolname'] else "PE", 
                              'symbol': pos['tradingsymbol'],
                              'token': pos['symboltoken'],
                              'qty': abs(qty),
@@ -225,15 +225,17 @@ class MomentumStrategy:
                                 
                                 # 2. Fallback to REST API (Costly)
                                 if curr_ltp == 0:
-                                     from bot.utils.rate_limiter import rate_limiter
-                                     if rate_limiter.check_circuit_breaker() == 0:
-                                         ltp_check = self.api.ltpData("NFO", symbol, token)
-                                         if ltp_check and ltp_check.get('status'):
-                                             curr_ltp = float(ltp_check['data']['ltp'])
-                                             # Push to market_feed cache to avoid immediate re-fetch
-                                             # (Actually market_feed is read-only for us, but this helps logic flow)
-                                     else:
-                                         pass
+                                    # FIX: Check circuit breaker before polling REST LTP
+                                    from bot.utils.rate_limiter import rate_limiter
+                                    if rate_limiter.check_circuit_breaker() == 0:
+                                        rate_limiter.wait()
+                                        ltp_check = self.api.ltpData("NFO", symbol, token)
+                                        if ltp_check and ltp_check.get('status'):
+                                            curr_ltp = float(ltp_check['data']['ltp'])
+                                            # Push to market_feed cache to avoid immediate re-fetch
+                                            # (Actually market_feed is read-only for us, but this helps logic flow)
+                                    else:
+                                        pass
 
 
                                 if curr_ltp > 0:
@@ -593,6 +595,8 @@ class MomentumStrategy:
         
         quote_ltp = 0
         try:
+             from bot.utils.rate_limiter import rate_limiter
+             rate_limiter.wait()
              q_resp = self.api.ltpData("NFO", symbol, token)
              if q_resp and q_resp.get('status'):
                  quote_ltp = float(q_resp['data']['ltp'])
@@ -695,22 +699,20 @@ class MomentumStrategy:
 
     def wait_for_fill(self, order_id):
         """Polls for order completion. Returns dict with status and price."""
-        if not order_id: return {'status': 'ERROR', 'price': None}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        if not order_id: return {'status': 'ERROR', 'price': None, 'message': 'No order ID provided'}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0, 'message': 'Dry run - simulated fill'}
         
         for _ in range(10):
             try:
-                time.sleep(1)
-                book = self.api.orderBook()
+                time.sleep(0.5)
+                book = self.order_manager.get_order_book()
                 if book and book.get('data'):
                     for o in book['data']:
                         if o['orderid'] == order_id:
                             if o['status'] == 'complete':
                                 return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                            elif o['status'] == 'rejected':
-                                return {'status': 'REJECTED', 'message': o.get('text', 'No Reason')}
-                            elif o['status'] == 'cancelled':
-                                return {'status': 'CANCELLED', 'message': o.get('text', 'No Reason')}
+                            elif o['status'] in ['rejected', 'cancelled']:
+                                return {'status': o['status'].upper(), 'message': o.get('text')}
             except: pass
         return {'status': 'TIMEOUT', 'price': None}
 
@@ -725,6 +727,8 @@ class MomentumStrategy:
         
         exit_price = 0
         try:
+             from bot.utils.rate_limiter import rate_limiter
+             rate_limiter.wait()
              q_resp = self.api.ltpData("NFO", symbol, token)
              if q_resp and q_resp.get('status'):
                  exit_price = float(q_resp['data']['ltp'])
@@ -734,7 +738,7 @@ class MomentumStrategy:
         # Cancel Pending Broker SL
         sl_oid = self.active_position.get('sl_order_id')
         if sl_oid and not self.dry_run:
-            self.order_manager.cancel_order(sl_oid)
+            self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
 
         if not self.dry_run:
             try:

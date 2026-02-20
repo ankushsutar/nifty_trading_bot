@@ -84,6 +84,23 @@ def get_angel_session(force_refresh=False):
         from bot.utils.rate_limiter import rate_limiter
         rate_limiter.wait()
         
+        # --- DOUBLE-CHECKED LOCKING ---
+        # While we waited for the lock, another process might have finished 
+        # logging in and saved the session file. Check again.
+        if os.path.exists(SESSION_FILE) and not force_refresh:
+            try:
+                with open(SESSION_FILE, "r") as f:
+                    sess_data = json.load(f)
+                    sess_time = datetime.datetime.fromisoformat(sess_data['timestamp'])
+                    if (datetime.datetime.now() - sess_time).total_seconds() < 600:
+                        print(">>> [System] Dynamic Recovery: Session found in file after lock wait. Reusing...")
+                        api = SmartConnect(api_key=Config.API_KEY)
+                        api.setAccessToken(sess_data['jwtToken'])
+                        api.setRefreshToken(sess_data['refreshToken'])
+                        api.setFeedToken(sess_data.get('feedToken', ''))
+                        return api
+            except: pass
+
         api = SmartConnect(api_key=Config.API_KEY)
         totp = pyotp.TOTP(Config.TOTP_SECRET).now()
         

@@ -15,7 +15,7 @@ class GlobalRateLimiter:
             cls._instance = super(GlobalRateLimiter, cls).__new__(cls)
             cls._instance.lock_file = os.path.join(os.getcwd(), "data", "api_global.lock")
             cls._instance.time_file = os.path.join(os.getcwd(), "data", "api_last_call.time")
-            cls._instance.min_interval = 2.0 # Seconds (Angel One historical API is strict)
+            cls._instance.min_interval = 5.0 # Strictly > 3s for security.
             
             # Ensure data dir exists
             os.makedirs(os.path.dirname(cls._instance.lock_file), exist_ok=True)
@@ -42,14 +42,19 @@ class GlobalRateLimiter:
         return 0.0
 
     def wait(self):
+        import random
+        # 1. Micro-jitter BEFORE acquiring lock to de-sync multiple processes 
+        # waking up from a shared sleep or starting simultaneously.
+        time.sleep(random.uniform(0.1, 0.5))
+
         while True:
             wait_time = 0.0
             lock_fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT)
             try:
-                # 1. Acquire exclusive lock
+                # 2. Acquire exclusive lock
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 
-                # 2. Read state
+                # 3. Read state
                 last_call = 0.0
                 cb_until = 0.0
                 fail_count = 0
@@ -66,16 +71,18 @@ class GlobalRateLimiter:
                 
                 now = time.time()
                 
-                # 3. Check Circuit Breaker
+                # 4. Check Circuit Breaker
                 if now < cb_until:
                     wait_time = cb_until - now
+                    # Add extra 1s jitter to recovery to prevent thundering herd
+                    wait_time += random.uniform(0.5, 1.5)
                     logger.warning(f"Global Rate Limiter: CIRCUIT BREAKER ACTIVE (Failures: {fail_count}). Waiting {wait_time:.1f}s...")
                 
-                # 4. Check Standard Interval (only if CB not active)
+                # 5. Check Standard Interval (only if CB not active)
                 elif now - last_call < self.min_interval:
                      wait_time = self.min_interval - (now - last_call)
                 
-                # 5. If no wait needed, Update Timestamp and Return
+                # 6. If no wait needed, Update Timestamp and Return
                 if wait_time <= 0:
                      if now - last_call > 300: fail_count = 0 # Cool-down reset
                      
@@ -87,7 +94,7 @@ class GlobalRateLimiter:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)
                 
-            # 6. Sleep OUTSIDE the lock
+            # 7. Sleep OUTSIDE the lock
             if wait_time > 0:
                 time.sleep(wait_time)
 

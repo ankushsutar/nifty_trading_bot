@@ -251,29 +251,39 @@ class OHLStrategy:
 
     # --- Helpers ---
     def get_first_minute_candle(self):
-        try:
-             df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
-             if df is not None and not df.empty:
-                  # Naive check for 09:15
-                  mask = df['timestamp'].astype(str).str.contains("09:15")
-                  rows = df[mask]
-                  if not rows.empty:
-                      return rows.iloc[0].to_dict()
-        except: pass
-        if self.dry_run: return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
+        """Fetches the 09:15-09:16 candle. Retries up to 3 times for data stability."""
+        for attempt in range(4): # Total 4 attempts
+            try:
+                 df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+                 if df is not None and not df.empty:
+                      # Look for 09:15 candle
+                      mask = df['timestamp'].astype(str).str.contains("09:15")
+                      rows = df[mask]
+                      if not rows.empty:
+                          return rows.iloc[0].to_dict()
+            except Exception as e:
+                logger.debug(f"OHL Candle Fetch Attempt {attempt+1} failed: {e}")
+            
+            if attempt < 3:
+                logger.info(f"OHL: 09:15 candle not ready. Retrying in 2s... (Attempt {attempt+1}/4)")
+                time.sleep(2)
+
+        if self.dry_run: 
+            logger.info("OHL: Running in DRY MODE, using dummy 09:15 candle.")
+            return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
         return None
 
     def get_nifty_ltp(self):
         return self.data_fetcher.get_ltp("99926000")
 
     def wait_for_fill(self, order_id):
-        if not order_id: return {'status': 'ERROR', 'price': None}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        if not order_id: return {'status': 'ERROR', 'price': None, 'message': 'No order ID provided'}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0, 'message': 'Dry run - simulated fill'}
         
         for _ in range(10):
             try:
                 time.sleep(0.5)
-                book = self.api.orderBook()
+                book = self.order_manager.get_order_book()
                 if book and book.get('data'):
                     for o in book['data']:
                         if o['orderid'] == order_id:

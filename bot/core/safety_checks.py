@@ -64,6 +64,8 @@ class SafetyGatekeeper:
                     # 0.5s delay to prevent burst rate limit
                     time.sleep(0.5) 
                     # SmartAPI rmsLimit fetch
+                    from bot.utils.rate_limiter import rate_limiter
+                    rate_limiter.wait()
                     limit = self.api.rmsLimit()
                     self.cached_rms = limit
                     self.last_rms_time = time.time()
@@ -79,7 +81,7 @@ class SafetyGatekeeper:
             logger.error(f">>> [Gatekeeper] Capital Check Error: {e}")
             return 0.0
 
-    def check_funds(self, required_margin_per_lot=150000):
+    def check_funds(self, required_margin_per_lot=150000, silent=False):
         """
         Rule: Available Cash > Required Margin * 1.1 (10% Buffer)
         Note: required_margin_per_lot is an estimate.
@@ -91,14 +93,15 @@ class SafetyGatekeeper:
             if available_cash >= required_total:
                 return True
             else:
-                logger.warning(f">>> [Gatekeeper] ❌ LOW FUNDS. Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}")
+                if not silent:
+                    logger.warning(f">>> [Gatekeeper] ❌ LOW FUNDS. Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}")
                 return False
 
         except Exception as e:
             logger.error(f">>> [Gatekeeper] Fund Check Error: {e}")
             return False
 
-    def check_trade_margin(self, estimated_cost):
+    def check_trade_margin(self, estimated_cost, silent=False):
         """
         Rule: Available Cash > Estimated Cost (LTP * Qty)
         This is a hard check before placing an order.
@@ -114,7 +117,8 @@ class SafetyGatekeeper:
                 if time.time() - self.last_rms_time < 10 and self.cached_rms:
                     limit = self.cached_rms
                 else:
-                    time.sleep(0.5)
+                    from bot.utils.rate_limiter import rate_limiter
+                    rate_limiter.wait()
                     limit = self.api.rmsLimit()
                     self.cached_rms = limit
                     self.last_rms_time = time.time()
@@ -129,7 +133,8 @@ class SafetyGatekeeper:
                 logger.info(f">>> [Gatekeeper] Margin Check Passed: ₹{available_cash:,.2f} >= ₹{estimated_cost:,.2f}")
                 return True
             else:
-                logger.warning(f">>> [Gatekeeper] ❌ Insufficient Funds for Trade. Available: ₹{available_cash:,.2f}, Required: ₹{estimated_cost:,.2f}")
+                if not silent:
+                    logger.warning(f">>> [Gatekeeper] ❌ Insufficient Funds for Trade. Available: ₹{available_cash:,.2f}, Required: ₹{estimated_cost:,.2f}")
                 return False
 
         except Exception as e:
@@ -141,6 +146,8 @@ class SafetyGatekeeper:
         Rule: No PENDING orders for the same symbol to avoid duplicates.
         """
         try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
             book = self.api.orderBook()
             if book and book.get('status'):
                 for order in book['data']:
@@ -205,6 +212,7 @@ class SafetyGatekeeper:
             try:
                 from bot.utils.rate_limiter import rate_limiter
                 if rate_limiter.check_circuit_breaker() == 0:
+                    rate_limiter.wait()
                     response = self.api.ltpData("NSE", "INDIA VIX", "99926017")
                     if response and response.get('status'):
                         vix = float(response['data']['ltp'])

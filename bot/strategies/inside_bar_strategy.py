@@ -240,7 +240,7 @@ class InsideBarStrategy:
 
     def exit_at_market(self, token, symbol, qty, reason, trade_id, sl_oid):
         try:
-            if sl_oid: self.order_manager.cancel_order(sl_oid, "STOPLOSS")
+            if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
@@ -257,13 +257,13 @@ class InsideBarStrategy:
             logger.error(f"InsideBar Exit Failed: {e}")
 
     def wait_for_fill(self, order_id):
-        if not order_id: return {'status': 'ERROR', 'price': None}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
+        if not order_id: return {'status': 'ERROR', 'price': None, 'message': 'No order ID provided'}
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0, 'message': 'Dry run - simulated fill'}
         
         for _ in range(10):
             try:
                 time.sleep(0.5)
-                book = self.api.orderBook()
+                book = self.order_manager.get_order_book()
                 if book and book.get('data'):
                     for o in book['data']:
                         if o['orderid'] == order_id:
