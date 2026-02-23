@@ -106,7 +106,7 @@ class DecisionEngine:
             adx = regime_data.get('adx', 0)
             if not confidence_high and adx <= 25:
                 reason = "Trend-Bias Misalignment" if not confidence_high else "Weak Trend (ADX < 25)"
-                logger.warning(f">>> [Brain] 🛑 Skipping Trade: {reason}. Waiting for A+ Setup.")
+                logger.warning(f">>> [Brain] ⏸️ Skipping Trade Loop: {reason}. Waiting for A+ Setup.")
                 return None, 1.0
             elif not confidence_high and adx > 25:
                 logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")

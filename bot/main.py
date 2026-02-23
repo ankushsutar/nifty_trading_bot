@@ -2,6 +2,8 @@ import argparse
 import sys
 import signal
 import datetime
+import time
+import os
 from bot.core.angel_connect import get_angel_session
 from bot.utils.token_lookup import TokenLookup
 from bot.strategies.nifty_straddle import NiftyStrategy
@@ -17,19 +19,29 @@ from bot.utils.logger import logger
 
 # Global variable for graceful shutdown
 bot_instance = None
+shutting_down = False
 
 def signal_handler(sig, frame):
     """Handles Ctrl+C and Termination Signals"""
+    global shutting_down
+    if shutting_down:
+        return
+    shutting_down = True
+    
     logger.info(f"\n>>> [System] Signal Received ({sig}). Initiating Graceful Shutdown...")
     
-    if bot_instance:
-        logger.info(">>> [System] Cleaning up Active Positions...")
-        if hasattr(bot_instance, 'stop'):
-             bot_instance.stop()
-        else:
-             logger.warning(">>> [Warning] Strategy does not support graceful '.stop()'. Checking if active...")
-             
-    sys.exit(0)
+    try:
+        if bot_instance:
+            logger.info(">>> [System] Cleaning up Active Positions...")
+            if hasattr(bot_instance, 'stop'):
+                 bot_instance.stop()
+            else:
+                 logger.warning(">>> [Warning] Strategy does not support graceful '.stop()'. Checking if active...")
+    except Exception as e:
+        logger.error(f">>> [System] Shutdown error: {e}")
+    finally:
+        # Use os._exit to bypass messy library-level atexit tracebacks (like pymongo)
+        os._exit(0)
 
 def run_bot():
     global bot_instance
@@ -38,6 +50,7 @@ def run_bot():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
+    # Move parser before the loop logic
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
@@ -80,14 +93,26 @@ def run_bot():
     if args.auto:
         logger.info("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
         engine = DecisionEngine(api, loader, dry_run=args.dry_run)
-        selected_strategy, risk_multiplier = engine.analyze_and_select()
         
-        if selected_strategy:
-            logger.info(f">>> [Auto] 🤖 Brain selected: {selected_strategy} (Risk Multiplier: {risk_multiplier:.2f}x)")
-            args.strategy = selected_strategy
-        else:
-            logger.warning(">>> [Auto] ❌ Brain could not select a strategy (Low Funds or Market Closed). Exiting.")
-            return
+        while True:
+            selected_strategy, risk_multiplier = engine.analyze_and_select()
+            
+            if selected_strategy:
+                logger.info(f">>> [Auto] 🤖 Brain selected: {selected_strategy} (Risk Multiplier: {risk_multiplier:.2f}x)")
+                args.strategy = selected_strategy
+                break
+            else:
+                # Check for fatal exits (like daily limit) inside DecisionEngine, 
+                # but if it just says "Market Conditions not met", we loop.
+                # If Market is literally CLOSED according to logic, we should probably exit.
+                from bot.core.safety_checks import SafetyGatekeeper
+                gate = SafetyGatekeeper(api, dry_run=args.dry_run)
+                if not gate.is_market_open():
+                    logger.warning(">>> [Auto] ❌ Market is Closed. Exiting.")
+                    return
+
+                logger.info(">>> [Auto] 💤 No A+ setup found. Retrying in 60 seconds...")
+                time.sleep(60)
 
     # 4. Initialize Strategy
     if args.strategy == "ORB":
