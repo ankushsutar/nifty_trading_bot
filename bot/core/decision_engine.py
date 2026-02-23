@@ -122,8 +122,13 @@ class DecisionEngine:
         if regime == "TRENDING":
             adx = regime_data.get('adx', 0)
             
-            # A. High Momentum (Super Trend) -> Reactive EMA Crossover
-            if adx > 30:
+            # A. ULTRA-HIGH CONFIDENCE (Gamma Blast) -> OTM Exponential Profits
+            if adx > 35:
+                logger.info(f">>> [Brain] 🚀 PARABOLIC TREND (ADX: {adx:.1f}). Selected: Gamma Blast (OTM Leverage) 💎")
+                selected_strategy = "GAMMA_BLAST"
+
+            # B. High Momentum (Super Trend) -> Reactive EMA Crossover
+            elif adx > 30:
                 logger.info(f">>> [Brain] ⚡ Strong Trend (ADX: {adx:.1f}). Selected: Momentum (Reactive Mode)")
                 selected_strategy = "MOMENTUM"
 
