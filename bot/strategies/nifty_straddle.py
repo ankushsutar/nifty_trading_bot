@@ -277,24 +277,10 @@ class NiftyStrategy:
         oid = self.order_manager.place_order(orderparams)
         
         if oid and trade_id:
-             # Ideally wait for fill to get price
-             trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
-
-    def check_sl_status(self, leg_type):
-        oid = self.sl_orders.get(leg_type)
-        if not oid: return 'unknown'
-        # OrderManager helper? Or direct API check?
-        # Assuming OrderManager handles lifecycle, but we need status.
-        # Direct API call for now or update OrderManager to expose `get_order_status`.
-        # Simplest:
-        try:
-             book = self.order_manager.get_order_book()
-             if book and book.get('data'):
-                 for o in book['data']:
-                     if o['orderid'] == oid:
-                         return o['status']
-        except: pass
-        return 'open'
+             # Use WebSocket wait for exact price
+             fill = self.wait_for_fill(oid)
+             exit_price = fill.get('price', 0.0)
+             trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
 
     # --- Helpers ---
     def get_atm_strike(self):
@@ -327,22 +313,18 @@ class NiftyStrategy:
         return None
 
     def wait_for_fill(self, order_id):
-        if not order_id: return {'status': 'ERROR', 'price': None}
+        """Uses WebSocket Order Feed for sub-second fill detection."""
         if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
         
-        for _ in range(10):
-            try:
-                time.sleep(0.5)
-                book = self.order_manager.get_order_book()
-                if book and book.get('data'):
-                    for o in book['data']:
-                        if o['orderid'] == order_id:
-                            if o['status'] == 'complete':
-                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                            elif o['status'] in ['rejected', 'cancelled']:
-                                return {'status': o['status'].upper(), 'message': o.get('text')}
-            except: pass
-        return {'status': 'TIMEOUT', 'price': None}
+        from bot.core.order_feed import order_feed
+        logger.info(f">>> [Straddle] Waiting for WebSocket Fill Event ({order_id})...")
+        
+        result = order_feed.wait_for_fill(order_id, timeout=10)
+        
+        if result['status'] == 'TIMEOUT':
+             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
+        
+        return result
         
     def resume(self):
         mode = "PAPER" if self.dry_run else "LIVE"

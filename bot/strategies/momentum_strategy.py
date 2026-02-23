@@ -663,26 +663,18 @@ class MomentumStrategy:
              logger.error(f"Enter Order Failure: {e}")
 
     def wait_for_fill(self, order_id):
-        """Polls for order completion. Returns dict with status and price."""
-        if not order_id: return {'status': 'ERROR', 'price': None, 'message': 'No order ID provided'}
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0, 'message': 'Dry run - simulated fill'}
+        """Uses WebSocket Order Feed for sub-second fill detection."""
+        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
         
-        for _ in range(10):
-            try:
-                time.sleep(0.5)
-                book = self.order_manager.get_order_book()
-                if book and book.get('data'):
-                    for o in book['data']:
-                        if o['orderid'] == order_id:
-                            if o['status'] == 'complete':
-                                return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                            elif o['status'] in ['rejected', 'cancelled']:
-                                return {'status': o['status'].upper(), 'message': o.get('text')}
-            except: pass
-        if not self.dry_run:
-            logger.warning(f"⏳ Order {order_id} Fill Timeout! Attempting Cancellation...")
-            self.order_manager.cancel_order(order_id)
-        return {'status': 'TIMEOUT', 'price': None}
+        from bot.core.order_feed import order_feed
+        logger.info(f">>> [Momentum] Waiting for WebSocket Fill Event ({order_id})...")
+        
+        result = order_feed.wait_for_fill(order_id, timeout=10)
+        
+        if result['status'] == 'TIMEOUT':
+             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
+        
+        return result
 
     def close_position(self, reason, override_qty=None):
         if not self.active_position: return
@@ -813,9 +805,8 @@ class MomentumStrategy:
                      )
                  self.active_position = None
                  logger.info("✅ Strategy State: Trade Closed.")
-             
-         except Exception as e:
-             logger.error(f"DB Update Error: {e}")
+        except Exception as e:
+            logger.error(f"DB Update Error: {e}")
 
     def check_trailing_stop(self):
         """

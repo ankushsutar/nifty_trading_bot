@@ -16,6 +16,7 @@ from bot.strategies.ohl_strategy import OHLStrategy
 from bot.strategies.inside_bar_strategy import InsideBarStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.core.decision_engine import DecisionEngine
+from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
 
 # Global variable for graceful shutdown
@@ -46,6 +47,10 @@ def signal_handler(sig, frame):
 
 def run_bot():
     global bot_instance
+    
+    # 0. Start Order Feed (Real-Time Status)
+    from bot.core.order_feed import order_feed
+    order_feed.start()
     
     # Register Signals
     signal.signal(signal.SIGINT, signal_handler)

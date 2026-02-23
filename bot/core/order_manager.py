@@ -29,6 +29,11 @@ class OrderManager:
                 if response.get('status') == True:
                     oid = response.get('data', {}).get('orderid')
                     logger.info(f"✅ Order Placed Successfully: {oid}")
+                    
+                    # Register for WebSocket tracking
+                    from bot.core.order_feed import order_feed
+                    order_feed.register_order(oid)
+                    
                     return oid
                 else:
                     logger.error(f"❌ Order Placement Rejected: {response.get('message')}")

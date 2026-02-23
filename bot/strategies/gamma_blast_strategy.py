@@ -194,18 +194,18 @@ class GammaBlastStrategy:
             logger.error(f"Gamma Blast Exit Failed: {e}")
 
     def wait_for_fill(self, order_id):
+        """Uses WebSocket Order Feed for sub-second fill detection."""
         if self.dry_run: return {'status': 'FILLED', 'price': 50.0}
-        for _ in range(10):
-            time.sleep(0.5)
-            book = self.order_manager.get_order_book()
-            if book and book.get('data'):
-                for o in book['data']:
-                    if o['orderid'] == order_id:
-                        if o['status'] == 'complete':
-                            return {'status': 'FILLED', 'price': float(o['averageprice'])}
-                        elif o['status'] in ['rejected', 'cancelled']:
-                            return {'status': o['status'].upper()}
-        return {'status': 'TIMEOUT'}
+        
+        from bot.core.order_feed import order_feed
+        logger.info(f">>> [Gamma Blast] Waiting for WebSocket Fill Event ({order_id})...")
+        
+        result = order_feed.wait_for_fill(order_id, timeout=10)
+        
+        if result['status'] == 'TIMEOUT':
+             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
+        
+        return result
 
     def calculate_adx(self, df, period=14):
         # Local ADX calc or use analysis file
