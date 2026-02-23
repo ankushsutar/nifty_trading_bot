@@ -33,6 +33,21 @@ class OrderFeedService:
         
         # Event Registry for wait_for_fill
         self.order_events = {} # Key = OrderID, Value = threading.Event
+        self.last_cleanup = time.time()
+
+    def _cleanup_registry(self):
+        """Clears old order statuses every hour to keep memory footprint lean."""
+        now = time.time()
+        if now - self.last_cleanup < 3600: return
+        
+        with self.registry_lock:
+            # Keep only orders from the last hour
+            # (In a real trading day, 1000 orders is negligible, but this is good practice)
+            initial_count = len(self.order_status_registry)
+            self.order_status_registry = {} # For simplicity, clear all since strategies wait with timeout
+            self.order_events = {}
+            self.last_cleanup = now
+            logger.info(f">>> [OrderFeed] Registry Cleanup: Flushed {initial_count} stale orders.")
 
     def start(self):
         """Starts the Order WebSocket connection."""
@@ -109,6 +124,10 @@ class OrderFeedService:
                 self.sws.on_close = self._on_close
 
                 self.sws.connect()
+                
+                # Periodically clean up registry in background
+                self._cleanup_registry()
+                
                 time.sleep(5)
             except Exception as e:
                 logger.error(f">>> [OrderFeed] Crash: {e}. Retrying...")

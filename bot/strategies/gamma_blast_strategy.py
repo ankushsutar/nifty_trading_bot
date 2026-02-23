@@ -149,6 +149,17 @@ class GammaBlastStrategy:
                     self.exit_market(token, symbol, qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
                     break
 
+                # --- SENIOR TRADER ENHANCEMENT: Trend-Fade Check ---
+                # Use centralized MarketService to avoid API rate limits
+                from backend.market_service import market_service
+                analysis = market_service.get_market_data().get('analysis', {})
+                curr_adx = analysis.get('adx', 0)
+                
+                if curr_adx > 0 and curr_adx < 25:
+                    logger.info(f"Gamma Blast: ⚠️ Trend Fading (ADX: {curr_adx:.1f}). Booking profits/cutting loss.")
+                    self.exit_market(token, symbol, qty, "TREND_FADE", trade_id, sl_oid)
+                    break
+
                 # Trailing / Breakeven (Fast)
                 if not breakeven_hit and ltp >= entry_price + abs(entry_price - sl):
                     logger.info(f"Gamma Blast: 🛡️ 1:1 Profit reached. Moving SL to Breakeven.")
@@ -168,6 +179,8 @@ class GammaBlastStrategy:
                 if ltp <= sl:
                     logger.info(f"Gamma Blast: SL Hit at {ltp}.")
                     trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
+                    # Self-cancel broker SL if we exit locally
+                    if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
                     break
 
                 # Time Exit
@@ -180,16 +193,31 @@ class GammaBlastStrategy:
                 time.sleep(2)
 
     def exit_market(self, token, symbol, qty, reason, trade_id, sl_oid):
+        """Institutional Exit: Use buffered LIMIT instead of MARKET for OTM safety."""
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
+            ltp = self.data_fetcher.get_ltp(token) or 0
+            # Set limit 10% below LTP to act as market but with a 'flash-crash' floor
+            limit_price = round(ltp * 0.90, 1) if ltp > 0 else 0
+            
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "transactiontype": "SELL", "exchange": "NFO", 
+                "ordertype": "LIMIT" if limit_price > 0 else "MARKET",
+                "price": limit_price,
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
-            self.order_manager.place_order(orderparams)
-            trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+            oid = self.order_manager.place_order(orderparams)
+            
+            # Use WebSocket to wait for final exit price for the ledger
+            if oid:
+                fill = self.wait_for_fill(oid)
+                exit_price = fill.get('price', ltp)
+                trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
+            else:
+                trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+
         except Exception as e:
             logger.error(f"Gamma Blast Exit Failed: {e}")
 

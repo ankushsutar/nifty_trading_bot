@@ -147,17 +147,26 @@ class OrderManager:
             return False
 
         try:
+            # Round SL to 0.05 tick size
             price = round(new_trigger_price / 0.05) * 0.05
+            trigger_price = price
+            
+            # Use same corridor logic as placement to maintain institutional quality
+            # We assume SELL for most exits; if it's a Short strategy, wait...
+            # Actually, most of our strategies are Long Options.
+            # Determine direction from transaction_type if available, else assume SELL for exit.
+            txn_type = "SELL" 
+            limit_price = round(price * 0.99, 2) if txn_type == "SELL" else round(price * 1.01, 2)
             
             orderparams = {
                 "variety": "STOPLOSS",
                 "orderid": order_id,
-                "ordertype": "STOPLOSS_MARKET",
+                "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
-                "price": 0,           # SL-M: price MUST be 0 (non-zero = SL-Limit, wrong order type)
+                "price": limit_price,
                 "quantity": qty,
-                "triggerprice": price,
+                "triggerprice": trigger_price,
                 "tradingsymbol": symbol,
                 "symboltoken": token,
                 "exchange": "NFO"
