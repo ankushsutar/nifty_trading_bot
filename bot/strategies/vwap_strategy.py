@@ -291,6 +291,13 @@ class VWAPStrategy:
                         sl = entry_price # Update local SL for monitoring
                         if trade_id: trade_repo.update_sl(trade_id, sl)
                         breakeven_hit = True
+
+                # --- GLOBAL SAFETY KILL SWITCH ---
+                unrealized_pnl = (ltp - entry_price) * qty
+                if not self.gatekeeper.check_max_daily_loss(unrealized_pnl):
+                    logger.critical(f"VWAP: 🛑 EMERGENCY EXIT - Global Loss Limit Hit.")
+                    self.exit_at_market(token, symbol, qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
+                    break
                 
                 # 1. Physical SL Check (Hard Cap)
                 if ltp <= sl:

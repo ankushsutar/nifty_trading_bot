@@ -211,6 +211,19 @@ class NiftyStrategy:
                         self.exit_all_market(quantity, "TARGET")
                         break
                 
+                # --- GLOBAL SAFETY KILL SWITCH ---
+                # Combined Unrealized P&L for Short Straddle
+                if ce_ltp and pe_ltp:
+                    # For SELL, PnL = (Entry - Current)
+                    ce_pnl = (self.entry_prices.get('CE', 0) - ce_ltp) * quantity
+                    pe_pnl = (self.entry_prices.get('PE', 0) - pe_ltp) * quantity
+                    combined_unrealized = ce_pnl + pe_pnl
+                    
+                    if not self.gatekeeper.check_max_daily_loss(combined_unrealized):
+                        logger.critical(f"Straddle: 🛑 EMERGENCY EXIT - Global Loss Limit Hit.")
+                        self.exit_all_market(quantity, "MAX_DAILY_LOSS")
+                        break
+                
             except Exception as e:
                 logger.error(f"Monitor: {e}")
                 time.sleep(5)
@@ -286,11 +299,11 @@ class NiftyStrategy:
     # --- Helpers ---
     def get_atm_strike(self):
         try:
-            from backend.market_service import market_service
-            data = market_service.get_market_data()
-            ltp = data.get('nifty', 0.0)
-            if ltp > 0: return int(round(ltp / 50) * 50)
-        except: pass
+            ltp = self.data_fetcher.get_ltp("99926000")
+            if ltp and ltp > 0: 
+                return int(round(ltp / 50) * 50)
+        except Exception as e:
+            logger.warning(f"Straddle get_atm_strike error: {e}")
         return None
 
     def get_ltp(self, token):

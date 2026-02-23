@@ -159,15 +159,35 @@ class SafetyGatekeeper:
             logger.error(f">>> [Gatekeeper] OrderBook Check Error: {e}")
             return False
 
-    def check_max_daily_loss(self, current_pnl):
+    def get_daily_realized_pnl(self):
+        """Fetches total realized P&L for today from the repository."""
+        try:
+            from bot.core.trade_repo import trade_repo
+            mode = "PAPER" if self.dry_run else "LIVE"
+            today_trades = trade_repo.get_today_trades(mode=mode)
+            # Sum PnL of all CLOSED trades
+            return sum(t.get('pnl', 0.0) or 0.0 for t in today_trades if t.get('status') == 'CLOSED')
+        except Exception as e:
+            logger.error(f"Error fetching daily realized P&L: {e}")
+            return 0.0
+
+    def check_max_daily_loss(self, active_unrealized_pnl=0.0):
         """
-        Rule: Stop trading if loss exceeds MAX_DAILY_LOSS from Config.
-        Tuned for ₹8,000 capital: -₹500 (6.25% of capital).
+        Rule: Stop trading if (Realized + Unrealized) loss exceeds MAX_DAILY_LOSS.
+        Returns: 
+          - True: Safe to continue.
+          - False: Limit reached. Kill trades.
         """
         from bot.config.settings import Config
-        max_loss = Config.MAX_DAILY_LOSS  # e.g. -500.0
-        if current_pnl <= max_loss:
-             logger.critical(f">>> [Gatekeeper] 🛑 MAX DAILY LOSS HIT ({current_pnl} <= {max_loss}). Halting Trading.")
+        max_loss = Config.MAX_DAILY_LOSS  # e.g. -800.0
+        
+        realized_pnl = self.get_daily_realized_pnl()
+        total_pnl = realized_pnl + active_unrealized_pnl
+        
+        if total_pnl <= max_loss:
+             logger.critical(f">>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT!")
+             logger.critical(f"    Realized: ₹{realized_pnl:.2f} | Unrealized: ₹{active_unrealized_pnl:.2f} | Total: ₹{total_pnl:.2f}")
+             logger.critical(f"    Limit: ₹{max_loss:.2f}. Halting Operations.")
              return False
         return True
 

@@ -204,50 +204,29 @@ class MomentumStrategy:
                      self.last_sync_time = time.time()
 
                 if self.active_position:
-                    if time.time() - self.last_trailing_check > 3:
-                        if self.check_trailing_stop():
-                            pass 
+                    # SAFETY KILL SWITCH (Zero-Throttle)
+                    # We check P&L every iteration (0.5s) to prevent runaway losses.
+                    try:
+                        token = self.active_position['token']
+                        symbol = self.active_position['symbol']
+                        entry_price = self.active_position['entry_price']
+                        qty = self.active_position['qty']
                         
-                        else:
-                            try:
-                                token = self.active_position['token']
-                                symbol = self.active_position['symbol']
-                                entry_price = self.active_position['entry_price']
-                                qty = self.active_position['qty']
-                                
-                                curr_ltp = 0
-                                # 1. Try WebSocket Feed (Fast & Free)
-                                ws_ltp = market_feed.get_ltp(token)
-                                if ws_ltp:
-                                    curr_ltp = ws_ltp
-                                
-                                # 2. Fallback to REST API (Costly)
-                                if curr_ltp == 0:
-                                    # FIX: Check circuit breaker before polling REST LTP
-                                    from bot.utils.rate_limiter import rate_limiter
-                                    if rate_limiter.check_circuit_breaker() == 0:
-                                        rate_limiter.wait()
-                                        ltp_check = self.api.ltpData("NFO", symbol, token)
-                                        if ltp_check and ltp_check.get('status'):
-                                            curr_ltp = float(ltp_check['data']['ltp'])
-                                            # Push to market_feed cache to avoid immediate re-fetch
-                                            # (Actually market_feed is read-only for us, but this helps logic flow)
-                                    else:
-                                        pass
+                        curr_ltp = market_feed.get_ltp(token)
+                        
+                        if curr_ltp and curr_ltp > 0:
+                            curr_unrealized_pnl = (curr_ltp - entry_price) * qty
+                            # Global Safety Check (Realized + This Unrealized)
+                            if not self.gatekeeper.check_max_daily_loss(curr_unrealized_pnl):
+                                logger.critical(f"🛑 EMERGENCY EXIT: Global Loss Limit Breached.")
+                                self.close_position("MAX_DAILY_LOSS")
+                                break 
+                    except Exception as e:
+                        logger.error(f"Global Safety Check Error: {e}")
 
-
-                                if curr_ltp > 0:
-                                    curr_pnl = (curr_ltp - entry_price) * qty
-                                    if not self.gatekeeper.check_max_daily_loss(curr_pnl):
-                                        logger.error(f"🛑 ACTIVE MAX LOSS HIT (PnL: {curr_pnl}). Force Closing!")
-                                        self.close_position("MAX_DAILY_LOSS")
-                                        break 
-                            except Exception as e:
-                                logger.error(f"Active PnL Check Error: {e}")
-                                if "Access denied" in str(e) or "AB1004" in str(e):
-                                    from bot.utils.rate_limiter import rate_limiter
-                                    rate_limiter.trigger_circuit_breaker()
-
+                    # TRAILING STOP & SYNC (Throttled)
+                    if time.time() - self.last_trailing_check > 3:
+                        self.check_trailing_stop()
                         self.last_trailing_check = time.time()
 
                 now_time = datetime.datetime.now().time()
@@ -635,12 +614,8 @@ class MomentumStrategy:
             return
 
         try:
-             # Calculate Limit Price to cap slippage
-             buffer = Config.ENTRY_SLIPPAGE_BUFFER_PERCENT
-             if leg == "CE":
-                 limit_price = quote_ltp * (1.0 + buffer)
-             else:
-                 limit_price = quote_ltp * (1.0 - buffer)
+             # For BUY orders, we are willing to pay slightly ABOVE current LTP to ensure fill.
+             limit_price = quote_ltp * (1.0 + buffer)
                  
              oid = self.order_manager.place_limit_order(symbol, token, qty, limit_price)
              

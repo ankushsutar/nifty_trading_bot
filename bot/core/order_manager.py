@@ -80,18 +80,23 @@ class OrderManager:
             price = round(sl_price / 0.05) * 0.05
             trigger_price = price 
             
+            # Institutional Grade: Use STOPLOSS_LIMIT to prevent broker rejections and flash-crash slippage.
+            # We set 'price' slightly below 'trigger_price' for SELL SL to ensure fill within a corridor.
+            trigger_price = price
+            limit_price = round(price * 0.99, 2) if transaction_type == "SELL" else round(price * 1.01, 2)
+            
             orderparams = {
                 "variety": "STOPLOSS",
                 "tradingsymbol": symbol,
                 "symboltoken": token,
                 "transactiontype": transaction_type, 
                 "exchange": "NFO",
-                "ordertype": "STOPLOSS_MARKET", # Correct SL-M type
+                "ordertype": "STOPLOSS_LIMIT", 
                 "producttype": "INTRADAY",
                 "duration": "DAY",
                 "quantity": qty,
-                "triggerprice": trigger_price, # Most Important for SL
-                "price": 0  # Must be 0 for SL-Market orders per Angel One API spec
+                "triggerprice": trigger_price,
+                "price": limit_price
             }
             
             logger.info(f"🛡️ Placing Broker-Side SL (SL-M) for {symbol} @ {trigger_price}")
