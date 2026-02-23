@@ -17,7 +17,9 @@ class OrderManager:
 
         try:
             if self.dry_run:
-                logger.info(f"🧪 [DRY RUN] Simulating Order: {order_params.get('tradingsymbol')} {order_params.get('transactiontype')} {order_params.get('quantity')}")
+                # Add price if available for more realistic dry run logging
+                price_str = f" @ {order_params.get('price')}" if order_params.get('price') else ""
+                logger.info(f"🧪 [DRY RUN] Simulating Order: {order_params.get('tradingsymbol')} {order_params.get('transactiontype')} {order_params.get('quantity')}{price_str}")
                 return f"DRY_{int(time.time())}"
 
             rate_limiter.wait()
@@ -34,6 +36,34 @@ class OrderManager:
             return response # Mock returns string ID directly
         except Exception as e:
             logger.error(f"Order Placement Error: {e}")
+            return None
+
+    def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY"):
+        """
+        Places a LIMIT order with optional price rounding.
+        """
+        try:
+            # Round to 0.05 tick size
+            limit_price = round(price / 0.05) * 0.05
+            
+            orderparams = {
+                "variety": "NORMAL",
+                "tradingsymbol": symbol,
+                "symboltoken": token,
+                "transactiontype": transaction_type,
+                "exchange": "NFO",
+                "ordertype": "LIMIT",
+                "producttype": "INTRADAY",
+                "duration": "DAY",
+                "quantity": qty,
+                "price": limit_price
+            }
+            
+            logger.info(f"⚡ Placing LIMIT Order for {symbol} @ {limit_price}")
+            return self.place_order(orderparams)
+            
+        except Exception as e:
+            logger.error(f"Limit Order Error: {e}")
             return None
 
     def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL"):
@@ -56,7 +86,7 @@ class OrderManager:
                 "symboltoken": token,
                 "transactiontype": transaction_type, 
                 "exchange": "NFO",
-                "ordertype": "MARKET", # SL-M
+                "ordertype": "STOPLOSS_MARKET", # Correct SL-M type
                 "producttype": "INTRADAY",
                 "duration": "DAY",
                 "quantity": qty,
@@ -112,7 +142,7 @@ class OrderManager:
             orderparams = {
                 "variety": "STOPLOSS",
                 "orderid": order_id,
-                "ordertype": "MARKET",
+                "ordertype": "STOPLOSS_MARKET",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
                 "price": 0,           # SL-M: price MUST be 0 (non-zero = SL-Limit, wrong order type)

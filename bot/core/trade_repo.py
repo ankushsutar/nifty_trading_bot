@@ -75,6 +75,7 @@ class TradeRepository:
                     "mode": mode,
                     "strategy": strategy,
                     "status": "OPEN",
+                    "partially_booked": False,
                     "created_at": datetime.datetime.now(),
                     "updated_at": datetime.datetime.now()
                 }
@@ -102,6 +103,34 @@ class TradeRepository:
             )
         except Exception as e:
             logger.error(f"TradeRepository Update SL Error: {e}")
+
+    def reduce_position(self, trade_id, reduction_qty, exit_price, pnl_segment, reason):
+        """Reduces the quantity of an open trade (Partial Booking). Status remains OPEN."""
+        if not self.client: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {
+                    "$inc": {"qty": -reduction_qty, "pnl": pnl_segment},
+                    "$set": {
+                        "partially_booked": True,
+                        "last_partial_exit_price": exit_price,
+                        "updated_at": datetime.datetime.now()
+                    },
+                    "$push": {
+                        "partial_exits": {
+                            "qty": reduction_qty,
+                            "price": exit_price,
+                            "pnl": pnl_segment,
+                            "reason": reason,
+                            "time": datetime.datetime.now()
+                        }
+                    }
+                }
+            )
+            logger.info(f"TradeRepository: Trade #{trade_id} Position Reduced by {reduction_qty}.")
+        except Exception as e:
+            logger.error(f"TradeRepository Reduce Position Error: {e}")
 
     def close_trade(self, trade_id=None, symbol=None, exit_price=0.0, pnl=0.0, exit_reason="UNKNOWN"):
         """Closes trade by ID or all open trades for a symbol."""

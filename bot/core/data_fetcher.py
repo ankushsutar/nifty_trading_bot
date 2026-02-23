@@ -85,15 +85,19 @@ class DataFetcher:
         """
         # 0. WebSocket Fast Path for ONE_MINUTE (ORB/OHL opening range)
         # market_feed builds 1-min candles from ticks in real-time — no REST needed.
-        if interval == "ONE_MINUTE":
+        if interval in ["ONE_MINUTE", "FIVE_MINUTE"]:
             try:
                 from bot.core.market_feed import market_feed
-                ws_candles = market_feed.get_1min_candles(symbol_token)
+                if interval == "ONE_MINUTE":
+                    ws_candles = market_feed.get_1min_candles(symbol_token)
+                else:
+                    ws_candles = market_feed.get_5min_candles(symbol_token)
+                
                 if ws_candles is not None and len(ws_candles) >= 1:
-                    logger.debug(f"DataFetcher: ONE_MINUTE from WebSocket ring-buffer ({len(ws_candles)} candles)")
+                    logger.debug(f"DataFetcher: {interval} from WebSocket ring-buffer ({len(ws_candles)} candles)")
                     return ws_candles
             except Exception as e:
-                logger.debug(f"DataFetcher: WebSocket 1-min path unavailable: {e}")
+                logger.debug(f"DataFetcher: WebSocket {interval} path unavailable: {e}")
             # Fall through to REST if WebSocket buffer is empty
 
         # 1. Check In-Memory Cache first

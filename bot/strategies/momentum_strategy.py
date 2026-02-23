@@ -80,7 +80,8 @@ class MomentumStrategy:
                         'qty': db_trade['qty'],
                         'entry_price': db_trade['entry_price'],
                         'sl_price': db_trade['sl_price'],
-                        'atr': 0.0 
+                        'atr': 0.0,
+                        'partially_booked': db_trade.get('partially_booked', False)
                     }
                     logger.info(f"♻️ PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
             return
@@ -128,7 +129,8 @@ class MomentumStrategy:
                      db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
                      if db_trade and db_trade['symbol'] == self.active_position['symbol']:
                          self.active_position['id'] = db_trade['id']
-                         logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']}")
+                         self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
+                         logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} (Partial: {self.active_position['partially_booked']})")
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
@@ -170,15 +172,10 @@ class MomentumStrategy:
 
         try:
             logger.info("📡 Performing Initial Market Analysis Pulse...")
-            trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
+            trend, ema9, ema21, rsi, adx, atr, regime, bbw = self.analyze_market_trend()
             htf_trend = self.calculate_htf_trend()
-            # Reuse the candle df already fetched by analyze_market_trend (stored in self._last_df)
-            # This avoids a duplicate FIVE_MINUTE REST call for BBW calculation.
-            _bbw_df = getattr(self, '_last_df', None)
-            if _bbw_df is not None and len(_bbw_df) > 0:
-                bbw = self.calculate_bbw(_bbw_df).iloc[-1]
-            else:
-                bbw = 0.0
+            
+            # Initial pulse now gets bbw directly from analyze_market_trend
 
             pcr = self.oi_data.get('pcr', 0.0)
             sentiment_bias = self.oi_data.get('bias', 'NEUTRAL')
@@ -187,7 +184,8 @@ class MomentumStrategy:
                 "ema9": ema9, "ema21": ema21, "rsi": rsi, 
                 "htf_trend": htf_trend, "adx": adx,
                 "atr": atr, "regime": regime,
-                "bbw": bbw, "pcr": pcr, "sentiment": sentiment_bias
+                "bbw": bbw, # Use shared BBW return value
+                "pcr": pcr, "sentiment": sentiment_bias
             }
             self.export_state()
             logger.info(f"✅ Initial Pulse Complete. Regime: {regime}")
@@ -263,26 +261,11 @@ class MomentumStrategy:
                 if datetime.datetime.now() >= next_check:
                     logger.info(f"⏰ Candle Closed. Running Trend Analysis...")
                     
-                    trend, ema9, ema21, rsi, adx, atr, regime = self.analyze_market_trend()
+                    trend, ema9, ema21, rsi, adx, atr, regime, bbw = self.analyze_market_trend()
                     htf_trend = self.calculate_htf_trend()
                     
-                    # Optimization: Reuse the DF from analyze_market_trend for BBW
-                    # This saves one redundant API call every 5 minutes.
-                    bbw = 0.0
-                    try:
-                        _bbw_df = getattr(self, '_last_df', None)
-                        if _bbw_df is not None and not _bbw_df.empty:
-                            bbw = self.calculate_bbw(_bbw_df).iloc[-1]
-                        else:
-                            # Fallback if _last_df missing/empty
-                            from bot.utils.rate_limiter import rate_limiter
-                            if rate_limiter.check_circuit_breaker() == 0:
-                                df_fallback = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
-                                if df_fallback is not None:
-                                    bbw = self.calculate_bbw(df_fallback).iloc[-1]
-                    except Exception as e:
-                         # logger.debug(f"BBW Calc Warning: {e}")
-                         pass
+                    # BBW is now part of the shared analysis returned by analyze_market_trend()
+                    bbw = float(self.last_analysis.get('bbw', 0.0))
                     
                     pcr = self.oi_data.get('pcr', 0.0)
                     sentiment_bias = self.oi_data.get('bias', 'NEUTRAL')
@@ -382,7 +365,8 @@ class MomentumStrategy:
                 analysis.get('rsi', 0),
                 analysis.get('adx', 0),
                 analysis.get('atr', 20.0),
-                analysis.get('regime', 'UNKNOWN')
+                analysis.get('regime', 'UNKNOWN'),
+                analysis.get('bbw', 0.0)
             )
 
         is_mock_api = self.api.__class__.__name__ == 'MockSmartConnect'
@@ -395,7 +379,7 @@ class MomentumStrategy:
             self._last_df = df
             
         if df is None or df.empty: 
-            return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN"
+            return "NEUTRAL", 0, 0, 0, 0, 0, "UNKNOWN", 0.0
         
         regime_meta = self.regime_classifier.classify(df)
         
@@ -418,6 +402,9 @@ class MomentumStrategy:
         if regime_meta['regime'] == "TRENDING":
             signal = regime_meta['trend']
         
+        # Calculate BBW locally as fallback
+        bbw = self.calculate_bbw(df).iloc[-1]
+        
         return (
             signal, 
             regime_meta['ema9'], 
@@ -425,7 +412,8 @@ class MomentumStrategy:
             regime_meta['rsi'], 
             regime_meta['adx'], 
             regime_meta['atr'], 
-            regime_meta['regime']
+            regime_meta['regime'],
+            bbw
         )
 
     def calculate_htf_trend(self):
@@ -647,15 +635,17 @@ class MomentumStrategy:
             return
 
         try:
-             orderparams = {
-                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
-                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-             }
-             oid = self.order_manager.place_order(orderparams)
+             # Calculate Limit Price to cap slippage
+             buffer = Config.ENTRY_SLIPPAGE_BUFFER_PERCENT
+             if leg == "CE":
+                 limit_price = quote_ltp * (1.0 + buffer)
+             else:
+                 limit_price = quote_ltp * (1.0 - buffer)
+                 
+             oid = self.order_manager.place_limit_order(symbol, token, qty, limit_price)
              
              if not oid:
-                 logger.error("❌ Order Placement Failed! (API returned None).")
+                 logger.error("❌ Limit Order Placement Failed! (API returned None).")
                  return
 
              logger.info(f"Success: Order Placed: {oid}")
@@ -714,16 +704,21 @@ class MomentumStrategy:
                             elif o['status'] in ['rejected', 'cancelled']:
                                 return {'status': o['status'].upper(), 'message': o.get('text')}
             except: pass
+        if not self.dry_run:
+            logger.warning(f"⏳ Order {order_id} Fill Timeout! Attempting Cancellation...")
+            self.order_manager.cancel_order(order_id)
         return {'status': 'TIMEOUT', 'price': None}
 
-    def close_position(self, reason):
+    def close_position(self, reason, override_qty=None):
         if not self.active_position: return
         
         symbol = self.active_position['symbol']
         token = self.active_position['token']
-        qty = self.active_position['qty']
+        qty = override_qty if override_qty else self.active_position['qty']
         
-        logger.info(f"Exit: Closing {symbol} due to {reason}")
+        is_partial = override_qty is not None and override_qty < self.active_position['qty']
+        
+        logger.info(f"Exit: Closing {qty} shares of {symbol} (Reason: {reason})")
         
         exit_price = 0
         try:
@@ -811,31 +806,48 @@ class MomentumStrategy:
         try:
              entry_p = self.active_position['entry_price']
              pnl_val = (exit_price - entry_p) * qty
-             # FIX Obs #4: Use trade_id for precision — symbol-based close could affect multiple trades
              trade_id = self.active_position.get('id')
-             if trade_id:
-                 trade_repo.close_trade(
-                     trade_id=trade_id,
-                     exit_price=exit_price, 
-                     pnl=round(pnl_val, 2), 
-                     exit_reason=reason
-                 )
+             
+             if is_partial:
+                 if trade_id:
+                     trade_repo.reduce_position(
+                         trade_id=trade_id,
+                         reduction_qty=qty,
+                         exit_price=exit_price,
+                         pnl_segment=round(pnl_val, 2),
+                         reason=reason
+                     )
+                 
+                 self.active_position['qty'] -= qty
+                 self.active_position['partially_booked'] = True
+                 logger.info(f"⚖️ Position Reduced. Remaining Qty: {self.active_position['qty']}")
              else:
-                 # Fallback to symbol if no ID (edge case: trade not saved to DB)
-                 trade_repo.close_trade(
-                     symbol=symbol, 
-                     exit_price=exit_price, 
-                     pnl=round(pnl_val, 2), 
-                     exit_reason=reason
-                 )
-             self.active_position = None
-             logger.info("✅ Strategy State: Trade Closed.")
-        except Exception as e:
-             logger.error(f"DB Close Error: {e}")
+                 if trade_id:
+                     trade_repo.close_trade(
+                         trade_id=trade_id,
+                         exit_price=exit_price, 
+                         pnl=round(pnl_val, 2), 
+                         exit_reason=reason
+                     )
+                 else:
+                     trade_repo.close_trade(
+                         symbol=symbol, 
+                         exit_price=exit_price, 
+                         pnl=round(pnl_val, 2), 
+                         exit_reason=reason
+                     )
+                 self.active_position = None
+                 logger.info("✅ Strategy State: Trade Closed.")
+             
+         except Exception as e:
+             logger.error(f"DB Update Error: {e}")
 
     def check_trailing_stop(self):
         """
-        ATR-Based Trailing Stop.
+        ATR-Based Multi-Stage Trailing Stop.
+        Stage 1: @ 1.0 ATR -> Move SL to Break-Even.
+        Stage 2: @ 1.5 ATR -> Close 50% Position.
+        Stage 3: Trail remainder with 0.5 ATR buffer.
         """
         if not self.active_position: return False
         
@@ -844,13 +856,13 @@ class MomentumStrategy:
         entry_price = self.active_position.get('entry_price', 0.0)
         current_sl = self.active_position.get('sl_price', 0.0)
         atr_at_entry = self.active_position.get('atr', 20.0)
+        is_partial = self.active_position.get('partially_booked', False)
         
         if entry_price == 0: return False 
         
         ltp = market_feed.get_ltp(token)
         if not ltp:
              try:
-                 # Fallback if WS not available for this token
                  from bot.utils.rate_limiter import rate_limiter
                  rate_limiter.wait()
                  q_resp = self.api.ltpData("NFO", symbol, token)
@@ -862,23 +874,36 @@ class MomentumStrategy:
         
         if not ltp or ltp == 0: return False
         
+        # 0. Basic Stop Loss Check
         if current_sl > 0 and ltp <= current_sl:
-            logger.info(f"🛑 Trailing Stop Hit! Price: {ltp} <= SL: {current_sl}")
-            self.close_position("TRAILING_STOP")
+            logger.info(f"🛑 Stop Hit! Price: {ltp} <= SL: {current_sl}")
+            self.close_position("STOPLOSS_HIT")
             return True
             
         profit_points = ltp - entry_price
         
-        opt_atr = atr_at_entry * 0.5
-        if opt_atr < 5: opt_atr = 5
+        # We use half the ATR for trailing to be reactive in options
+        trail_atr = atr_at_entry * 0.5
+        if trail_atr < 5: trail_atr = 5
         
-        if profit_points > (1.0 * opt_atr) and current_sl < entry_price:
+        # Stage 1: Break-Even (Move SL to Entry +  ₹1 buffer)
+        if profit_points > (1.0 * trail_atr) and current_sl < entry_price:
             new_sl = entry_price + 1.0 
+            logger.info("🎯 Stage 1 Hit (1.0 ATR). Moving SL to Break-Even.")
             self.update_sl(new_sl, ltp)
             return False
 
-        if profit_points > (2.0 * opt_atr):
-            target_sl = ltp - (1.0 * opt_atr)
+        # Stage 2: Partial Profit Booking (Close 50%)
+        if profit_points > (1.5 * trail_atr) and not is_partial:
+            qty_to_close = self.active_position['qty'] // 2
+            if qty_to_close >= Config.NIFTY_LOT_SIZE: # Only if we have >1 lot
+                logger.info(f"💰 Stage 2 Hit (1.5 ATR). Booking 50% Profit ({qty_to_close} qty).")
+                self.close_position("PARTIAL_PROFIT", override_qty=qty_to_close)
+                return False
+
+        # Stage 3: Aggressive Trailing for remainder
+        if profit_points > (2.0 * trail_atr):
+            target_sl = ltp - trail_atr
             if target_sl > current_sl:
                 self.update_sl(target_sl, ltp)
                 

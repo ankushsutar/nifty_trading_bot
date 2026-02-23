@@ -31,7 +31,8 @@ class Config:
     # Risk Management (Tuned for ₹8,000 capital)
     RISK_PER_TRADE_PERCENT = 0.06        # 6% risk = ~₹480 per trade (1 lot, ~7pt option SL)
     MAX_CAPITAL_USAGE_PERCENT = 0.90     # Allow up to ₹7,200 per trade (covers 1 lot ATM premium)
-    MAX_DAILY_LOSS = -500.0              # Halt after ₹500 loss (6.25% of capital — tight but safe)
+    ENTRY_SLIPPAGE_BUFFER_PERCENT = 0.01 # 1% buffer for LIMIT orders
+    MAX_DAILY_LOSS = -800.0              # Halt after ₹800 loss (10% of capital — balanced room for volatility)
 
     # Infrastructure
     STATIC_IP = os.getenv("STATIC_IP") # Optional: Your whitelisted static IP

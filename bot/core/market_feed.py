@@ -31,6 +31,7 @@ class MarketFeedService:
         self.latest_data = {} # Key: Token, Value: {ltp, timestamp, ...}
         self.running = False
         self.thread = None
+        self.data_lock = threading.Lock() # For thread-safe history access
         
         # Dynamic Management
         self.token_lookup = TokenLookup()
@@ -44,6 +45,7 @@ class MarketFeedService:
         self.last_vol_cache = {} # Key: Token, Value: Total Day Volume
         # Closed candle ring buffer — up to 100 candles per token (full intraday)
         self._1min_history = {} # Key: Token, Value: list of closed candle dicts
+        self._5min_history = {} # Key: Token, Value: list of closed 5-min candle dicts
         
     def start(self):
         """Starts the WebSocket connection in a background thread."""
@@ -259,12 +261,16 @@ class MarketFeedService:
                             })
                             if len(history) > 100:  # ring buffer cap
                                 self._1min_history[token] = history[-100:]
-                        self.candle_cache[token] = {
-                            'minute_ts': minute_ts,
-                            'timestamp': timestamp_str,
-                            'open': ltp_val, 'high': ltp_val, 'low': ltp_val, 'close': ltp_val,
-                            'volume': vol_delta
-                        }
+                            if len(history) > 100:  # ring buffer cap
+                                self._1min_history[token] = history[-100:]
+                        
+                        with self.data_lock:
+                            self.candle_cache[token] = {
+                                'minute_ts': minute_ts,
+                                'timestamp': timestamp_str,
+                                'open': ltp_val, 'high': ltp_val, 'low': ltp_val, 'close': ltp_val,
+                                'volume': vol_delta
+                            }
                     else:
                         current['high'] = max(current['high'], ltp_val)
                         current['low'] = min(current['low'], ltp_val)
@@ -276,12 +282,28 @@ class MarketFeedService:
                     current_5m = self.candle_cache_5m.get(token)
                     
                     if not current_5m or current_5m['minute_ts'] != five_min_ts:
-                        self.candle_cache_5m[token] = {
-                            'minute_ts': five_min_ts,
-                            'timestamp': timestamp_str,
-                            'open': ltp_val, 'high': ltp_val, 'low': ltp_val, 'close': ltp_val,
-                            'volume': vol_delta
-                        }
+                        # Archive completed 5-min candle
+                        if current_5m and current_5m['minute_ts'] != five_min_ts:
+                            history_5m = self._5min_history.setdefault(token, [])
+                            history_5m.append({
+                                'timestamp': current_5m['timestamp'],
+                                'open': current_5m['open'], 'high': current_5m['high'],
+                                'low': current_5m['low'], 'close': current_5m['close'],
+                                'volume': current_5m['volume']
+                            })
+                            if len(history_5m) > 100:
+                                self._5min_history[token] = history_5m[-100:]
+                                
+                            if len(history_5m) > 100:
+                                self._5min_history[token] = history_5m[-100:]
+                                
+                        with self.data_lock:
+                            self.candle_cache_5m[token] = {
+                                'minute_ts': five_min_ts,
+                                'timestamp': timestamp_str,
+                                'open': ltp_val, 'high': ltp_val, 'low': ltp_val, 'close': ltp_val,
+                                'volume': vol_delta
+                            }
                     else:
                         current_5m['high'] = max(current_5m['high'], ltp_val)
                         current_5m['low'] = min(current_5m['low'], ltp_val)
@@ -353,20 +375,29 @@ class MarketFeedService:
         """
         Returns a DataFrame of closed 1-min candles from the ring buffer,
         with the current forming candle appended as the last row.
-        Returns None if no history is available yet (WebSocket not yet connected
-        or no candle boundary crossed \u2014 fall back to REST in that case).
         """
-        history = self._1min_history.get(token, [])
-        current = self.candle_cache.get(token)
+        return self._get_historical_candles(token, interval_min=1)
 
-        rows = list(history)
-        if current:
-            rows.append({
-                'timestamp': current['timestamp'],
-                'open': current['open'], 'high': current['high'],
-                'low': current['low'], 'close': current['close'],
-                'volume': current['volume']
-            })
+    def get_5min_candles(self, token):
+        """
+        Returns a DataFrame of closed 5-min candles from the ring buffer,
+        with the current forming candle appended as the last row.
+        """
+        return self._get_historical_candles(token, interval_min=5)
+
+    def _get_historical_candles(self, token, interval_min=1):
+        """Helper to construct DF from ring buffer + current candle."""
+        with self.data_lock:
+            if interval_min == 5:
+                history = self._5min_history.get(token, [])
+                current = self.candle_cache_5m.get(token)
+            else:
+                history = self._1min_history.get(token, [])
+                current = self.candle_cache.get(token)
+
+            rows = list(history)
+            if current:
+                rows.append(current.copy())
 
         if not rows:
             return None
