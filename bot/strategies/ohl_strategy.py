@@ -178,7 +178,7 @@ class OHLStrategy:
             try:
                 time.sleep(0.5) 
                 
-                ltp = self.data_fetcher.get_ltp(token)
+                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
                 if not ltp: continue
                 
                 # Risk-Free Pivot (Breakeven) Logic

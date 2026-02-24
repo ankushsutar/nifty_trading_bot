@@ -826,7 +826,7 @@ class MomentumStrategy:
         
         if entry_price == 0: return False 
         
-        ltp = market_feed.get_ltp(token)
+        ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
         if not ltp:
              try:
                  from bot.utils.rate_limiter import rate_limiter

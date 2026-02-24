@@ -159,9 +159,8 @@ class BotManager:
         from backend.market_service import market_service
         
         try:
-            # Use current_mode to filter
-            mode_filter = self.current_mode
-            today_trades = trade_repo.get_today_trades(mode=mode_filter)
+            # Fetch all daily trades regardless of session mode.
+            today_trades = trade_repo.get_today_trades()
             
             total_realized_pnl = 0.0
             total_unrealized_pnl = 0.0
@@ -210,8 +209,12 @@ class BotManager:
                     except Exception as e:
                         logger.error(f"Daily Summary Open Trade Calc Error: {e}")
                 
-                # Sanitize for JSON (Remove ObjectId)
+                # Sanitize for JSON (Remove ObjectId and serialize dates)
                 if "_id" in trade: del trade["_id"]
+                for k, v in trade.items():
+                    if hasattr(v, 'isoformat'):
+                        trade[k] = v.isoformat()
+                
                 summary_trades.append(trade)
                 
             return {
@@ -219,7 +222,7 @@ class BotManager:
                 "realized_pnl": round(total_realized_pnl, 2),
                 "unrealized_pnl": round(total_unrealized_pnl, 2),
                 "trades": summary_trades,
-                "mode": mode_filter
+                "mode": self.current_mode
             }
             
         except Exception as e:

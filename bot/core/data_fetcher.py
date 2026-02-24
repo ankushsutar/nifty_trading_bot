@@ -21,7 +21,7 @@ class DataFetcher:
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
                 # 600s cache = 10 minutes.
                 # WebSocket keeps prices live, so we only need REST for historical context.
-                cls._instance.cache_duration = 600 
+                cls._instance.cache_duration = 3600 # 1 Hour cache (Hybrid merge keeps candles live)
                 cls._instance._ab1004_cooldowns = {} # Key: token, Value: timestamp of last AB1004
                 cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
                 cls._instance.disk_cache_lock = os.path.join(os.getcwd(), "data", "cache_candles.lock")
@@ -118,11 +118,12 @@ class DataFetcher:
         # 3. AB1004 Cool-down: If we recently hit a rate limit for this token, 
         # return stale data immediately instead of hammering the API again.
         cooldown_ts = self._ab1004_cooldowns.get(symbol_token, 0)
-        if time.time() - cooldown_ts < 30: # 30s cool-down
-            logger.warning(f"DataFetcher: 🛑 AB1004 Cool-down active for {symbol_token}. Using STALE data.")
-            stale_data = self._read_disk_cache(cache_key, force_fresh=False)
+        if time.time() - cooldown_ts < 900: # 15 min cool-down
+            logger.warning(f"DataFetcher: 🛑 AB1004 Cool-down active for {symbol_token}. Using STALE data (up to 4h fallback).")
+            # Emergency: Use any available cache for up to 4 hours if broker is blocking us
+            stale_data = self._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
             if stale_data is not None:
-                 return self._merge_live_candle(stale_data.copy(), symbol_token, interval)
+                return self._merge_live_candle(stale_data, symbol_token, interval)
             return None
 
         # 4. In-Flight Deduplication: only ONE REST call per unique cache_key at a time.
@@ -181,6 +182,11 @@ class DataFetcher:
         mins = interval_map.get(interval, 5)
         
         aligned_to = self._align_to_interval(now, mins)
+        
+        # --- FIX: Shift back by 1 minute to avoid requesting unfinalized candles ---
+        # Requesting a candle exactly at its boundary can trigger AB1004/TooManyRequests
+        # if the broker's historical DB hasn't finalized it yet.
+        aligned_to = aligned_to - datetime.timedelta(minutes=1)
         
         # Default start time: 24 hours ago (ensures enough candles for indicators)
         aligned_from = aligned_to - datetime.timedelta(days=days)
@@ -249,11 +255,11 @@ class DataFetcher:
                     err_code = str(response.get('errorcode', ''))
                     
                     if err_code == 'AB1004' or "TooManyRequests" in err_msg:
-                        logger.critical(f"🛑 [CRITICAL] AB1004 Rate Limit Hit for {symbol_token}. Triggering 5-min Circuit Breaker.")
+                        logger.critical(f"🛑 [CRITICAL] AB1004 Rate Limit Hit for {symbol_token}. Triggering 60s Circuit Breaker.")
                         self._ab1004_cooldowns[symbol_token] = time.time()
                         from bot.utils.rate_limiter import rate_limiter
-                        # Trigger 300s (5-min) penalty to let the account cool down
-                        rate_limiter.trigger_circuit_breaker(300)
+                        # Trigger 60s penalty to prevent global starvation while the token cools down
+                        rate_limiter.trigger_circuit_breaker(60)
                         return None # STOP RETRYING immediately for AB1004
 
                     if attempt < max_retries - 1:
@@ -269,9 +275,9 @@ class DataFetcher:
             except Exception as e:
                 err_str = str(e)
                 if "AB1004" in err_str or "TooManyRequests" in err_str:
-                    logger.critical(f"🛑 [CRITICAL] AB1004 Exception for {symbol_token}. Triggering 5-min Circuit Breaker.")
+                    logger.critical(f"🛑 [CRITICAL] AB1004 Exception for {symbol_token}. Triggering 60s Circuit Breaker.")
                     from bot.utils.rate_limiter import rate_limiter
-                    rate_limiter.trigger_circuit_breaker(300)
+                    rate_limiter.trigger_circuit_breaker(60)
                     return None # Critical: Do not continue loop
                 
                 logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
@@ -378,8 +384,9 @@ class DataFetcher:
         return df
 
 
-    def _read_disk_cache(self, cache_key, force_fresh=True):
+    def _read_disk_cache(self, cache_key, force_fresh=True, max_age=None):
         """Reads candle data from shared disk cache (with file lock for multi-process safety)."""
+        duration = max_age if max_age is not None else self.cache_duration
         try:
             if not os.path.exists(self.disk_cache_path):
                 return None
@@ -399,7 +406,7 @@ class DataFetcher:
 
             if cache_key in full_cache:
                 entry = full_cache[cache_key]
-                if time.time() - entry['timestamp'] < self.cache_duration:
+                if time.time() - entry['timestamp'] < duration:
                     df = pd.DataFrame(entry['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
                     df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
@@ -409,12 +416,19 @@ class DataFetcher:
         return None
 
     def _write_disk_cache(self, cache_key, df):
-        """Writes candle data to shared disk cache (with exclusive file lock for multi-process safety)."""
+        """Writes candle data to shared disk cache with atomic-style write and JSON-safe timestamps."""
         try:
             os.makedirs(os.path.dirname(self.disk_cache_path), exist_ok=True)
+            
+            # 1. Prepare Serialized Data (JSON safe)
+            # Convert Timestamp objects to ISO strings
+            serializable_df = df.copy()
+            serializable_df['timestamp'] = serializable_df['timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
             lock_fd = os.open(self.disk_cache_lock, os.O_RDWR | os.O_CREAT)
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Exclusive lock for write
+                
                 full_cache = {}
                 if os.path.exists(self.disk_cache_path):
                     try:
@@ -425,13 +439,18 @@ class DataFetcher:
 
                 full_cache[cache_key] = {
                     "timestamp": time.time(),
-                    "data": df.values.tolist()
+                    "data": serializable_df.values.tolist()
                 }
 
-                with open(self.disk_cache_path, "w") as f:
+                # 2. Atomic Write: Write to temp file then rename (prevents corruption on crash)
+                temp_path = self.disk_cache_path + ".tmp"
+                with open(temp_path, "w") as f:
                     json.dump(full_cache, f)
+                
+                os.replace(temp_path, self.disk_cache_path)
+                
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Disk Cache Write Error: {e}")

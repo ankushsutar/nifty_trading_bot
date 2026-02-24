@@ -257,7 +257,21 @@ class MarketService:
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
 
                     # 1. Regime Analysis
-                    df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+                    # SMARTER CHECK: If we already have fresh enough candle data in cache, 
+                    # skip firing a REST call to preserve API quota.
+                    cache_key = "99926000_FIVE_MINUTE_1"
+                    df = self.data_fetcher._read_disk_cache(cache_key)
+                    if df is None:
+                        # Only fetch from REST if cache is missing or stale
+                        df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+                    
+                    if df is None:
+                        # EMERGENCY FALLBACK: If API is blocked (AB1004), use ANY cache for up to 4h
+                        logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
+                        df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
+                    else:
+                        logger.info("MarketService: Using Shared Candle Cache for Regime Analysis. 💡")
+                    
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)
                         

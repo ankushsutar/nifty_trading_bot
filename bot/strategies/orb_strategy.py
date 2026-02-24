@@ -220,7 +220,7 @@ class ORBStrategy:
         while self.running:
             try:
                 time.sleep(0.5)
-                ltp = self.data_fetcher.get_ltp(token)
+                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
                 # Risk-Free Pivot (Breakeven) Logic
                 # If Price moves 1:1 RR in our favor, move SL to Entry.
                 if not breakeven_hit:

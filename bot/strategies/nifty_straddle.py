@@ -304,7 +304,7 @@ class NiftyStrategy:
                 if now - last_time < 0.9:
                     return last_val
 
-            val = self.data_fetcher.get_ltp(token)
+            val = self.data_fetcher.get_ltp(token, exchange="NFO")
             if val:
                 self._ltp_cache[token] = (now, val)
                 return val
