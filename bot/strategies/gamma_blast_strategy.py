@@ -71,9 +71,9 @@ class GammaBlastStrategy:
         # Nifty moves in 50pt increments. OTM is 50-100 pts away.
         strike = round(ltp / 50) * 50
         if leg == "CE":
-            strike += 100 # Buy 2 strikes OTM
+            strike += 50 # Buy 1 strikes OTM
         else:
-            strike -= 100 # Buy 2 strikes OTM
+            strike -= 50 # Buy 1 strikes OTM
             
         logger.info(f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | Selected OTM Strike={strike}")
         
@@ -93,8 +93,8 @@ class GammaBlastStrategy:
         # Fetch Option LTP for precise limit placement
         quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
         
-        # Place LIMIT Order with 1% buffer (Speed is key, but slippage is high on OTM)
-        limit_price = round(quote_ltp * (1.01 if leg == "CE" else 1.01), 1)
+        # Place LIMIT Order with 5% buffer (Speed is key, but slippage is high on OTM)
+        limit_price = round(quote_ltp * (1.05 if leg == "CE" else 1.05), 1)
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) @ Limit: {limit_price}")
         
@@ -157,8 +157,9 @@ class GammaBlastStrategy:
                 
                 if curr_adx > 0 and curr_adx < 25:
                     logger.info(f"Gamma Blast: ⚠️ Trend Fading (ADX: {curr_adx:.1f}). Booking profits/cutting loss.")
-                    self.exit_market(token, symbol, qty, "TREND_FADE", trade_id, sl_oid)
-                    break
+                    if self.exit_market(token, symbol, qty, "TREND_FADE", trade_id, sl_oid):
+                        break
+                    else: continue
 
                 # Trailing / Breakeven (Fast)
                 if not breakeven_hit and ltp >= entry_price + abs(entry_price - sl):
@@ -172,8 +173,9 @@ class GammaBlastStrategy:
                 # Target Hit (The "Blast")
                 if ltp >= target:
                     logger.info(f"💎 GAMMA BLAST HIT! Target {target} reached. Liquidating.")
-                    self.exit_market(token, symbol, qty, "TARGET", trade_id, sl_oid)
-                    break
+                    if self.exit_market(token, symbol, qty, "TARGET", trade_id, sl_oid):
+                        break
+                    else: continue
 
                 # SL Hit
                 if ltp <= sl:
@@ -185,8 +187,9 @@ class GammaBlastStrategy:
 
                 # Time Exit
                 if datetime.datetime.now().time() >= datetime.time(15, 10):
-                    self.exit_market(token, symbol, qty, "TIME", trade_id, sl_oid)
-                    break
+                    if self.exit_market(token, symbol, qty, "TIME", trade_id, sl_oid):
+                        break
+                    else: continue
 
             except Exception as e:
                 logger.error(f"Gamma Blast Monitor Error: {e}")
@@ -214,10 +217,18 @@ class GammaBlastStrategy:
             # Use WebSocket to wait for final exit price for the ledger
             if oid:
                 fill = self.wait_for_fill(oid)
+                # Ensure the exit limit actually filled, so we don't abandon the order
+                if fill['status'] == 'TIMEOUT':
+                    logger.warning(f"Gamma Blast: Exit order {oid} TIMEOUT. Canceling and retrying monitor mode.")
+                    self.order_manager.cancel_order(oid, variety="NORMAL")
+                    return False
+                
                 exit_price = fill.get('price', ltp)
                 trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
+                return True
             else:
                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+                return True
 
         except Exception as e:
             logger.error(f"Gamma Blast Exit Failed: {e}")

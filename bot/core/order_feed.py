@@ -2,7 +2,7 @@
 import time
 import threading
 import json
-from SmartApi.smartWebSocketV2 import SmartWebSocketV2
+from SmartApi.smartWebSocketOrderUpdate import SmartWebSocketOrderUpdate
 from bot.config.settings import Config
 from bot.utils.logger import logger
 from bot.core.angel_connect import get_angel_session
@@ -64,17 +64,21 @@ class OrderFeedService:
             except: pass
 
     def register_order(self, order_id):
-        """Pre-registers an order to be tracked."""
+        """Pre-registers an order to be tracked, handling pre-arrived updates."""
         with self.registry_lock:
-            self.order_status_registry[order_id] = {'status': 'PENDING'}
-            self.order_events[order_id] = threading.Event()
+            if order_id not in self.order_status_registry:
+                self.order_status_registry[order_id] = {'status': 'PENDING'}
+            event = threading.Event()
+            self.order_events[order_id] = event
+            if self.order_status_registry[order_id]['status'] != 'PENDING':
+                event.set()
 
     def get_order_status(self, order_id):
         with self.registry_lock:
             return self.order_status_registry.get(order_id)
 
     def wait_for_fill(self, order_id, timeout=10):
-        """Waits for an order to be filled using WebSocket events."""
+        """Waits for an order to be filled using WebSocket events, with REST fallback."""
         event = None
         with self.registry_lock:
             event = self.order_events.get(order_id)
@@ -90,6 +94,25 @@ class OrderFeedService:
         signaled = event.wait(timeout=timeout)
         
         if not signaled:
+            logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket. Falling back to REST API...")
+            try:
+                from bot.utils.rate_limiter import rate_limiter
+                api = get_angel_session()
+                if api:
+                    rate_limiter.wait()
+                    ob_res = api.orderBook()
+                    if ob_res and isinstance(ob_res, dict) and ob_res.get('status') == True:
+                        orders = ob_res.get('data', [])
+                        if orders:
+                            for ord_info in orders:
+                                if ord_info.get('orderid') == order_id:
+                                    ws_status = ord_info.get('status', '').lower()
+                                    if ws_status == 'complete':
+                                        return {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
+                                    elif ws_status in ['rejected', 'cancelled']:
+                                        return {'status': ws_status.upper(), 'price': 0}
+            except Exception as e:
+                logger.error(f">>> [OrderFeed] REST Fallback Error: {e}")
             return {'status': 'TIMEOUT'}
             
         return self.get_order_status(order_id)
@@ -114,12 +137,17 @@ class OrderFeedService:
                     time.sleep(10)
                     continue
 
-                self.sws = SmartWebSocketV2(
-                    api.access_token, Config.API_KEY, Config.CLIENT_ID, feed_token
+                auth_token = api.access_token
+                if not auth_token.startswith("Bearer "):
+                    auth_token = f"Bearer {auth_token}"
+
+                self.sws = SmartWebSocketOrderUpdate(
+                    auth_token, Config.API_KEY, Config.CLIENT_ID, feed_token
                 )
 
                 self.sws.on_open = self._on_open
-                self.sws.on_data = self._on_data
+                # SmartWebSocketOrderUpdate uses on_message instead of directly passing generic dicts like V2
+                self.sws.on_message = self._on_message
                 self.sws.on_error = self._on_error
                 self.sws.on_close = self._on_close
 
@@ -136,54 +164,59 @@ class OrderFeedService:
     def _on_open(self, ws):
         logger.info(">>> [OrderFeed] Connected! ✅")
         self.is_connected = True
-        # Subscribe to Order Updates (Action 3, Mode 3 for Order Feed)
-        # For Order Feed, we don't need token list in some versions, 
-        # but standard way is to tell it we want order updates.
-        try:
-            # Angel protocol for order feed: subscribe to special correlation ID
-            # Usually it's automatic on connection for the order feed type if configured,
-            # but we explicitly call subscribe for robust logic.
-            # Correlation ID: 'order_update', Action: 1 (Subscribe), Mode: 3 (Order Feed)
-            self.sws.subscribe("order_update_query", 1, [{"exchangeType": 1, "tokens": [""]}])
-        except Exception as e:
-            logger.error(f"Order Feed Sub Error: {e}")
+        # SmartWebSocketOrderUpdate subscribes automatically via headers. No need to send 'order_update_query'.
 
-    def _on_data(self, ws, message):
-        """Processes real-time order status updates."""
+    def _on_message(self, ws, message):
+        """Processes real-time order status updates unconditionally."""
         try:
-            # logger.debug(f"[OrderFeed] Received: {message}")
-            # Angel One Order Feed format is usually JSON
+            if isinstance(message, bytes):
+                message = message.decode('utf-8')
+            
+            if not message or message.strip() == "":
+                return
+
+            if isinstance(message, str):
+                try:
+                    message = json.loads(message)
+                except json.JSONDecodeError:
+                    # Ignore harmless heartbeats or acknowledgment packets
+                    if message.strip() not in ["pong", "ping", "ack", ""]:
+                        # Only log if it's substantial non-JSON data
+                        if len(message) > 1:
+                            logger.debug(f">>> [OrderFeed] Non-JSON message: {repr(message)}")
+                    return
+                
             if isinstance(message, dict) and 'orderid' in message:
                 oid = message['orderid']
                 status = message.get('status', '').lower()
                 fill_price = float(message.get('averageprice', 0))
                 
                 with self.registry_lock:
-                    if oid in self.order_status_registry:
-                        # Map internal status
-                        internal_status = 'PENDING'
-                        if status == 'complete': internal_status = 'FILLED'
-                        elif status in ['rejected', 'cancelled']: internal_status = status.upper()
-                        
-                        self.order_status_registry[oid] = {
-                            'status': internal_status,
-                            'price': fill_price,
-                            'message': message.get('text', '')
-                        }
-                        
-                        # Signal those waiting
-                        if internal_status != 'PENDING' and oid in self.order_events:
-                            self.order_events[oid].set()
-                            logger.info(f">>> [OrderFeed] Order {oid} updated to {internal_status}")
+                    # Map internal status
+                    internal_status = 'PENDING'
+                    if status == 'complete': internal_status = 'FILLED'
+                    elif status in ['rejected', 'cancelled']: internal_status = status.upper()
+                    
+                    # Store update UNCONDITIONALLY (even if not pre-registered yet)
+                    self.order_status_registry[oid] = {
+                        'status': internal_status,
+                        'price': fill_price,
+                        'message': message.get('text', '')
+                    }
+                    
+                    # Signal those waiting
+                    if internal_status != 'PENDING' and oid in self.order_events:
+                        self.order_events[oid].set()
+                        logger.info(f">>> [OrderFeed] Order {oid} updated to {internal_status}")
 
         except Exception as e:
-            logger.error(f"OrderFeed Parse Error: {e}")
+            logger.error(f">>> [OrderFeed] Parse Error: {e} | Raw Message Type: {type(message)} | Content: {repr(message)}")
 
     def _on_error(self, ws, error):
         logger.error(f">>> [OrderFeed] Error: {error}")
 
-    def _on_close(self, ws):
-        logger.warning(">>> [OrderFeed] Disconnected ❌")
+    def _on_close(self, ws, status_code=None, close_msg=None):
+        logger.warning(f">>> [OrderFeed] Disconnected ❌ (Status: {status_code})")
         self.is_connected = False
 
 order_feed = OrderFeedService()

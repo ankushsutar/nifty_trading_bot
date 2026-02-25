@@ -4,18 +4,19 @@ import datetime
 # Source: https://www.nseindia.com/resources/exchange-communication-holidays
 NSE_HOLIDAYS_2026 = {
     datetime.date(2026, 1, 26),   # Republic Day
-    datetime.date(2026, 2, 26),   # Mahashivratri
-    datetime.date(2026, 3, 25),   # Holi
-    datetime.date(2026, 4, 2),    # Ram Navami
+    datetime.date(2026, 3, 3),    # Holi
+    datetime.date(2026, 3, 26),   # Shri Ram Navami
+    datetime.date(2026, 3, 31),   # Shri Mahavir Jayanti
     datetime.date(2026, 4, 3),    # Good Friday
-    datetime.date(2026, 4, 14),   # Dr. Ambedkar Jayanti
+    datetime.date(2026, 4, 14),   # Dr. Baba Saheb Ambedkar Jayanti
     datetime.date(2026, 5, 1),    # Maharashtra Day
-    datetime.date(2026, 8, 15),   # Independence Day
-    datetime.date(2026, 10, 2),   # Gandhi Jayanti
-    datetime.date(2026, 10, 22),  # Dussehra
-    datetime.date(2026, 11, 11),  # Diwali (Laxmi Pujan) — tentative
-    datetime.date(2026, 11, 12),  # Diwali (Balipratipada) — tentative
-    datetime.date(2026, 11, 25),  # Gurunanak Jayanti
+    datetime.date(2026, 5, 26),   # Bakra Eid
+    datetime.date(2026, 6, 26),   # Muharram
+    datetime.date(2026, 9, 14),   # Ganesh Chaturthi
+    datetime.date(2026, 10, 2),   # Mahatma Gandhi Jayanti
+    datetime.date(2026, 10, 20),  # Dussehra
+    datetime.date(2026, 11, 9),   # Diwali-Balipratipada
+    datetime.date(2026, 11, 24),  # Prakash Gurpurb Sri Guru Nanak Dev
     datetime.date(2026, 12, 25),  # Christmas
 }
 
@@ -47,7 +48,7 @@ def get_next_weekly_expiry():
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
     # Holiday shift: if Tuesday is a holiday, use Monday
-    if next_expiry in NSE_HOLIDAYS_2026:
+    while next_expiry in NSE_HOLIDAYS_2026:
         next_expiry -= datetime.timedelta(days=1)
 
     return next_expiry.strftime("%d%b%Y").upper()

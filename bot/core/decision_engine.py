@@ -123,7 +123,7 @@ class DecisionEngine:
             adx = regime_data.get('adx', 0)
             
             # A. ULTRA-HIGH CONFIDENCE (Gamma Blast) -> OTM Exponential Profits
-            if adx > 35:
+            if adx > 45:
                 logger.info(f">>> [Brain] 🚀 PARABOLIC TREND (ADX: {adx:.1f}). Selected: Gamma Blast (OTM Leverage) 💎")
                 selected_strategy = "GAMMA_BLAST"
 
