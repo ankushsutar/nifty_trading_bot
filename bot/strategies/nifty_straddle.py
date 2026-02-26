@@ -46,10 +46,17 @@ class NiftyStrategy:
             self.monitor_straddle(ce_token, pe_token, ce_symbol, pe_symbol, qty)
             return
 
-        # 1. Risk & Capital Checks
+        # 1. Global Safety Guards
+        if not self.gatekeeper.is_market_open():
+            logger.warning("Straddle: 🛑 Execution Aborted - Market is Closed.")
+            return
+        if self.gatekeeper.is_blackout_period():
+            logger.info("Straddle: ⏸️ Execution Suspended - Mid-day Blackout.")
+            return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.critical("Straddle: 🛑 Execution Blocked - Max Daily Loss reached.")
+            return
         if not self.gatekeeper.check_funds(required_margin_per_lot=150000): return
-        if not self.gatekeeper.check_max_daily_loss(0): return
-        if self.gatekeeper.is_blackout_period(): return
 
         # 2. Market Sentiment Guard
         atm_strike = self.get_atm_strike()
@@ -106,33 +113,36 @@ class NiftyStrategy:
         logger.info(f">>> [Trade] Selling Straddle Legs: {ce_symbol} & {pe_symbol}")
         
         ce_oid = self.place_leg(ce_token, ce_symbol, "SELL", quantity)
+        # 1. Early Record CE
+        mode = "PAPER" if self.dry_run else "LIVE"
+        ce_tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
+        
         pe_oid = self.place_leg(pe_token, pe_symbol, "SELL", quantity)
+        # 2. Early Record PE
+        pe_tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
         
         if not ce_oid and not pe_oid: return 
 
-        # 6. Wait for Fills & Capture Prices
+        # 6. Wait for Fills & Update Records
         ce_fill = self.wait_for_fill(ce_oid)
-        pe_fill = self.wait_for_fill(pe_oid)
-
-        mode = "PAPER" if self.dry_run else "LIVE"
-        
-        # Handle CE Fill
         if ce_fill['status'] == 'FILLED':
              self.entry_prices['CE'] = ce_fill['price']
              self.legs_active['CE'] = True
-             tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, ce_fill['price'], 0.0, side="SELL", mode=mode, strategy="STRADDLE")
-             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': tid}
+             if ce_tid: trade_repo.update_entry_price(ce_tid, ce_fill['price'])
+             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': ce_tid}
         else:
              logger.error(f"❌ CE Order Failed: {ce_fill.get('message')}")
+             if ce_tid: trade_repo.close_trade(trade_id=ce_tid, exit_reason="ORDER_FAILED")
              
-        # Handle PE Fill
+        pe_fill = self.wait_for_fill(pe_oid)
         if pe_fill['status'] == 'FILLED':
              self.entry_prices['PE'] = pe_fill['price']
              self.legs_active['PE'] = True
-             tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, pe_fill['price'], 0.0, side="SELL", mode=mode, strategy="STRADDLE")
-             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': tid}
+             if pe_tid: trade_repo.update_entry_price(pe_tid, pe_fill['price'])
+             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': pe_tid}
         else:
              logger.error(f"❌ PE Order Failed: {pe_fill.get('message')}")
+             if pe_tid: trade_repo.close_trade(trade_id=pe_tid, exit_reason="ORDER_FAILED")
 
         # 7. Place Initial Broker-Side Stop Loss (25%)
         # For Short, SL is BUY STOP.

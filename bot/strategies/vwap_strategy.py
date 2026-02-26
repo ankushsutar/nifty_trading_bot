@@ -35,10 +35,23 @@ class VWAPStrategy:
         """
         logger.info(f">>> [Strategy] Initializing VWAP Strategy for {expiry}")
         
-        # Check for Resumption
         mode = "PAPER" if self.dry_run else "LIVE"
         active_trade = trade_repo.get_active_trade(mode=mode, strategy="VWAP")
-        
+
+        # 1. Global Safety Guards
+        if not self.gatekeeper.is_market_open():
+             logger.warning("VWAP: 🛑 Execution Aborted - Market is Closed.")
+             return
+        if self.gatekeeper.is_blackout_period():
+             logger.info("VWAP: ⏸️ Execution Suspended - Mid-day Blackout.")
+             return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+             logger.critical("VWAP: 🛑 Execution Blocked - Max Daily Loss reached.")
+             return
+        if not self.gatekeeper.check_funds(required_margin_per_lot=8500):
+             logger.warning(">>> [Strategy] Insufficient Funds for Pro Setup. Aborting.")
+             return
+
         if active_trade:
             logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} (ID: {active_trade['id']})")
             
@@ -73,6 +86,17 @@ class VWAPStrategy:
         logger.info(">>> [VWAP] Waiting for Price vs VWAP crossover...")
         
         while self.running:
+            # Safety Guards
+            if not self.gatekeeper.is_market_open():
+                logger.warning("VWAP: 🛑 Monitoring Stopped - Market is Closed.")
+                break
+            if not self.gatekeeper.check_max_daily_loss(0.0):
+                logger.critical("VWAP: 🛑 Monitoring Blocked - Max Daily Loss reached.")
+                break
+            if self.gatekeeper.is_blackout_period():
+                logger.info("VWAP: ⏸️ Monitoring Suspended - Mid-day Blackout.")
+                time.sleep(60)
+                continue
             # Analyze Market Structure
             trend, signal, ltp = self.analyze_market_structure()
             
@@ -217,46 +241,56 @@ class VWAPStrategy:
              oid = self.order_manager.place_order(orderparams)
              if not oid: return
 
-             # Wait for Fill
+             # 1. Early Record (Visibility)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             trade_id = trade_repo.save_trade(symbol, token, option_type, qty, 0.0, 0.0, mode=mode, strategy="VWAP")
+
+             # 2. Wait for Fill
              fill_result = self.wait_for_fill(oid)
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                  logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
+                 # If trade was recorded, mark it as failed/cancelled
+                 if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason="ORDER_REJECTED")
                  return
-             # FIX Obs #3: Explicit TIMEOUT handling — don't silently use quote_ltp as fill
+             
              if fill_result['status'] == 'TIMEOUT':
-                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting to avoid incorrect SL/target.")
+                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting.")
                  self.order_manager.cancel_order(oid, variety="NORMAL")
+                 # If trade was recorded, mark it as failed/cancelled
+                 if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason="ORDER_TIMEOUT")
                  return
 
              fill_price = fill_result['price'] or quote_ltp
              
-             # Risk Management: ATR-Based Structural SL (replaces arbitrary 12% cap)
-             # Fetch ATR from the 5-min candle data for a real volatility-adjusted SL
+             # Risk Management: ATR-Based Structural SL
              try:
                  df_sl = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
                  if df_sl is not None and len(df_sl) >= 5:
                      tr = (df_sl['high'] - df_sl['low']).tail(5).mean()
-                     atr_sl_points = round(tr * 0.5, 1)  # Delta-adjusted (0.5) for options
+                     atr_sl_points = round(tr * 0.5, 1)  # Delta-adjusted
                  else:
-                     atr_sl_points = round(fill_price * 0.10, 1)  # 10% fallback
-             except Exception:
-                 atr_sl_points = round(fill_price * 0.10, 1)
-             
+                     atr_sl_points = fill_price * 0.10
+             except Exception: # Catch specific exception if possible, or log it
+                 atr_sl_points = fill_price * 0.10
+
              # Floor: Never risk less than 5 points, never more than 15%
              atr_sl_points = max(atr_sl_points, 5.0)
              atr_sl_points = min(atr_sl_points, fill_price * 0.15)
              
              sl_price = round(fill_price - atr_sl_points, 1)
              target_price = round(fill_price + (atr_sl_points * 2), 1)  # 1:2 RR
-             
+
              logger.info(f">>> [Risk] ATR-Structural SL: {sl_price} (Risk: {atr_sl_points:.1f}pts) | Target: {target_price}")
-             
+
+             # 3. Update Trade Record
+             if trade_id:
+                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_sl(trade_id, sl_price)
+
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)
              
-             # Save
-             mode = "PAPER" if self.dry_run else "LIVE"
              tid = trade_repo.save_trade(symbol, token, option_type, qty, fill_price, sl_price, mode=mode, strategy="VWAP")
              
              self.monitor_position(symbol, token, qty, target_price, sl_price, fill_price, tid, sl_oid, option_type)

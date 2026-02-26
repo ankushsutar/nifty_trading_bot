@@ -74,7 +74,7 @@ class TradeRepository:
                     "exit_reason": None,
                     "mode": mode,
                     "strategy": strategy,
-                    "status": "OPEN",
+                    "status": "OPEN" if entry_price > 0 else "PLACED",
                     "partially_booked": False,
                     "created_at": datetime.datetime.now(),
                     "updated_at": datetime.datetime.now()
@@ -103,6 +103,24 @@ class TradeRepository:
             )
         except Exception as e:
             logger.error(f"TradeRepository Update SL Error: {e}")
+
+    def update_entry_price(self, trade_id, fill_price):
+        """Updates the trade with actual fill price and marks status as OPEN."""
+        if not self.client: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {
+                    "$set": {
+                        "entry_price": fill_price,
+                        "status": "OPEN",
+                        "updated_at": datetime.datetime.now()
+                    }
+                }
+            )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} with fill price ₹{fill_price}")
+        except Exception as e:
+            logger.error(f"TradeRepository Update Entry Price Error: {e}")
 
     def reduce_position(self, trade_id, reduction_qty, exit_price, pnl_segment, reason):
         """Reduces the quantity of an open trade (Partial Booking). Status remains OPEN."""

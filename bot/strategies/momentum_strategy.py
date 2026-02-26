@@ -153,9 +153,18 @@ class MomentumStrategy:
         """
         logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
 
+        # 0. Global Safety Guards (Strict Enforcement)
+        if not self.gatekeeper.is_market_open():
+            logger.warning("Momentum: 🛑 Execution Aborted - Market is Closed.")
+            return
+        if self.gatekeeper.is_blackout_period():
+            logger.info("Momentum: ⏸️ Execution Suspended - Mid-day Blackout.")
+            return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.critical("Momentum: 🛑 Execution Blocked - Max Daily Loss reached.")
+            return
+
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
-        if not self.gatekeeper.check_max_daily_loss(0): return
-        if not self.active_position and self.gatekeeper.is_blackout_period(): return
 
         logger.info("Starting Smart Monitor Loop (Safety: 1s | Trend: 5m Sync)...")
         
@@ -624,7 +633,13 @@ class MomentumStrategy:
                  return
 
              logger.info(f"Success: Order Placed: {oid}")
+
+             # 1. Early Record (Visibility)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             trade_id = trade_repo.save_trade(symbol, token, leg, qty, 0.0, 0.0, mode=mode, strategy="MOMENTUM")
+             if trade_id: self.active_position = {'id': trade_id} # Pre-populate so UI sees it
             
+             # 2. Wait for fill
              fill_result = self.wait_for_fill(oid)
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
@@ -638,7 +653,9 @@ class MomentumStrategy:
 
              actual_sl = max(0.1, fill_price - actual_sl_points)
 
+             # 3. Finalize Local State
              self.active_position = {
+                'id': trade_id,
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
                 'entry_price': fill_price, 
                 'sl_price': actual_sl,
@@ -646,9 +663,10 @@ class MomentumStrategy:
                 'context': trade_context
             }
              
-             mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, leg, qty, fill_price, actual_sl, mode=mode)
-             if tid: self.active_position['id'] = tid
+             # 4. Update Trade Record & SL
+             if trade_id:
+                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_sl(trade_id, actual_sl)
              
              # Place Hard SL (Broker-Side)
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)

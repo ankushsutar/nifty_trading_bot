@@ -101,7 +101,13 @@ class ORBStrategy:
         logger.info(">>> [ORB] Monitoring for Breakout...")
         
         while self.running:
-            # 1. Safety Check
+            # 1. Safety Guards
+            if not self.gatekeeper.is_market_open():
+                logger.warning("ORB: 🛑 Monitoring Stopped - Market is Closed.")
+                break
+            if not self.gatekeeper.check_max_daily_loss(0.0):
+                logger.critical("ORB: 🛑 Monitoring Blocked - Max Daily Loss reached.")
+                break
             if not self.gatekeeper.check_funds(required_margin_per_lot=7000): break
             if self.gatekeeper.is_blackout_period(): break
                 
@@ -167,20 +173,25 @@ class ORBStrategy:
              oid = self.order_manager.place_order(orderparams)
              if not oid: return
 
-             # Wait for Fill
+             # 1. Early Record (Visibility)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             trade_id = trade_repo.save_trade(symbol, token, option_type, qty, 0.0, 0.0, mode=mode, strategy="ORB")
+
+             # 2. Wait for Fill
              fill_result = self.wait_for_fill(oid)
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                  logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
                  return
-             # FIX Obs #3: Explicit TIMEOUT handling — don't silently use quote_ltp as fill
+             
              if fill_result['status'] == 'TIMEOUT':
-                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting to avoid incorrect SL/target.")
+                 logger.warning(f"⚠️ Order {oid} fill TIMEOUT. Aborting.")
                  self.order_manager.cancel_order(oid, variety="NORMAL")
                  return
 
              fill_price = fill_result['price'] or quote_ltp
-                         # Structural Stop Loss (Range High/Low)
+             
+             # Structural Stop Loss
              # If Buying CE: SL = Range Low | If Buying PE: SL = Range High
              # Cap SL at 15% max to protect the small account.
              structural_sl_points = abs(current_ltp - (self.range_low if option_type == "CE" else self.range_high))
@@ -196,18 +207,21 @@ class ORBStrategy:
              else:
                  sl_price = round(sl_price, 1)
              
-             target_price = round(fill_price + (abs(fill_price - sl_price) * 2), 1) # Maintain 1:2
+             # Calculate Target
+             target_price = round(fill_price + (option_sl_points * 2), 1) # Maintain 1:2
              
              logger.info(f">>> [Risk] Structural SL: {sl_price} | Target: {target_price}")
              
-             # Save to DB
-             mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, option_type, qty, fill_price, sl_price, mode=mode, strategy="ORB")
+             # 3. Update Trade Record
+             if trade_id:
+                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_sl(trade_id, sl_price)
              
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)
-                         # Start Monitoring
-             self.monitor_position(symbol, token, qty, target_price, sl_price, fill_price, tid, sl_oid, option_type)
+             
+             # Start Monitoring
+             self.monitor_position(symbol, token, qty, target_price, sl_price, fill_price, trade_id, sl_oid, option_type)
              
         except Exception as e:
             logger.error(f">>> [Error] Order Failed: {e}")

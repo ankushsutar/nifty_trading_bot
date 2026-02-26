@@ -10,6 +10,9 @@ class Config:
     PASSWORD = os.getenv("PASSWORD")
     TOTP_SECRET = os.getenv("TOTP_SECRET")
     
+    # Master Mode Controls
+    LIVE_TRADE_ENABLED = os.getenv("LIVE_TRADE_ENABLED", "FALSE").upper() == "TRUE"
+    
     # Nifty Constants (Updated for 2026)
     NIFTY_LOT_SIZE = 65 # Updated for 2026
     # URL to fetch token IDs for all stocks

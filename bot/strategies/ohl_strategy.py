@@ -48,16 +48,17 @@ class OHLStrategy:
             )
             return
 
-        # 0. Risk Checks
+        # 0. Global Safety Guards
+        if not self.gatekeeper.is_market_open():
+            logger.warning("OHL: 🛑 Execution Aborted - Market is Closed.")
+            return
+        if self.gatekeeper.is_blackout_period():
+            logger.info("OHL: ⏸️ Execution Suspended - Mid-day Blackout.")
+            return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.critical("OHL: 🛑 Execution Blocked - Max Daily Loss reached.")
+            return
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
-        # FIX: Use real today's realized PnL instead of hardcoded 0
-        try:
-            today_trades = trade_repo.get_today_trades(mode="PAPER" if self.dry_run else "LIVE")
-            realized_pnl = sum(t.get('pnl', 0.0) or 0.0 for t in today_trades if t.get('status') == 'CLOSED')
-        except Exception:
-            realized_pnl = 0.0
-        if not self.gatekeeper.check_max_daily_loss(realized_pnl): return
-        if self.gatekeeper.is_blackout_period(): return
         
         # 1. Fetch First 1-Minute Candle (09:15)
         candle = self.get_first_minute_candle()
@@ -134,37 +135,42 @@ class OHLStrategy:
              oid = self.order_manager.place_order(orderparams)
              if not oid: return
 
-             fill_result = self.wait_for_fill(oid) # Reuse local or OrderManager? Local is fine, but OrderManager has none.
-             # Actually, OrderManager place_order returns ID. We need to wait for fill manually or add helper?
-             # MomentumStrategy has wait_for_fill. Let's keep a local wait_for_fill for now or move it to OrderManager later.
-             # Reusing local wait_for_fill logic (improved)
+             # 1. Early Record (Visibility)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             trade_id = trade_repo.save_trade(symbol, token, leg_type, qty, 0.0, 0.0, mode=mode, strategy="OHL")
+
+             # 2. Wait for fill
+             fill_result = self.wait_for_fill(oid) 
              
-             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                 logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
-                 return
+             if fill_result['status'] != 'FILLED':
+                  logger.error(f"❌ Order {oid} failed or timed out: {fill_result.get('message')}")
+                  if fill_result['status'] == 'TIMEOUT':
+                      self.order_manager.cancel_order(oid, variety="NORMAL")
+                  return
 
              fill_price = fill_result['price']
-             if not fill_price: fill_price = quote_ltp
              
-             # 3. Calculate Option SL (Structural with 5pt Buffer)
-             curr_index = self.get_nifty_ltp() or c_close
-             points_risk = abs(curr_index - index_sl_level) + 5.0 # Added 5pt buffer for noise
-             option_risk = points_risk * 0.5 
+             # Risk Strategy: SL @ Candle Low (for CE) or High (for PE)
+             sl_price = candle['low'] if leg_type == "CE" else candle['high']
              
-             sl_price = max(0.1, round(fill_price - option_risk, 1))
-             target_price = round(fill_price + (option_risk * 2), 1) # 1:2 R:R
+             # Buffer SL to avoid noise
+             if leg_type == "CE": sl_price -= 5.0
+             else: sl_price += 5.0
              
-             logger.info(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
+             # Calculate Target (1.5x Risk)
+             risk = abs(fill_price - sl_price)
+             target_price = round(fill_price + (risk * 1.5), 1)
              
-             # 4. Save Trade
-             mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="OHL")
+             # 3. Update Trade Record
+             if trade_id:
+                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_sl(trade_id, sl_price)
 
-             # 5. Place Broker-Side SL
+             # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
              
-             # 6. Monitor
-             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, tid, sl_oid, leg_type)
+             # Monitor
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, trade_id, sl_oid, leg_type)
 
         except Exception as e:
              logger.error(f">>> [Error] Entry Failed: {e}")

@@ -11,28 +11,11 @@ from bot.core.angel_connect import get_angel_session
 from bot.config.settings import Config
 from bot.utils.logger import logger
 from bot.utils.rate_limiter import rate_limiter
+from bot.core.trade_repo import trade_repo
 
 def sync_todays_trades_to_mongo():
-    logger.info("Starting Sync: Fetching today's trades from Angel One and pushing to MongoDB...")
+    logger.info("Starting Sync: Fetching today's trades from Angel One and pushing to MongoDB 'trades' collection...")
     
-    # 1. Connect to MongoDB
-    try:
-        client = MongoClient(
-            Config.MONGO_URI,
-            serverSelectionTimeoutMS=5000
-        )
-        db = client[Config.MONGO_DB]
-        # We store these in a separate collection from internal bot logs 'trades'
-        # to preserve raw broker truth without conflicting internal IDs
-        collection = db["broker_tradebook"]
-        
-        # Create an index on the broker's unique order id to prevent duplicates
-        collection.create_index("uniqueorderid", unique=True)
-        logger.info(f"Connected to MongoDB DB: {Config.MONGO_DB}, Collection: broker_tradebook")
-    except Exception as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
-        return
-
     # 2. Authenticate with Angel One
     api = get_angel_session()
     if not api:
@@ -48,7 +31,7 @@ def sync_todays_trades_to_mongo():
         
         if getattr(resp, 'get', None) and resp.get('status'):
             trades = resp.get('data') or []
-            logger.info(f"Successfully fetched {len(trades)} trades from broker.")
+            logger.info(f"Successfully fetched {len(trades)} raw fills from broker.")
         else:
             logger.error(f"Broker returned failure or empty response: {resp}")
             return
@@ -61,36 +44,109 @@ def sync_todays_trades_to_mongo():
         logger.info("No trades executed today. Exiting.")
         return
 
-    # 4. Push to MongoDB (Upsert to handle duplicate runs on the same day safely)
+    # Sort trades chronologically explicitly by filltime (assuming HH:MM:SS format)
+    trades = sorted(trades, key=lambda x: x.get('filltime', '00:00:00'))
+
+    # Reconstruct Trades
+    open_positions = {} # keyed by symbol
     inserted = 0
-    updated = 0
-    
-    for trade_data in trades:
-        # TradeBook entries typically have 'uniqueorderid' from Angel One
-        order_id = trade_data.get('uniqueorderid')
-        
-        # Fallback if the field is missing somehow, we hash the dict to avoid dupes
-        if not order_id:
-            order_id = str(hash(frozenset(trade_data.items())))
-            
-        # Add a sync timestamp
-        trade_data["synced_at"] = datetime.datetime.now()
 
+    # Ensure DB is connected
+    if not trade_repo.client:
+        logger.error("TradeRepository MongoDB not connected!")
+        return
+
+    for t in trades:
+        sym = t.get('tradingsymbol', '')
+        token = t.get('symboltoken', '')
+        side = t.get('transactiontype', '').upper()
         try:
-            result = collection.update_one(
-                {"uniqueorderid": order_id},
-                {"$set": trade_data},
-                upsert=True
-            )
+            qty_str = t.get('fillsize') or t.get('quantity') or 0
+            qty = int(qty_str)
+            price_str = t.get('fillprice') or t.get('averageprice') or 0
+            price = float(price_str)
+        except (TypeError, ValueError):
+            continue
             
-            if result.upserted_id:
-                inserted += 1
-            else:
-                updated += 1
-        except Exception as e:
-            logger.error(f"Failed to sync trade {order_id}: {e}")
+        if qty == 0 or price == 0:
+            continue
 
-    logger.info(f"Sync Complete! New Trades Inserted: {inserted} | Existing Trades Updated: {updated}")
+        if sym not in open_positions:
+            open_positions[sym] = {"qty": 0, "cost": 0.0, "leg": "CE" if "CE" in sym else "PE", "token": token, "side": side}
+
+        pos = open_positions[sym]
+        
+        # Determine if this is an opening or closing trade
+        if pos["qty"] == 0:
+            # Open new position
+            pos["qty"] = qty
+            pos["cost"] = price * qty
+            pos["side"] = side
+        else:
+            # Position already open.
+            if side == pos["side"]:
+                # Averaging up/down (add to position)
+                pos["qty"] += qty
+                pos["cost"] += price * qty
+            else:
+                # Closing position (or partial close)
+                close_qty = min(qty, pos["qty"])
+                avg_entry = pos["cost"] / pos["qty"]
+                exit_price = price
+                
+                # Calculate P&L
+                if pos["side"] == "BUY":
+                    pnl = (exit_price - avg_entry) * close_qty
+                else:
+                    pnl = (avg_entry - exit_price) * close_qty
+                
+                # Insert closed trade record into MongoDB
+                trade_id = trade_repo._get_next_sequence("trade_id")
+                trade_doc = {
+                    "id": trade_id,
+                    "symbol": sym,
+                    "token": pos["token"],
+                    "leg": pos["leg"],
+                    "side": pos["side"],
+                    "qty": close_qty,
+                    "entry_price": round(avg_entry, 2),
+                    "sl_price": 0.0,
+                    "exit_price": round(exit_price, 2),
+                    "pnl": round(pnl, 2),
+                    "exit_reason": "BROKER_SYNC",
+                    "mode": "LIVE",
+                    "strategy": "MANUAL",
+                    "status": "CLOSED",
+                    "partially_booked": False,
+                    "created_at": datetime.datetime.now(),
+                    "updated_at": datetime.datetime.now(),
+                    "closed_at": datetime.datetime.now(),
+                    "synced_at": datetime.datetime.now()
+                }
+                
+                # Upsert based on combination of symbol, created_at range, and P&L to avoid exact duplicates 
+                # (Simple strategy: just insert, but let's check if exact match exists)
+                exists = trade_repo.collection.find_one({
+                    "symbol": sym, 
+                    "qty": close_qty, 
+                    "status": "CLOSED",
+                    "mode": "LIVE",
+                    "exit_reason": "BROKER_SYNC",
+                    "pnl": round(pnl, 2)
+                })
+                
+                if not exists:
+                    trade_repo.collection.insert_one(trade_doc)
+                    inserted += 1
+                
+                # Adjust remaining open position
+                pos["qty"] -= close_qty
+                if pos["qty"] > 0:
+                    pos["cost"] -= avg_entry * close_qty
+                else:
+                    pos["cost"] = 0.0
+
+    logger.info(f"Sync Complete! Reconstructed and inserted {inserted} completely closed trades into 'trades' collection.")
 
 if __name__ == "__main__":
     sync_todays_trades_to_mongo()

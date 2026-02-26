@@ -8,12 +8,20 @@ class OrderManager:
     def __init__(self, api, dry_run=False):
         self.api = api
         self.dry_run = dry_run
+        from bot.config.settings import Config
+        self.live_trade_enabled = Config.LIVE_TRADE_ENABLED
 
     def place_order(self, order_params):
         """Places an order with rate limiting and error handling."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Order Rejected.")
             return None
+
+        # Mode Safety Check
+        if not self.dry_run and not self.live_trade_enabled:
+            logger.warning(f"🛡️ [Safety] Order Blocked: Bot is in LIVE mode but LIVE_TRADE_ENABLED is FALSE in .env.")
+            logger.warning(f"    Simulating for {order_params.get('tradingsymbol')} instead.")
+            return f"DRY_SAFETY_{int(time.time())}"
 
         try:
             if self.dry_run:

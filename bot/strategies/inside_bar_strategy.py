@@ -61,16 +61,17 @@ class InsideBarStrategy:
             )
             return
 
-        # 0. Risk Checks
+        # 0. Global Safety Guards
+        if not self.gatekeeper.is_market_open():
+            logger.warning("InsideBar: 🛑 Execution Aborted - Market is Closed.")
+            return
+        if self.gatekeeper.is_blackout_period():
+            logger.info("InsideBar: ⏸️ Execution Suspended - Mid-day Blackout.")
+            return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.critical("InsideBar: 🛑 Execution Blocked - Max Daily Loss reached.")
+            return
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
-        # FIX: Use real today's realized PnL instead of hardcoded 0
-        try:
-            today_trades = trade_repo.get_today_trades(mode="PAPER" if self.dry_run else "LIVE")
-            realized_pnl = sum(t.get('pnl', 0.0) or 0.0 for t in today_trades if t.get('status') == 'CLOSED')
-        except Exception:
-            realized_pnl = 0.0
-        if not self.gatekeeper.check_max_daily_loss(realized_pnl): return
-        if self.gatekeeper.is_blackout_period(): return
 
         # 1. Fetch Data (15 Min Candles)
         df = self.fetch_candles("FIFTEEN_MINUTE")
@@ -157,11 +158,17 @@ class InsideBarStrategy:
              oid = self.order_manager.place_order(orderparams)
              if not oid: return
 
-             # Wait for Fill
+             # 1. Early Record (Visibility)
+             mode = "PAPER" if self.dry_run else "LIVE"
+             trade_id = trade_repo.save_trade(symbol, token, leg_type, qty, 0.0, 0.0, mode=mode, strategy="INSIDE_BAR")
+
+             # 2. Wait for Fill
              fill_result = self.wait_for_fill(oid) 
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                   logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
+                  # If trade was recorded, mark it as failed or remove it
+                  if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason="ORDER_FAILED")
                   return
 
              fill_price = fill_result['price'] or quote_ltp
@@ -176,15 +183,16 @@ class InsideBarStrategy:
              
              logger.info(f">>> [Risk] SL: {sl_price} | Target: {target_price}")
              
-             # Save
-             mode = "PAPER" if self.dry_run else "LIVE"
-             tid = trade_repo.save_trade(symbol, token, leg_type, qty, fill_price, sl_price, mode=mode, strategy="INSIDE_BAR")
+             # 3. Update Trade Record
+             if trade_id:
+                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
              
              # Monitor
-             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, tid, sl_oid, leg_type)
+             self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, trade_id, sl_oid, leg_type)
              
         except Exception as e:
              logger.error(f">>> [Error] Entry Failed: {e}")

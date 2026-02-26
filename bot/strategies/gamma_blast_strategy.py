@@ -29,10 +29,20 @@ class GammaBlastStrategy:
     def execute(self, expiry, action="BUY"):
         logger.info(f"🚀 --- GAMMA BLAST OTM STRATEGY ACTIVATED ({expiry}) ---")
         
-        # 1. State Recovery / Resumption
         mode = "PAPER" if self.dry_run else "LIVE"
         active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST")
-        
+
+        # 1.5 Global Safety Guards
+        if not self.gatekeeper.is_market_open():
+            logger.warning("Gamma Blast: 🛑 Execution Aborted - Market is Closed.")
+            return
+        if self.gatekeeper.is_blackout_period():
+            logger.info("Gamma Blast: ⏸️ Execution Suspended - Mid-day Blackout.")
+            return
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
+            return
+
         if active_trade:
             logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']}")
             self.monitor_position(
@@ -90,11 +100,11 @@ class GammaBlastStrategy:
             logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
             return
 
-        # Fetch Option LTP for precise limit placement
+        # Fetch Option LTP for early record and price estimate
         quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
         
-        # Place LIMIT Order with 5% buffer (Speed is key, but slippage is high on OTM)
-        limit_price = round(quote_ltp * (1.05 if leg == "CE" else 1.05), 1)
+        # Place LIMIT Order with 5% buffer
+        limit_price = round(quote_ltp * 1.05, 1)
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) @ Limit: {limit_price}")
         
@@ -107,7 +117,14 @@ class GammaBlastStrategy:
         oid = self.order_manager.place_order(orderparams)
         if not oid: return
 
-        # Wait for fill
+        # 1. Early Record (Visibility in UI)
+        # We save with status "PLACED" (if entry_price=0 or we can pass status explicitly if we update save_trade further, 
+        # but my current update uses status="PLACED" if entry_price is passed as 0 or we use quote_ltp and it stays OPEN)
+        # Let's use status="PLACED" by passing entry_price=0.0 initially.
+        mode = "PAPER" if self.dry_run else "LIVE"
+        trade_id = trade_repo.save_trade(symbol, token, leg, qty, 0.0, 0.0, mode=mode, strategy="GAMMA_BLAST")
+
+        # 2. Wait for fill
         fill_result = self.wait_for_fill(oid)
         if fill_result['status'] != 'FILLED':
             logger.warning(f"Gamma Blast: Entry failed or timed out. Status: {fill_result['status']}")
@@ -117,12 +134,11 @@ class GammaBlastStrategy:
 
         fill_price = fill_result['price']
         
-        # Risk Mgmt: 20% Initial SL for OTM (Deep breath room)
+        # 3. Update Trade with Actual Fill & Mark OPEN
         sl_price = round(fill_price * 0.80, 1)
-        
-        # Save Trade
-        mode = "PAPER" if self.dry_run else "LIVE"
-        trade_id = trade_repo.save_trade(symbol, token, leg, qty, fill_price, sl_price, mode=mode, strategy="GAMMA_BLAST")
+        if trade_id:
+            trade_repo.update_entry_price(trade_id, fill_price)
+            trade_repo.update_sl(trade_id, sl_price)
         
         # Place Broker SL
         sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)

@@ -20,15 +20,32 @@ class DecisionEngine:
         """
         logger.info("\n>>> [Brain] 🧠 Analyzing Market Conditions...")
 
-        # 0. Daily Trade Limit Check (DB-backed — survives process restarts)
+        # 0. Global Safety Guards (Strict Enforcement)
+        # Rule A: Market Hours (9:15 - 15:29)
+        if not self.gatekeeper.is_market_open():
+            logger.warning(">>> [Brain] 🛑 Decision Aborted: Market is Closed.")
+            return None, 1.0
+
+        # Rule B: Mid-day Blackout (11:30 - 13:00)
+        if self.gatekeeper.is_blackout_period():
+            logger.info(">>> [Brain] ⏸️ Decision Suspended: System in mid-day Blackout.")
+            return None, 1.0
+
+        # Rule C: Max Daily Loss Limit
+        if not self.gatekeeper.check_max_daily_loss(active_unrealized_pnl=0.0):
+             logger.critical(">>> [Brain] 🛑 Decision Blocked: Max Daily Loss reached.")
+             return None, 1.0
+
+        # Rule D: Daily Trade Limit Check (DB-backed)
         try:
             from bot.core.trade_repo import trade_repo
             mode = "PAPER" if self.dry_run else "LIVE"
             today_trades = trade_repo.get_today_trades(mode=mode)
             trades_today = len(today_trades)
-        except Exception:
+        except Exception as e:
+            logger.error(f">>> [Brain] DB Error: {e}")
             today_trades = []
-            trades_today = 0  # Fail open — don't block trading on DB error
+            trades_today = 0
 
         if trades_today >= self.MAX_TRADES_PER_DAY:
             logger.warning(f">>> [Brain] 🛑 Daily trade limit reached ({trades_today}/{self.MAX_TRADES_PER_DAY}). No new entries.")
