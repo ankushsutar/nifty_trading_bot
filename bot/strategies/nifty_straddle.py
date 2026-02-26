@@ -110,39 +110,52 @@ class NiftyStrategy:
                 return
 
         # 5. Place Entry Orders (SELL)
-        logger.info(f">>> [Trade] Selling Straddle Legs: {ce_symbol} & {pe_symbol}")
-        
-        ce_oid = self.place_leg(ce_token, ce_symbol, "SELL", quantity)
-        # 1. Early Record CE
+        logger.info(f">>> [Trade] Selling Straddle Legs via Smart-Limit: {ce_symbol} & {pe_symbol}")
         mode = "PAPER" if self.dry_run else "LIVE"
-        ce_tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
         
-        pe_oid = self.place_leg(pe_token, pe_symbol, "SELL", quantity)
-        # 2. Early Record PE
-        pe_tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
-        
-        if not ce_oid and not pe_oid: return 
+        # Fetch LTPs for buffer calculation
+        ce_quote_ltp = self.data_fetcher.get_ltp(ce_token) or 150.0
+        pe_quote_ltp = self.data_fetcher.get_ltp(pe_token) or 150.0
 
-        # 6. Wait for Fills & Update Records
-        ce_fill = self.wait_for_fill(ce_oid)
-        if ce_fill['status'] == 'FILLED':
-             self.entry_prices['CE'] = ce_fill['price']
-             self.legs_active['CE'] = True
-             if ce_tid: trade_repo.update_entry_price(ce_tid, ce_fill['price'])
-             self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': ce_tid}
-        else:
-             logger.error(f"❌ CE Order Failed: {ce_fill.get('message')}")
-             if ce_tid: trade_repo.close_trade(trade_id=ce_tid, exit_reason="ORDER_FAILED")
-             
-        pe_fill = self.wait_for_fill(pe_oid)
-        if pe_fill['status'] == 'FILLED':
-             self.entry_prices['PE'] = pe_fill['price']
-             self.legs_active['PE'] = True
-             if pe_tid: trade_repo.update_entry_price(pe_tid, pe_fill['price'])
-             self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': pe_tid}
-        else:
-             logger.error(f"❌ PE Order Failed: {pe_fill.get('message')}")
-             if pe_tid: trade_repo.close_trade(trade_id=pe_tid, exit_reason="ORDER_FAILED")
+        try:
+             # CE Leg
+             ce_limit = round(ce_quote_ltp * 0.95, 1) # Willing to sell up to 5% below LTP
+             ce_oid = self.order_manager.place_smart_limit(ce_symbol, ce_token, quantity, ce_limit, transaction_type="SELL")
+             ce_tid = None
+             if ce_oid:
+                 ce_tid = trade_repo.save_trade(ce_symbol, ce_token, "CE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
+                 self.leg_metadata['CE'] = {'token': ce_token, 'symbol': ce_symbol, 'qty': quantity, 'id': ce_tid}
+
+             # PE Leg
+             pe_limit = round(pe_quote_ltp * 0.95, 1)
+             pe_oid = self.order_manager.place_smart_limit(pe_symbol, pe_token, quantity, pe_limit, transaction_type="SELL")
+             pe_tid = None
+             if pe_oid:
+                 pe_tid = trade_repo.save_trade(pe_symbol, pe_token, "PE", quantity, 0.0, 0.0, side="SELL", mode=mode, strategy="STRADDLE")
+                 self.leg_metadata['PE'] = {'token': pe_token, 'symbol': pe_symbol, 'qty': quantity, 'id': pe_tid}
+
+             if not ce_oid and not pe_oid: return 
+
+             # 6. Wait for Fills
+             if ce_oid:
+                 ce_fill = self.wait_for_fill(ce_oid)
+                 if ce_fill['status'] == 'FILLED' and ce_tid:
+                      self.entry_prices['CE'] = ce_fill['price']
+                      self.legs_active['CE'] = True
+                      trade_repo.update_entry_price(ce_tid, ce_fill['price'], expected_price=ce_quote_ltp)
+                 else:
+                      logger.error(f"❌ CE Order Failed: {ce_fill.get('message')}")
+                      if ce_tid: trade_repo.close_trade(trade_id=ce_tid, exit_reason="ORDER_FAILED")
+                      
+             if pe_oid:
+                 pe_fill = self.wait_for_fill(pe_oid)
+                 if pe_fill['status'] == 'FILLED':
+                      self.entry_prices['PE'] = pe_fill['price']
+                      self.legs_active['PE'] = True
+                      if pe_tid: trade_repo.update_entry_price(pe_tid, pe_fill['price'], expected_price=pe_quote_ltp)
+                 else:
+                      logger.error(f"❌ PE Order Failed: {pe_fill.get('message')}")
+                      if pe_tid: trade_repo.close_trade(trade_id=pe_tid, exit_reason="ORDER_FAILED")
 
         # 7. Place Initial Broker-Side Stop Loss (25%)
         # For Short, SL is BUY STOP.

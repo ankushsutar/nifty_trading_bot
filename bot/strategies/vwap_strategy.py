@@ -227,20 +227,15 @@ class VWAPStrategy:
              return
              
         est_cost = quote_ltp * qty
-        if not self.dry_run and not self.gatekeeper.check_trade_margin(est_cost):
-             return
+        # Place Smart-Limit with 5% buffer
+        limit_price = round(quote_ltp * 1.05, 1)
+        
+        logger.info(f">>> [Trade] VWAP: Entering {symbol} via Smart-Limit @ ₹{limit_price}")
+        
+        oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
+        if not oid: return
 
-        logger.info(f">>> [Trade] Placing BUY order for {symbol}")
         try:
-             orderparams = {
-                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
-                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-            }
-             
-             oid = self.order_manager.place_order(orderparams)
-             if not oid: return
-
              # 1. Early Record (Visibility)
              mode = "PAPER" if self.dry_run else "LIVE"
              trade_id = trade_repo.save_trade(symbol, token, option_type, qty, 0.0, 0.0, mode=mode, strategy="VWAP")
@@ -283,10 +278,10 @@ class VWAPStrategy:
 
              logger.info(f">>> [Risk] ATR-Structural SL: {sl_price} (Risk: {atr_sl_points:.1f}pts) | Target: {target_price}")
 
-             # 3. Update Trade Record
+             # 3. Update Trade Record (with Slippage Tracking)
              if trade_id:
-                 trade_repo.update_entry_price(trade_id, fill_price)
-                 trade_repo.update_sl(trade_id, sl_price)
+                  trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
+                  trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)

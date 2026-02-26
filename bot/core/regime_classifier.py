@@ -90,6 +90,11 @@ class RegimeClassifier:
             f"EMA9={ema9:.1f} EMA21={ema21:.1f} → {regime}/{trend}"
         )
 
+        # 5. Volume Spike Detection (Institutional Activity Filter)
+        volume_spike = self._calculate_volume_spike(df)
+        if volume_spike:
+            logger.info(f"[Regime] 🔥 VOLUME SPIKE DETECTED! (High institutional confidence)")
+
         return {
             "regime": regime,
             "trend": trend,
@@ -98,7 +103,8 @@ class RegimeClassifier:
             "atr": round(atr, 2),
             "bbw": round(bbw, 4),
             "ema9": round(ema9, 2),
-            "ema21": round(ema21, 2)
+            "ema21": round(ema21, 2),
+            "volume_spike": volume_spike
         }
 
     def _calculate_rsi(self, df, period=14):
@@ -142,3 +148,19 @@ class RegimeClassifier:
         upper = ma + (std * sd)
         lower = ma - (std * sd)
         return ((upper - lower) / ma).fillna(0)
+
+    def _calculate_volume_spike(self, df, window=20, multiplier=2.5):
+        """
+        Detects if current volume is significantly higher than recent average.
+        Institutional breakouts are usually accompanied by a volume spike.
+        """
+        if len(df) < window + 1:
+            return False
+            
+        recent_avg_vol = df['volume'].iloc[-(window+1):-1].mean()
+        current_vol = df['volume'].iloc[-1]
+        
+        if recent_avg_vol == 0: return False
+        
+        spike_ratio = current_vol / recent_avg_vol
+        return spike_ratio >= multiplier

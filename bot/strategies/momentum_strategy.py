@@ -626,10 +626,10 @@ class MomentumStrategy:
              # For BUY orders, we are willing to pay slightly ABOVE current LTP to ensure fill.
              limit_price = quote_ltp * (1.0 + buffer)
                  
-             oid = self.order_manager.place_limit_order(symbol, token, qty, limit_price)
+             oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
              
              if not oid:
-                 logger.error("❌ Limit Order Placement Failed! (API returned None).")
+                 logger.error("❌ Smart-Limit Order Placement Failed! (API returned None).")
                  return
 
              logger.info(f"Success: Order Placed: {oid}")
@@ -665,7 +665,7 @@ class MomentumStrategy:
              
              # 4. Update Trade Record & SL
              if trade_id:
-                 trade_repo.update_entry_price(trade_id, fill_price)
+                 trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
                  trade_repo.update_sl(trade_id, actual_sl)
              
              # Place Hard SL (Broker-Side)

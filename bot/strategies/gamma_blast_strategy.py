@@ -103,18 +103,13 @@ class GammaBlastStrategy:
         # Fetch Option LTP for early record and price estimate
         quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
         
-        # Place LIMIT Order with 5% buffer
+        # Place Smart-Limit Order with 5% buffer from LTP
+        # This replaces raw LIMIT/MARKET to reduce slippage
         limit_price = round(quote_ltp * 1.05, 1)
         
-        logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) @ Limit: {limit_price}")
+        logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
         
-        orderparams = {
-            "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-            "transactiontype": "BUY", "exchange": "NFO", "ordertype": "LIMIT",
-            "price": limit_price, "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-        }
-        
-        oid = self.order_manager.place_order(orderparams)
+        oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
         if not oid: return
 
         # 1. Early Record (Visibility in UI)
@@ -136,8 +131,9 @@ class GammaBlastStrategy:
         
         # 3. Update Trade with Actual Fill & Mark OPEN
         sl_price = round(fill_price * 0.80, 1)
+        # 2. Update Entry (with Slippage Tracking)
         if trade_id:
-            trade_repo.update_entry_price(trade_id, fill_price)
+            trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
             trade_repo.update_sl(trade_id, sl_price)
         
         # Place Broker SL

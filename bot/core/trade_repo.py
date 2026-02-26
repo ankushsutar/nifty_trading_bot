@@ -101,24 +101,30 @@ class TradeRepository:
                 {"id": trade_id},
                 {"$set": {"sl_price": new_sl, "updated_at": datetime.datetime.now()}}
             )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} SL to ₹{new_sl}")
         except Exception as e:
             logger.error(f"TradeRepository Update SL Error: {e}")
 
-    def update_entry_price(self, trade_id, fill_price):
-        """Updates the trade with actual fill price and marks status as OPEN."""
+    def update_entry_price(self, trade_id, actual_price, expected_price=None):
+        """Updates a trade with the actual fill details and calculates slippage."""
         if not self.client: return
+        
+        update_data = {
+            "entry_price": actual_price,
+            "status": "OPEN",
+            "updated_at": datetime.datetime.now()
+        }
+        
+        if expected_price and expected_price > 0:
+            slippage = actual_price - expected_price
+            slippage_pct = (slippage / expected_price) * 100
+            update_data["slippage_points"] = round(slippage, 2)
+            update_data["slippage_percent"] = round(slippage_pct, 2)
+            logger.info(f"📊 [Slippage] Trade #{trade_id}: Estimate={expected_price} | Fill={actual_price} | Slippage={slippage:.2f} ({slippage_pct:.2f}%)")
+        
         try:
-            self.collection.update_one(
-                {"id": trade_id},
-                {
-                    "$set": {
-                        "entry_price": fill_price,
-                        "status": "OPEN",
-                        "updated_at": datetime.datetime.now()
-                    }
-                }
-            )
-            logger.info(f"TradeRepository: Updated Trade #{trade_id} with fill price ₹{fill_price}")
+            self.collection.update_one({"id": trade_id}, {"$set": update_data})
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} with fill price ₹{actual_price}")
         except Exception as e:
             logger.error(f"TradeRepository Update Entry Price Error: {e}")
 

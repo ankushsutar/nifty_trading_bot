@@ -107,13 +107,15 @@ class DecisionEngine:
         bias = sentiment.get('bias', 'NEUTRAL')
         logger.info(f">>> [Brain] Option Chain Bias: {bias} (PCR: {sentiment.get('pcr', 0)})")
 
-        # 5. Volatility Scaling (Alpha Optimization)
+        # 5. Volatility Scaling & Confidence Analysis (Alpha Optimization)
         risk_multiplier = self.gatekeeper.get_vix_adjustment()
+        volume_spike = regime_data.get('volume_spike', False)
         
         confidence_high = False
+        # Confluence: Trend + Sentiment + Institutional Volume
         if (trend == "BULLISH" and bias == "BULLISH") or (trend == "BEARISH" and bias == "BEARISH"):
-             if regime == "TRENDING":
-                 logger.info(">>> [Brain] 💎 High Confidence: Trend & Sentiment Align.")
+             if regime == "TRENDING" or volume_spike:
+                 logger.info(">>> [Brain] 💎 High Confidence: Trend, Sentiment & Volume Align.")
                  confidence_high = True
                  risk_multiplier *= 1.2
 

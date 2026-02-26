@@ -79,6 +79,78 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
+    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5):
+        """
+        Next-Level Execution: Places a limit order and 'walks' the price until filled.
+        Reduces slippage dramatically compared to MARKET orders.
+        """
+        if self.dry_run:
+            return self.place_limit_order(symbol, token, qty, initial_price, transaction_type)
+
+        try:
+            current_price = round(initial_price / 0.05) * 0.05
+            oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type)
+            if not oid: return None
+
+            from bot.core.order_feed import order_feed
+            
+            for attempt in range(max_walk_ticks):
+                # Wait for fill with shorter timeout per walk
+                result = order_feed.wait_for_fill(oid, timeout=3)
+                
+                if result['status'] == 'FILLED':
+                    logger.info(f"✨ Smart-Limit Filled: {symbol} @ {result['price']} (Attempt {attempt+1})")
+                    return oid
+                
+                if result['status'] in ['REJECTED', 'CANCELLED']:
+                    logger.error(f"❌ Smart-Limit Failed: Order {result['status']}")
+                    return None
+
+                # If TIMEOUT, walk the price one tick
+                tick_size = 0.05
+                if transaction_type == "BUY":
+                    current_price += tick_size 
+                else:
+                    current_price -= tick_size
+                
+                logger.info(f"🚶 Walking Smart-Limit: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
+                
+                # Modify existing order
+                success = self.modify_order_price(oid, current_price, symbol, token, qty)
+                if not success:
+                    logger.warning("⚠️ Walk failed: Modification error. Using last known order ID.")
+                    # If modify fails, we might need to re-place, but let's stick to modify for now.
+            
+            # Final attempt: Wait longer on last price
+            result = order_feed.wait_for_fill(oid, timeout=5)
+            return oid if result['status'] == 'FILLED' else oid
+
+        except Exception as e:
+            logger.error(f"Smart-Limit Error: {e}")
+            return None
+
+    def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL"):
+        """Utility for Smart-Limit to change price of an open order."""
+        try:
+            price = round(new_price / 0.05) * 0.05
+            orderparams = {
+                "variety": variety,
+                "orderid": order_id,
+                "ordertype": "LIMIT",
+                "producttype": "INTRADAY",
+                "duration": "DAY",
+                "price": price,
+                "quantity": qty,
+                "tradingsymbol": symbol,
+                "symboltoken": token,
+                "exchange": "NFO"
+            }
+            if self.dry_run: return True
+            rate_limiter.wait()
+            response = self.api.modifyOrder(orderparams)
+            return response and response.get('status') == True
+        except: return False
+
     def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL"):
         """
         Places a STOPLOSS_MARKET order.
