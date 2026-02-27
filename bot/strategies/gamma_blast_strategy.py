@@ -208,17 +208,14 @@ class GammaBlastStrategy:
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
         
-        oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
+        oid = self.order_manager.place_smart_limit(
+            symbol, token, qty, limit_price, 
+            transaction_type="BUY", 
+            strategy_name="GAMMA_BLAST"
+        )
         if not oid: return
 
-        # 1. Early Record (Visibility in UI)
-        # We save with status "PLACED" (if entry_price=0 or we can pass status explicitly if we update save_trade further, 
-        # but my current update uses status="PLACED" if entry_price is passed as 0 or we use quote_ltp and it stays OPEN)
-        # Let's use status="PLACED" by passing entry_price=0.0 initially.
-        mode = "PAPER" if self.dry_run else "LIVE"
-        trade_id = trade_repo.save_trade(symbol, token, leg, qty, 0.0, 0.0, mode=mode, strategy="GAMMA_BLAST")
-
-        # 2. Wait for fill
+        # 2. Wait for fill (WebSocket or REST fallback)
         fill_result = self.wait_for_fill(oid)
         
         # FINAL REST FALLBACK IF TIMEOUT: The order might have filled right as timeout hit
@@ -258,10 +255,14 @@ class GammaBlastStrategy:
         
         # 3. Update Trade with Actual Fill & Mark OPEN
         sl_price = round(fill_price * 0.80, 1)
-        # 2. Update Entry (with Slippage Tracking)
+        
+        # Link and Update DB Record
+        trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
         if trade_id:
-            trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
             trade_repo.update_sl(trade_id, sl_price)
+        else:
+            # Fallback for dry-run or if DB write failed
+            logger.warning("Gamma Blast: Could not link fill to DB record. Status might be out of sync.")
         
         # Place Broker SL
         sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)

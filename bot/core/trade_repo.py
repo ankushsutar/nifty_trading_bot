@@ -1,5 +1,6 @@
 import threading
 import datetime
+import time
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bot.config.settings import Config
 from bot.utils.logger import logger
@@ -51,7 +52,7 @@ class TradeRepository:
         )
         return ret['seq']
 
-    def save_trade(self, symbol, token, leg, qty, entry_price, sl_price=0.0, side="BUY", mode="PAPER", strategy=None):
+    def save_trade(self, symbol, token, leg, qty, entry_price, sl_price=0.0, side="BUY", mode="PAPER", strategy=None, status=None):
         if not self.client:
             logger.error("TradeRepository: MongoDB not connected.")
             return None
@@ -74,7 +75,7 @@ class TradeRepository:
                     "exit_reason": None,
                     "mode": mode,
                     "strategy": strategy,
-                    "status": "OPEN" if entry_price > 0 else "PLACED",
+                    "status": status if status else ("OPEN" if entry_price > 0 else "PLACED"),
                     "partially_booked": False,
                     "created_at": datetime.datetime.now(),
                     "updated_at": datetime.datetime.now()
@@ -185,15 +186,17 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"TradeRepository Close Error: {e}")
 
-    def get_active_trade(self, mode=None, strategy=None):
-        """Returns the most recent OPEN trade. Optionally filter by mode/strategy."""
+    def get_active_trade(self, mode=None, strategy=None, symbol=None):
+        """Returns the most recent OPEN/PLACED trade. Optionally filter by mode/strategy/symbol."""
         if not self.client: return None
         try:
-            query = {"status": "OPEN"}
+            query = {"status": {"$in": ["OPEN", "PLACED"]}}
             if mode:
                 query["mode"] = mode
             if strategy:
                 query["strategy"] = strategy
+            if symbol:
+                query["symbol"] = symbol
                 
             return self.collection.find_one(query, sort=[("id", DESCENDING)])
         except Exception as e:

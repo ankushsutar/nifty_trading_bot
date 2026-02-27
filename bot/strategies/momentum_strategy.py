@@ -614,14 +614,21 @@ class MomentumStrategy:
         sl_price = max(0.1, quote_ltp - actual_sl_points)
         
         if self.dry_run:
+            oid = self.order_manager.place_smart_limit(
+                symbol, token, qty, quote_ltp, 
+                transaction_type="BUY", 
+                strategy_name="MOMENTUM"
+            )
+            
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
                 'entry_price': quote_ltp, 
                 'sl_price': sl_price, 
                 'context': trade_context
             }
-            mode = "PAPER" if self.dry_run else "LIVE"
-            tid = trade_repo.save_trade(symbol, token, leg, qty, quote_ltp, sl_price, mode=mode, strategy="MOMENTUM")
+            
+            # Update DB Fill (Simulation)
+            tid = self.order_manager.update_trade_fill(symbol, "MOMENTUM", quote_ltp)
             if tid: self.active_position['id'] = tid
             return
 
@@ -629,18 +636,17 @@ class MomentumStrategy:
              # For BUY orders, we are willing to pay slightly ABOVE current LTP to ensure fill.
              limit_price = quote_ltp * (1.0 + buffer)
                  
-             oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
+             oid = self.order_manager.place_smart_limit(
+                symbol, token, qty, limit_price, 
+                transaction_type="BUY", 
+                strategy_name="MOMENTUM"
+             )
              
              if not oid:
                  logger.error("❌ Smart-Limit Order Placement Failed! (API returned None).")
                  return
 
              logger.info(f"Success: Order Placed: {oid}")
-
-             # 1. Early Record (Visibility)
-             mode = "PAPER" if self.dry_run else "LIVE"
-             trade_id = trade_repo.save_trade(symbol, token, leg, qty, 0.0, 0.0, mode=mode, strategy="MOMENTUM")
-             if trade_id: self.active_position = {'id': trade_id} # Pre-populate so UI sees it
             
              # 2. Wait for fill
              fill_result = self.wait_for_fill(oid)
@@ -656,7 +662,11 @@ class MomentumStrategy:
 
              actual_sl = max(0.1, fill_price - actual_sl_points)
 
-             # 3. Finalize Local State
+             # 3. Finalize Local State & Update DB
+             trade_id = self.order_manager.update_trade_fill(symbol, "MOMENTUM", fill_price, expected_price=quote_ltp)
+             
+             actual_sl = max(0.1, fill_price - actual_sl_points)
+
              self.active_position = {
                 'id': trade_id,
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
@@ -666,9 +676,7 @@ class MomentumStrategy:
                 'context': trade_context
             }
              
-             # 4. Update Trade Record & SL
              if trade_id:
-                 trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
                  trade_repo.update_sl(trade_id, actual_sl)
              
              # Place Hard SL (Broker-Side)

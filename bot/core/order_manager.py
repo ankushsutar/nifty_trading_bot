@@ -3,6 +3,7 @@ import time
 from bot.utils.logger import logger
 from bot.utils.rate_limiter import rate_limiter
 from bot.core.kill_switch import is_kill_switch_active
+from bot.core.trade_repo import trade_repo
 
 class OrderManager:
     def __init__(self, api, dry_run=False):
@@ -11,7 +12,7 @@ class OrderManager:
         from bot.config.settings import Config
         self.live_trade_enabled = Config.LIVE_TRADE_ENABLED
 
-    def place_order(self, order_params):
+    def place_order(self, order_params, strategy_name=None, mode=None):
         """Places an order with rate limiting and error handling."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Order Rejected.")
@@ -41,6 +42,23 @@ class OrderManager:
                     # Register for WebSocket tracking
                     from bot.core.order_feed import order_feed
                     order_feed.register_order(oid)
+
+                    # --- Persistence Integration ---
+                    if strategy_name:
+                        try:
+                            trade_repo.save_trade(
+                                symbol=order_params.get('tradingsymbol'),
+                                token=order_params.get('symboltoken'),
+                                leg="CE" if "CE" in order_params.get('tradingsymbol', '') else "PE",
+                                qty=order_params.get('quantity'),
+                                entry_price=0.0, # PLACED status
+                                status="PLACED",
+                                mode=mode if mode else ("PAPER" if self.dry_run else "LIVE"),
+                                strategy=strategy_name
+                            )
+                        except Exception as e:
+                            logger.error(f"Persistence Integration Error: {e}")
+
                     return oid
                 else:
                     logger.error(f"❌ Order Placement Rejected: {response.get('message')}")
@@ -82,7 +100,7 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
-    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5):
+    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None):
         """
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
         Reduces slippage dramatically compared to MARKET orders.
@@ -94,6 +112,19 @@ class OrderManager:
             current_price = round(initial_price / 0.05) * 0.05
             oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type)
             if not oid: return None
+
+            # --- Persistence Integration (Early Record) ---
+            if strategy_name:
+                trade_repo.save_trade(
+                    symbol=symbol,
+                    token=token,
+                    leg="CE" if "CE" in symbol else "PE",
+                    qty=qty,
+                    entry_price=0.0,
+                    status="PLACED",
+                    mode=mode if mode else ("PAPER" if self.dry_run else "LIVE"),
+                    strategy=strategy_name
+                )
 
             from bot.core.order_feed import order_feed
             
@@ -316,4 +347,16 @@ class OrderManager:
             return self.api.rmsLimit()
         except Exception as e:
             logger.error(f"RMS Limit Fetch Error: {e}")
+            return None
+
+    def update_trade_fill(self, symbol, strategy_name, fill_price, expected_price=None):
+        """Helper to unify fill updates across strategies."""
+        try:
+            db_trade = trade_repo.get_active_trade(strategy=strategy_name, symbol=symbol)
+            if db_trade:
+                trade_repo.update_entry_price(db_trade['id'], fill_price, expected_price=expected_price)
+                return db_trade['id']
+            return None
+        except Exception as e:
+            logger.error(f"update_trade_fill Error: {e}")
             return None

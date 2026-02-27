@@ -165,14 +165,14 @@ class ORBStrategy:
         
         logger.info(f">>> [Trade] ORB: Entering {symbol} via Smart-Limit @ ₹{limit_price}")
         
-        oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
+        oid = self.order_manager.place_smart_limit(
+            symbol, token, qty, limit_price, 
+            transaction_type="BUY",
+            strategy_name="ORB" # Changed from "VWAP" to "ORB"
+        )
         if not oid: return
 
         try:
-             # 1. Early Record (Visibility)
-             mode = "PAPER" if self.dry_run else "LIVE"
-             trade_id = trade_repo.save_trade(symbol, token, option_type, qty, 0.0, 0.0, mode=mode, strategy="ORB")
-
              # 2. Wait for Fill
              fill_result = self.wait_for_fill(oid)
              
@@ -209,8 +209,8 @@ class ORBStrategy:
              logger.info(f">>> [Risk] Structural SL: {sl_price} | Target: {target_price}")
              
              # 3. Update Trade Record (with Slippage Tracking)
+             trade_id = self.order_manager.update_trade_fill(symbol, "ORB", fill_price, expected_price=quote_ltp)
              if trade_id:
-                  trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
                   trade_repo.update_sl(trade_id, sl_price)
              
              # Place Broker SL

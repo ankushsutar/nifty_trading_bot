@@ -127,14 +127,14 @@ class OHLStrategy:
         
         logger.info(f">>> [Trade] OHL Scalp: Entering {symbol} via Smart-Limit @ ₹{limit_price}")
         
-        oid = self.order_manager.place_smart_limit(symbol, token, qty, limit_price, transaction_type="BUY")
+        oid = self.order_manager.place_smart_limit(
+            symbol, token, qty, limit_price, 
+            transaction_type="BUY",
+            strategy_name="OHL"
+        )
         if not oid: return
 
         try:
-             # 1. Early Record (Visibility)
-             mode = "PAPER" if self.dry_run else "LIVE"
-             trade_id = trade_repo.save_trade(symbol, token, leg_type, qty, 0.0, 0.0, mode=mode, strategy="OHL")
-
              # 2. Wait for fill
              fill_result = self.wait_for_fill(oid) 
              
@@ -158,8 +158,8 @@ class OHLStrategy:
              target_price = round(fill_price + (risk * 1.5), 1)
              
              # 3. Update Trade Record (with Slippage Tracking)
+             trade_id = self.order_manager.update_trade_fill(symbol, "OHL", fill_price, expected_price=quote_ltp)
              if trade_id:
-                  trade_repo.update_entry_price(trade_id, fill_price, expected_price=quote_ltp)
                   trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
