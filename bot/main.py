@@ -96,7 +96,19 @@ def run_bot():
     risk_multiplier = 1.0
 
     # 3. Smart Auto-Selection (The Brain)
-    if args.auto:
+    # Check for Orphaned Trades first for auto-resumption
+    mode = "PAPER" if args.dry_run else "LIVE"
+    orphaned_trade = trade_repo.get_active_trade(mode=mode)
+    
+    if orphaned_trade:
+        strategy_name = orphaned_trade.get('strategy', 'STRADDLE')
+        logger.info(f"\n>>> [System] ♻️ ORPHANED TRADE DETECTED: {orphaned_trade['symbol']} ({strategy_name})")
+        logger.info(f"    Resuming monitoring for Trade #{orphaned_trade['id']}...")
+        args.strategy = strategy_name
+        # Skip auto-selection since we have a task at hand
+        args.auto = False 
+    
+    elif args.auto:
         logger.info("\n>>> [System] 🧠 SMART AUTO-MODE ACTIVATED")
         engine = DecisionEngine(api, loader, dry_run=args.dry_run)
         

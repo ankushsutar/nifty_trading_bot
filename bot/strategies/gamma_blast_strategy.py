@@ -25,12 +25,96 @@ class GammaBlastStrategy:
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.running = True
+        self.active_position = None
+
+    def sync_state(self):
+        """
+        Synchronizes active position from Broker API.
+        Looks for the FIRST active NIFTY Intraday position that matches Gamma Blast style (OTM).
+        """
+        if self.dry_run:
+            if self.active_position is None:
+                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="GAMMA_BLAST")
+                if db_trade:
+                    self.active_position = {
+                        'id': db_trade['id'],
+                        'leg': db_trade['leg'],
+                        'symbol': db_trade['symbol'],
+                        'token': db_trade['token'],
+                        'qty': db_trade['qty'],
+                        'entry_price': db_trade['entry_price'],
+                        'sl_price': db_trade['sl_price'],
+                        'sl_order_id': None
+                    }
+                    logger.info(f"♻️ [Gamma Blast] PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
+            return
+
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            pos_resp = self.order_manager.get_positions()
+            
+            if pos_resp and pos_resp.get('status') and pos_resp.get('data'):
+                found_active = None
+                
+                for pos in pos_resp['data']:
+                    # Look for NIFTY Intraday options with non-zero quantity
+                    if (pos['symbolname'] == 'NIFTY' and 
+                        pos['producttype'] == 'INTRADAY' and 
+                        int(pos['netqty']) != 0):
+                        
+                        qty = int(pos['netqty'])
+                        
+                        found_active = {
+                            'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
+                            'symbol': pos['tradingsymbol'],
+                            'token': pos['symboltoken'],
+                            'qty': abs(qty),
+                            'entry_price': float(pos['avgnetprice']),
+                            # If no local sl_price, default to 20% stop
+                            'sl_price': float(pos['avgnetprice']) * 0.8
+                        }
+                        
+                        # Match with DB record to get correct sl_price if available
+                        db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST")
+                        if db_trade and db_trade['symbol'] == found_active['symbol']:
+                            found_active['id'] = db_trade['id']
+                            found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
+                            logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
+                        
+                        if self.active_position is None:
+                            logger.info(f"♻️ [Gamma Blast] RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                        
+                        break 
+                
+                if found_active:
+                    self.active_position = found_active
+                elif self.active_position is not None:
+                    logger.warning("⚠️ [Gamma Blast] SYNC: Active Position closed externally! Resetting State.")
+                    trade_repo.close_trade(symbol=self.active_position['symbol'])
+                    self.active_position = None
+                    
+        except Exception as e:
+            logger.error(f"[Gamma Blast] Sync State Error: {e}")
 
     def execute(self, expiry, action="BUY"):
         logger.info(f"🚀 --- GAMMA BLAST OTM STRATEGY ACTIVATED ({expiry}) ---")
         
-        mode = "PAPER" if self.dry_run else "LIVE"
-        active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST")
+        # 0. Sync and Recover
+        self.sync_state()
+        if self.active_position:
+            logger.info(f"🚀 [Gamma Blast] Resuming monitoring for {self.active_position['symbol']}...")
+            self.monitor_position(
+                self.active_position['symbol'], 
+                self.active_position['token'], 
+                self.active_position['qty'], 
+                self.active_position['sl_price'], 
+                self.active_position['entry_price'], 
+                self.active_position.get('id'), 
+                self.active_position.get('sl_order_id'), 
+                self.active_position.get('leg')
+            )
+            return
 
         # 1.5 Global Safety Guards
         if not self.gatekeeper.is_market_open():
@@ -65,22 +149,31 @@ class GammaBlastStrategy:
 
         # 2. Market analysis & Final Confirmation 
         # (Though DecisionEngine already checked, we double check local indicators)
-        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
-        if df is None or len(df) < 20:
-            logger.error("Gamma Blast: Insufficient data for precision entry.")
-            return
-
-        ltp = df.iloc[-1]['close']
-        adx = self.calculate_adx(df).iloc[-1]
+        from backend.market_service import market_service
+        market_data = market_service.get_market_data()
+        analysis = market_data.get('analysis', {})
         
+        if not analysis or analysis.get('regime') == 'UNKNOWN':
+            logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
+            # Final fallback to direct fetch only if market_service is failing
+            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+            if df is None or len(df) < 20: return
+            ltp = df.iloc[-1]['close']
+            adx = self.calculate_adx(df).iloc[-1]
+            ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
+            ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
+        else:
+            ltp = market_data.get('nifty', 0)
+            adx = analysis.get('adx', 0)
+            ema9 = analysis.get('ema9', 0)
+            ema21 = analysis.get('ema21', 0)
+            logger.info(f"Gamma Blast: Using Shared Analysis (ADX: {adx:.1f} | Regime: {analysis.get('regime')})")
+
         if adx < 30: # Threshold for Parabolic check
             logger.warning(f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below threshold (30). Aborting.")
             return
 
         # 3. Determine Leg (Trend Direction)
-        ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
-        ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        
         leg = "CE" if ema9 > ema21 else "PE"
         
         # 4. Strike Selection (OTM Logic)
@@ -184,6 +277,14 @@ class GammaBlastStrategy:
         
         while self.running:
             try:
+                # --- Periodic Sync (Throttled) ---
+                if not self.dry_run and time.time() - self.last_sync_time > 15:
+                    self.sync_state()
+                    self.last_sync_time = time.time()
+                    if not self.active_position:
+                        logger.warning("Gamma Blast: Sync found no active position. Stopping monitor.")
+                        break
+
                 time.sleep(0.5)
                 ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
                 if not ltp: continue

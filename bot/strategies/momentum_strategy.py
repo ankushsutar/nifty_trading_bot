@@ -152,6 +152,9 @@ class MomentumStrategy:
         Momentum Logic (EMA Crossover + RSI)
         """
         logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
+        
+        # 0. Sync and Recover
+        self.sync_state()
 
         # 0. Global Safety Guards (Strict Enforcement)
         if not self.gatekeeper.is_market_open():

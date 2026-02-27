@@ -10,7 +10,7 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.MAX_TRADES_PER_DAY = 2    # Hard cap to prevent brokerage drain
+        self.MAX_TRADES_PER_DAY = 3    # Hard cap to prevent brokerage drain
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
     def analyze_and_select(self):
@@ -169,28 +169,35 @@ class DecisionEngine:
                             return None, 1.0
             # --------------------------------------------------
 
-            # A. ULTRA-HIGH CONFIDENCE (Gamma Blast) -> OTM Exponential Profits
-            if adx > 45:
-                logger.info(f">>> [Brain] 🚀 PARABOLIC TREND (ADX: {adx:.1f}). Selected: Gamma Blast (OTM Leverage) 💎")
-                selected_strategy = "GAMMA_BLAST"
+            logger.info(f">>> [Brain] 🔍 Evaluating Trending Strategies (ADX: {adx:.1f})...")
 
-            # B. High Momentum (Super Trend) -> Reactive EMA Crossover
-            elif adx > 30:
-                logger.info(f">>> [Brain] ⚡ Strong Trend (ADX: {adx:.1f}). Selected: Momentum (Reactive Mode)")
-                selected_strategy = "MOMENTUM"
-
-            # B. Early Morning (09:30 - 10:00) -> Range Breakouts
-            elif datetime.time(9, 30) <= now < datetime.time(10, 0):
-                logger.info(">>> [Brain] 🚀 Early Trend detected. Selected: ORB (Range Breakout)")
+            # A. Early Morning (09:30 - 10:00) -> Range Breakouts
+            # Priority: ORB is usually more reliable at the open than raw EMA crossover
+            if datetime.time(9, 30) <= now < datetime.time(10, 0):
+                logger.info(">>> [Brain] 🕒 Morning Range Setup detected. Selected: ORB (Opening Range Breakout)")
                 selected_strategy = "ORB"
             
-            # C. Post-Stability (10:00+) -> Institutional VWAP
+            # B. Post-Stability (10:00+) -> Institutional Trend Check
             elif now >= datetime.time(10, 0):
-                logger.info(">>> [Brain] 🏛️ Institutional Trend confirmed. Selected: VWAP (Institutional Mode)")
-                selected_strategy = "VWAP"
+                # If ADX is extreme, we prefer Momentum/Gamma over VWAP
+                if adx > 45:
+                    logger.info(f">>> [Brain] 🚀 PARABOLIC TREND DETECTED (ADX: {adx:.1f}). Selected: Gamma Blast 💎")
+                    selected_strategy = "GAMMA_BLAST"
+                elif adx > 30:
+                    logger.info(f">>> [Brain] ⚡ Strong Momentum detected (ADX: {adx:.1f}). Selected: Momentum (Reactive Mode)")
+                    selected_strategy = "MOMENTUM"
+                else:
+                    logger.info(">>> [Brain] 🏛️ Institutional Setup. Selected: VWAP (Institutional Mode)")
+                    selected_strategy = "VWAP"
+            
+            # Fallback for early day before 9:30 if trending
+            else:
+                 logger.info(">>> [Brain] ⚡ Early Momentum. Selected: Momentum (Reactive Mode)")
+                 selected_strategy = "MOMENTUM"
             
         # Scenario: Rangebound / Sideways Market
         elif regime in ["SIDEWAYS", "CHOP"]:
+            logger.info(">>> [Brain] 🔍 Evaluating Rangebound Strategies...")
             if funds_for_straddle and bias == "NEUTRAL":
                 logger.info(">>> [Brain] 💠 Rangebound Market + Neutral OI. Selected: Straddle (Premium Capture)")
                 selected_strategy = "STRADDLE"

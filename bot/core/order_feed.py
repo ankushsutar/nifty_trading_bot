@@ -41,13 +41,20 @@ class OrderFeedService:
         if now - self.last_cleanup < 3600: return
         
         with self.registry_lock:
-            # Keep only orders from the last hour
-            # (In a real trading day, 1000 orders is negligible, but this is good practice)
+            # FIX: Only clear orders that ARE NOT pending or active.
+            # This prevents wiping events for orders currently being walked/monitored.
+            active_ids = list(self.order_events.keys())
             initial_count = len(self.order_status_registry)
-            self.order_status_registry = {} # For simplicity, clear all since strategies wait with timeout
-            self.order_events = {}
+            
+            # Keep only active events and recent status
+            new_registry = {}
+            for oid, data in self.order_status_registry.items():
+                if oid in active_ids or data.get('status') == 'PENDING':
+                    new_registry[oid] = data
+            
+            self.order_status_registry = new_registry
             self.last_cleanup = now
-            logger.info(f">>> [OrderFeed] Registry Cleanup: Flushed {initial_count} stale orders.")
+            logger.info(f">>> [OrderFeed] Registry Cleanup: Flushed {initial_count - len(new_registry)} stale orders. Keeping {len(active_ids)} active events.")
 
     def start(self):
         """Starts the Order WebSocket connection."""
@@ -65,13 +72,23 @@ class OrderFeedService:
 
     def register_order(self, order_id):
         """Pre-registers an order to be tracked, handling pre-arrived updates."""
+        if not order_id: return
         with self.registry_lock:
+            # Convert to string to ensure consistent lookup (Angel One IDs are strings)
+            order_id = str(order_id)
             if order_id not in self.order_status_registry:
                 self.order_status_registry[order_id] = {'status': 'PENDING'}
+            
             event = threading.Event()
             self.order_events[order_id] = event
-            if self.order_status_registry[order_id]['status'] != 'PENDING':
+            
+            # Handle Race: If update arrived before registration
+            current_status = self.order_status_registry[order_id]['status']
+            if current_status != 'PENDING':
                 event.set()
+                logger.debug(f">>> [OrderFeed] Registered {order_id} (Already {current_status})")
+            else:
+                logger.debug(f">>> [OrderFeed] Registered {order_id} for tracking.")
 
     def get_order_status(self, order_id):
         with self.registry_lock:
@@ -79,6 +96,7 @@ class OrderFeedService:
 
     def wait_for_fill(self, order_id, timeout=10):
         """Waits for an order to be filled using WebSocket events, with REST fallback."""
+        order_id = str(order_id)
         event = None
         with self.registry_lock:
             event = self.order_events.get(order_id)
@@ -88,7 +106,8 @@ class OrderFeedService:
             status = self.get_order_status(order_id)
             if status and status['status'] != 'PENDING':
                 return status
-            return {'status': 'ERROR', 'message': 'Order not registered in feed'}
+            logger.error(f">>> [OrderFeed] Order {order_id} NOT FOUND in events registry. Registered IDs: {list(self.order_events.keys())}")
+            return {'status': 'ERROR', 'message': f'Order {order_id} not registered in feed'}
 
         # Wait for the WebSocket callback to signal the event
         signaled = event.wait(timeout=timeout)
@@ -172,10 +191,12 @@ class OrderFeedService:
             if isinstance(message, bytes):
                 message = message.decode('utf-8')
             
-            if not message or message.strip() == "":
+            if message is None:
                 return
 
             if isinstance(message, str):
+                if message.strip() == "":
+                    return
                 try:
                     message = json.loads(message)
                 except json.JSONDecodeError:

@@ -41,12 +41,15 @@ class OrderManager:
                     # Register for WebSocket tracking
                     from bot.core.order_feed import order_feed
                     order_feed.register_order(oid)
-                    
                     return oid
                 else:
                     logger.error(f"❌ Order Placement Rejected: {response.get('message')}")
                     return None
-            return response # Mock returns string ID directly
+            
+            # Mock or direct string return
+            from bot.core.order_feed import order_feed
+            order_feed.register_order(response)
+            return response
         except Exception as e:
             logger.error(f"Order Placement Error: {e}")
             return None
@@ -118,12 +121,19 @@ class OrderManager:
                 # Modify existing order
                 success = self.modify_order_price(oid, current_price, symbol, token, qty)
                 if not success:
-                    logger.warning("⚠️ Walk failed: Modification error. Using last known order ID.")
-                    # If modify fails, we might need to re-place, but let's stick to modify for now.
+                    logger.warning("⚠️ Walk failed: Modification error. Aborting walk.")
+                    break
             
             # Final attempt: Wait longer on last price
             result = order_feed.wait_for_fill(oid, timeout=5)
-            return oid if result['status'] == 'FILLED' else oid
+            if result['status'] == 'FILLED':
+                logger.info(f"✨ Smart-Limit Filled on final attempt: {symbol} @ {result['price']}")
+                return oid
+            
+            # If still not filled, we should probably cancel it to avoid ghost entries
+            logger.warning(f"⚠️ Smart-Limit timed out after walking. Status: {result.get('status')}. Cancelling order {oid} for safety.")
+            self.cancel_order(oid, variety="NORMAL")
+            return None
 
         except Exception as e:
             logger.error(f"Smart-Limit Error: {e}")
