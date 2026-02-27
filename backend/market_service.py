@@ -7,6 +7,7 @@ from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.data_fetcher import DataFetcher
 from bot.utils.token_lookup import TokenLookup
+from bot.core.levels_provider import levels_provider
 from bot.utils.logger import logger
 import json
 import os
@@ -32,6 +33,7 @@ class MarketService:
             
             cls._instance.analysis_data = {}
             cls._instance.oi_data = {}
+            cls._instance.levels_data = {}
             cls._instance.last_analysis_time = 0
             
             # --- STARTUP WARM-UP: Load Last Known Intelligence ---
@@ -43,6 +45,7 @@ class MarketService:
                         shared_state = json.load(f)
                         cls._instance.analysis_data = shared_state.get('analysis', {})
                         cls._instance.oi_data = shared_state.get('oi_data', {})
+                        cls._instance.levels_data = shared_state.get('levels', {})
                         logger.info("MarketService: Startup Intelligence Loaded from disk 💾")
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
@@ -149,6 +152,8 @@ class MarketService:
                                 # Read oi_data dict (new format) or fall back to legacy flat keys
                                 if 'oi_data' in shared_state:
                                     self.oi_data = shared_state['oi_data']
+                                if 'levels' in shared_state:
+                                    self.levels_data = shared_state['levels']
                                 else:
                                     # Legacy format compatibility
                                     self.oi_data = {
@@ -167,7 +172,8 @@ class MarketService:
             return {
                 "nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection",
                 "analysis": self.analysis_data,
-                "oi_data": self.oi_data
+                "oi_data": self.oi_data,
+                "levels": self.levels_data
             }
 
         try:
@@ -185,7 +191,8 @@ class MarketService:
                 "vix": vix_ltp,
                 "pnl": 0.0,
                 "analysis": self.analysis_data,
-                "oi_data": self.oi_data
+                "oi_data": self.oi_data,
+                "levels": self.levels_data
             }
             
             # Update Cache
@@ -255,7 +262,11 @@ class MarketService:
                 if self.api:
                     if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
+                    levels_provider.data_fetcher.api = self.api # Keep sync
 
+                    # 0. Levels Analysis (S&R)
+                    self.levels_data = levels_provider.get_levels() or {}
+                    
                     # 1. Regime Analysis
                     # SMARTER CHECK: If we already have fresh enough candle data in cache, 
                     # skip firing a REST call to preserve API quota.
@@ -304,6 +315,7 @@ class MarketService:
                                     "total_ce_oi": analysis.get("total_ce_oi", 0),
                                     "total_pe_oi": analysis.get("total_pe_oi", 0),
                                 },
+                                "levels": self.levels_data,
                                 # Keep legacy flat keys for any other consumers
                                 "sentiment": analysis.get("bias", "NEUTRAL"),
                                 "pcr": analysis.get("pcr", 1.0),

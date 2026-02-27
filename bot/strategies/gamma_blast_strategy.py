@@ -44,6 +44,12 @@ class GammaBlastStrategy:
             return
 
         if active_trade:
+            # If the trade is still pending fill from a previous crash/timeout, entry_price might be 0.0
+            if active_trade.get('entry_price', 0.0) == 0.0:
+                logger.warning(f">>> [Resumption] Found Ghost Trade (entry=0.0): {active_trade['symbol']}. Closing.")
+                trade_repo.collection.delete_one({"id": active_trade['id']})
+                return
+            
             logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']}")
             self.monitor_position(
                 active_trade['symbol'], 
@@ -121,12 +127,40 @@ class GammaBlastStrategy:
 
         # 2. Wait for fill
         fill_result = self.wait_for_fill(oid)
-        if fill_result['status'] != 'FILLED':
-            logger.warning(f"Gamma Blast: Entry failed or timed out. Status: {fill_result['status']}")
-            if fill_result['status'] == 'TIMEOUT':
-                self.order_manager.cancel_order(oid, variety="NORMAL")
-            return
+        
+        # FINAL REST FALLBACK IF TIMEOUT: The order might have filled right as timeout hit
+        if fill_result['status'] == 'TIMEOUT' and not self.dry_run:
+            logger.info(f"Gamma Blast: ⏳ Order {oid} timed out. Doing one final REST API check before aborting...")
+            try:
+                ob_res = self.api.orderBook()
+                if ob_res and ob_res.get('status'):
+                    for ord_info in ob_res.get('data', []):
+                        if ord_info.get('orderid') == oid:
+                            rest_status = ord_info.get('status', '').lower()
+                            if rest_status == 'complete':
+                                logger.info(f"Gamma Blast: ✅ Order {oid} actually FILLED on REST check!")
+                                fill_result = {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
+                            break
+            except Exception as e:
+                logger.error(f"Gamma Blast Final REST Check Error: {e}")
 
+        if fill_result['status'] != 'FILLED':
+            logger.warning(f"Gamma Blast: Entry failed or timed out permanently. Status: {fill_result['status']}")
+            
+            cancel_success = True
+            if fill_result['status'] == 'TIMEOUT':
+                cancel_success = self.order_manager.cancel_order(oid, variety="NORMAL")
+                
+            if cancel_success or fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                # CRITICAL FIX: Delete the zombie database record if entry failed and was cancelled
+                if trade_id:
+                    trade_repo.collection.delete_one({"id": trade_id})
+                    logger.info(f"Gamma Blast: Cleaned up failed entry record #{trade_id} from database.")
+                return
+            else:
+                logger.critical(f"Gamma Blast: 🚨 DANGER! Order {oid} timed out, but CANCEL FAILED! It might be filling! Transitioning to monitor mode just in case.")
+                fill_result = {'status': 'FILLED', 'price': limit_price} # Assume limit price fill to survive
+                
         fill_price = fill_result['price']
         
         # 3. Update Trade with Actual Fill & Mark OPEN
@@ -229,9 +263,26 @@ class GammaBlastStrategy:
             # Use WebSocket to wait for final exit price for the ledger
             if oid:
                 fill = self.wait_for_fill(oid)
+                
+                # REST FALLBACK FOR EXIT IF TIMEOUT
+                if fill['status'] == 'TIMEOUT' and not self.dry_run:
+                    logger.info(f"Gamma Blast: ⏳ Exit order {oid} timed out. Doing one final REST API check...")
+                    try:
+                        ob_res = self.api.orderBook()
+                        if ob_res and ob_res.get('status'):
+                            for ord_info in ob_res.get('data', []):
+                                if ord_info.get('orderid') == oid:
+                                    rest_status = ord_info.get('status', '').lower()
+                                    if rest_status == 'complete':
+                                        logger.info(f"Gamma Blast: ✅ Exit order {oid} actually FILLED on REST check!")
+                                        fill = {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
+                                    break
+                    except Exception as e:
+                        logger.error(f"Gamma Blast Final REST Check Error: {e}")
+
                 # Ensure the exit limit actually filled, so we don't abandon the order
                 if fill['status'] == 'TIMEOUT':
-                    logger.warning(f"Gamma Blast: Exit order {oid} TIMEOUT. Canceling and retrying monitor mode.")
+                    logger.warning(f"Gamma Blast: Exit order {oid} TIMEOUT permanently. Canceling and retrying monitor mode.")
                     self.order_manager.cancel_order(oid, variety="NORMAL")
                     return False
                 

@@ -84,7 +84,7 @@ class OrderManager:
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
         Reduces slippage dramatically compared to MARKET orders.
         """
-        if self.dry_run:
+        if self.dry_run or not self.live_trade_enabled:
             return self.place_limit_order(symbol, token, qty, initial_price, transaction_type)
 
         try:
@@ -145,7 +145,9 @@ class OrderManager:
                 "symboltoken": token,
                 "exchange": "NFO"
             }
-            if self.dry_run: return True
+            if self.dry_run or not self.live_trade_enabled:
+                logger.info(f"🧪 [DRY RUN] Simulating Modify Limit Price: {order_id} -> {price}")
+                return True
             rate_limiter.wait()
             response = self.api.modifyOrder(orderparams)
             return response and response.get('status') == True
@@ -199,7 +201,7 @@ class OrderManager:
             return False
 
         try:
-            if self.dry_run:
+            if self.dry_run or not self.live_trade_enabled:
                 logger.info(f"🧪 [DRY RUN] Simulating Cancel: {order_id}")
                 return True
 
@@ -250,7 +252,7 @@ class OrderManager:
                 "symboltoken": token,
                 "exchange": "NFO"
             }
-            if self.dry_run:
+            if self.dry_run or not self.live_trade_enabled:
                 logger.info(f"🧪 [DRY RUN] Simulating Modify: {order_id} -> {price}")
                 return True
 

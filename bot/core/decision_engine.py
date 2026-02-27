@@ -141,6 +141,34 @@ class DecisionEngine:
         if regime == "TRENDING":
             adx = regime_data.get('adx', 0)
             
+            # --- PHASE 3: PROXIMITY FILTER (THE WALL CHECK) ---
+            levels = market_data.get('levels', {})
+            nifty_ltp = market_data.get('nifty', 0)
+            
+            if levels and nifty_ltp > 0:
+                proximity_threshold = nifty_ltp * 0.0015 # 0.15% buffer
+                
+                # A. BULLISH ENTRY CHECK (Buying into Resistance?)
+                if trend == "BULLISH":
+                    resistances = [levels.get('pdh'), levels.get('cam_h3'), levels.get('cam_h4')]
+                    resistances = [r for r in resistances if r and r > nifty_ltp]
+                    
+                    for r in resistances:
+                        if (r - nifty_ltp) < proximity_threshold:
+                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Buying too close to Resistance (₹{r:.0f}). entry deferred.")
+                            return None, 1.0
+                            
+                # B. BEARISH ENTRY CHECK (Selling into Support?)
+                elif trend == "BEARISH":
+                    supports = [levels.get('pdl'), levels.get('cam_l3'), levels.get('cam_l4')]
+                    supports = [s for s in supports if s and s < nifty_ltp]
+                    
+                    for s in supports:
+                        if (nifty_ltp - s) < proximity_threshold:
+                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Selling too close to Support (₹{s:.0f}). entry deferred.")
+                            return None, 1.0
+            # --------------------------------------------------
+
             # A. ULTRA-HIGH CONFIDENCE (Gamma Blast) -> OTM Exponential Profits
             if adx > 45:
                 logger.info(f">>> [Brain] 🚀 PARABOLIC TREND (ADX: {adx:.1f}). Selected: Gamma Blast (OTM Leverage) 💎")

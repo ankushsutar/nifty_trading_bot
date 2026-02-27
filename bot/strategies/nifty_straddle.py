@@ -156,6 +156,8 @@ class NiftyStrategy:
                  else:
                       logger.error(f"❌ PE Order Failed: {pe_fill.get('message')}")
                       if pe_tid: trade_repo.close_trade(trade_id=pe_tid, exit_reason="ORDER_FAILED")
+        except Exception as e:
+             logger.error(f"Error during straddle entry: {e}")
 
         # 7. Place Initial Broker-Side Stop Loss (25%)
         # For Short, SL is BUY STOP.

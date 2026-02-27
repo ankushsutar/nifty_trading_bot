@@ -225,6 +225,9 @@ class TradeRepository:
             query = {"created_at": {"$gte": today_start}}
             if mode:
                 query["mode"] = mode
+            else:
+                # IMPORTANT: Default to LIVE trades if mode is not specified to prevent PAPER trades from affecting LIVE!
+                query["mode"] = "LIVE"
                 
             cursor = self.collection.find(query).sort("id", DESCENDING)
             return list(cursor)
