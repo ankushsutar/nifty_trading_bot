@@ -272,17 +272,19 @@ class TradeRepository:
 
     def reconcile_with_broker(self, api):
         """
-        Fetches today's Angel One tradeBook and closes any OPEN DB trades
-        where the broker executed a SELL (exit) — using real fill prices for PnL.
-
+        Fetches today's Angel One tradeBook and:
+        1. Updates any PLACED trades to OPEN if a BUY fill is found.
+        2. Closes any OPEN trades if a SELL fill is found.
+        
         Called on strategy startup and via /api/reconcile-positions.
         """
         if not self.client:
             return
 
-        open_trades = self.get_open_trades()
-        if not open_trades:
-            logger.info("[Reconcile] No open DB trades. Nothing to sync.")
+        # Fetch both OPEN and PLACED trades
+        active_trades = list(self.collection.find({"status": {"$in": ["OPEN", "PLACED"]}}))
+        if not active_trades:
+            logger.info("[Reconcile] No open/placed DB trades. Nothing to sync.")
             return
 
         # --- Fetch tradeBook (real executed fills) ---
@@ -296,8 +298,9 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"[Reconcile] tradeBook() failed: {e}")
 
-        # --- Build SELL exit map: symbol → weighted avg price ---
-        exit_map = {}
+        # --- Build fill maps ---
+        # symbol -> {transaction_type -> {total_value: float, total_qty: int}}
+        fill_map = {}
         for t in broker_trades:
             sym   = t.get('tradingsymbol', '')
             side  = t.get('transactiontype', '').upper()
@@ -307,52 +310,62 @@ class TradeRepository:
             except (TypeError, ValueError):
                 continue
 
-            if side == 'SELL' and qty > 0 and price > 0:
-                if sym not in exit_map:
-                    exit_map[sym] = {'total_value': 0.0, 'total_qty': 0}
-                exit_map[sym]['total_value'] += price * qty
-                exit_map[sym]['total_qty']   += qty
+            if qty > 0 and price > 0:
+                if sym not in fill_map:
+                    fill_map[sym] = {}
+                if side not in fill_map[sym]:
+                    fill_map[sym][side] = {'total_value': 0.0, 'total_qty': 0}
+                
+                fill_map[sym][side]['total_value'] += price * qty
+                fill_map[sym][side]['total_qty']   += qty
 
-        for sym, data in exit_map.items():
-            if data['total_qty'] > 0:
-                exit_map[sym] = round(data['total_value'] / data['total_qty'], 2)
-            else:
-                exit_map.pop(sym, None)
+        # Calculate weighted averages
+        avg_prices = {}
+        for sym, sides in fill_map.items():
+            avg_prices[sym] = {}
+            for side, data in sides.items():
+                if data['total_qty'] > 0:
+                    avg_prices[sym][side] = round(data['total_value'] / data['total_qty'], 2)
 
-        # --- Match OPEN trades against SELL fills, always close ---
+        # --- Match DB trades against broker fills ---
         reconciled = 0
-        for trade in open_trades:
+        for trade in active_trades:
             symbol      = trade.get('symbol', '')
             trade_id    = trade.get('id')
-            entry_price = float(trade.get('entry_price', 0))
-            qty         = int(trade.get('qty', 0))
+            status      = trade.get('status')
+            
+            # 1. Handle PLACED trades -> Match with BUY fill
+            if status == "PLACED":
+                buy_price = avg_prices.get(symbol, {}).get('BUY')
+                if buy_price:
+                    self.update_entry_price(trade_id, buy_price)
+                    logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{buy_price})")
+                    reconciled += 1
+                continue
 
-            exit_price = exit_map.get(symbol)
-            if exit_price:
-                pnl    = round((exit_price - entry_price) * qty, 2)
-                reason = "SYNC_FROM_BROKER"
-            else:
-                # No broker SELL fill found — still close using entry as fallback
-                exit_price = entry_price
-                pnl        = 0.0
-                reason     = "MANUAL_EXIT"
-
-            self.close_trade(
-                trade_id=trade_id,
-                exit_price=exit_price,
-                pnl=pnl,
-                exit_reason=reason
-            )
-            logger.info(
-                f"[Reconcile] ✅ Trade #{trade_id} ({symbol}) → "
-                f"Exit: ₹{exit_price} | PnL: {pnl:+.2f} | Reason: {reason}"
-            )
-            reconciled += 1
+            # 2. Handle OPEN trades -> Match with SELL fill
+            if status == "OPEN":
+                entry_price = float(trade.get('entry_price', 0))
+                qty         = int(trade.get('qty', 0))
+                sell_price  = avg_prices.get(symbol, {}).get('SELL')
+                
+                if sell_price:
+                    pnl    = round((sell_price - entry_price) * qty, 2)
+                    reason = "SYNC_FROM_BROKER"
+                    self.close_trade(trade_id=trade_id, exit_price=sell_price, pnl=pnl, exit_reason=reason)
+                    logger.info(f"[Reconcile] ✅ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Exit: ₹{sell_price} | PnL: {pnl:+.2f})")
+                    reconciled += 1
+                else:
+                    # Note: We used to close it with entry as fallback if no SELL was found.
+                    # This is dangerous if the bot just restarted and the position is still open.
+                    # Only close if we are SURE it was manually exited (which we can't be sure of without more info)
+                    # For now, it's safer to leave it OPEN if no SELL fill is found.
+                    pass
 
         if reconciled:
-            logger.info(f"[Reconcile] {reconciled} trade(s) synced from broker tradeBook.")
+            logger.info(f"[Reconcile] {reconciled} trade(s) reconciled from broker tradeBook.")
         else:
-            logger.info("[Reconcile] No broker SELL fills matched open DB trades. All OK or no exits yet.")
+            logger.info("[Reconcile] All DB trades match broker state.")
 
 
     def force_close_trade(self, trade_id, exit_price=0.0, reason="MANUAL_EXIT"):

@@ -26,6 +26,7 @@ class GammaBlastStrategy:
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.running = True
         self.active_position = None
+        self.last_sync_time = 0
 
     def sync_state(self):
         """
@@ -76,8 +77,8 @@ class GammaBlastStrategy:
                         }
                         
                         # Match with DB record to get correct sl_price if available
-                        db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST")
-                        if db_trade and db_trade['symbol'] == found_active['symbol']:
+                        db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
+                        if db_trade:
                             found_active['id'] = db_trade['id']
                             found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
                             logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
@@ -100,54 +101,45 @@ class GammaBlastStrategy:
     def execute(self, expiry, action="BUY"):
         logger.info(f"🚀 --- GAMMA BLAST OTM STRATEGY ACTIVATED ({expiry}) ---")
         
-        # 0. Sync and Recover
-        self.sync_state()
-        if self.active_position:
-            logger.info(f"🚀 [Gamma Blast] Resuming monitoring for {self.active_position['symbol']}...")
-            self.monitor_position(
-                self.active_position['symbol'], 
-                self.active_position['token'], 
-                self.active_position['qty'], 
-                self.active_position['sl_price'], 
-                self.active_position['entry_price'], 
-                self.active_position.get('id'), 
-                self.active_position.get('sl_order_id'), 
-                self.active_position.get('leg')
-            )
-            return
+        while self.running:
+            # 1.5 Global Safety Guards
+            if not self.gatekeeper.is_market_open():
+                logger.warning("Gamma Blast: 🛑 Execution Aborted - Market is Closed.")
+                break
+            if self.gatekeeper.is_blackout_period():
+                logger.info("Gamma Blast: ⏸️ Execution Suspended - Mid-day Blackout.")
+                time.sleep(60)
+                continue
+            if not self.gatekeeper.check_max_daily_loss(0.0):
+                logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
+                break
 
-        # 1.5 Global Safety Guards
-        if not self.gatekeeper.is_market_open():
-            logger.warning("Gamma Blast: 🛑 Execution Aborted - Market is Closed.")
-            return
-        if self.gatekeeper.is_blackout_period():
-            logger.info("Gamma Blast: ⏸️ Execution Suspended - Mid-day Blackout.")
-            return
-        if not self.gatekeeper.check_max_daily_loss(0.0):
-            logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
-            return
+            # 1. Check for Resumption (DB check)
+            mode = "PAPER" if self.dry_run else "LIVE"
+            active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST")
 
-        if active_trade:
-            # If the trade is still pending fill from a previous crash/timeout, entry_price might be 0.0
-            if active_trade.get('entry_price', 0.0) == 0.0:
-                logger.warning(f">>> [Resumption] Found Ghost Trade (entry=0.0): {active_trade['symbol']}. Closing.")
-                trade_repo.collection.delete_one({"id": active_trade['id']})
-                return
-            
-            logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']}")
-            self.monitor_position(
-                active_trade['symbol'], 
-                active_trade['token'], 
-                active_trade['qty'],
-                active_trade['sl_price'],
-                active_trade['entry_price'],
-                active_trade['id'],
-                active_trade.get('sl_order_id'),
-                active_trade.get('leg')
-            )
-            return
+            if active_trade:
+                # If the trade is still pending fill from a previous crash/timeout, entry_price might be 0.0
+                if active_trade.get('entry_price', 0.0) == 0.0:
+                    logger.warning(f">>> [Resumption] Found Ghost Trade (entry=0.0): {active_trade['symbol']}. Closing.")
+                    trade_repo.collection.delete_one({"id": active_trade['id']})
+                    # Do not return; continue loop to look for new signals
+                    continue
+                
+                logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']}")
+                self.monitor_position(
+                    active_trade['symbol'], 
+                    active_trade['token'], 
+                    active_trade['qty'],
+                    active_trade['sl_price'],
+                    active_trade['entry_price'],
+                    active_trade['id'],
+                    active_trade.get('sl_order_id'),
+                    active_trade.get('leg')
+                )
+                break # Monitoring finished or trade closed
 
-        # 2. Market analysis & Final Confirmation 
+            # 2. Market analysis & Final Confirmation 
         # (Though DecisionEngine already checked, we double check local indicators)
         from backend.market_service import market_service
         market_data = market_service.get_market_data()
@@ -192,6 +184,9 @@ class GammaBlastStrategy:
         qty = lots * Config.NIFTY_LOT_SIZE
         
         self.place_entry(expiry, strike, leg, qty)
+        
+        # If we didn't enter or monitoring finished, loop again after sleep
+        time.sleep(30) # Throttle loop
 
     def place_entry(self, expiry, strike, leg, qty):
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
@@ -243,9 +238,10 @@ class GammaBlastStrategy:
                 
             if cancel_success or fill_result['status'] in ['REJECTED', 'CANCELLED']:
                 # CRITICAL FIX: Delete the zombie database record if entry failed and was cancelled
-                if trade_id:
-                    trade_repo.collection.delete_one({"id": trade_id})
-                    logger.info(f"Gamma Blast: Cleaned up failed entry record #{trade_id} from database.")
+                failed_trade = trade_repo.get_active_trade(strategy="GAMMA_BLAST", symbol=symbol)
+                if failed_trade:
+                    trade_repo.collection.delete_one({"id": failed_trade['id']})
+                    logger.info(f"Gamma Blast: Cleaned up failed entry record #{failed_trade['id']} from database.")
                 return
             else:
                 logger.critical(f"Gamma Blast: 🚨 DANGER! Order {oid} timed out, but CANCEL FAILED! It might be filling! Transitioning to monitor mode just in case.")
