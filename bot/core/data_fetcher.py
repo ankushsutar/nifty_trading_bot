@@ -150,10 +150,10 @@ class DataFetcher:
         process_type = os.getenv("PROCESS_TYPE", "BOT")
         if process_type != "BACKEND":
             # CHILD/BOT PROCESS: STRICTLY PROHIBITED from calling getCandleData.
-            # It must poll the disk cache for up to 120s, assuming the BACKEND is fetching it.
-            logger.warning(f"DataFetcher [CHILD]: Blocked REST fetch for {cache_key}. Polling shared disk cache for up to 120s...")
+            # It must poll the disk cache for up to 30s, assuming the BACKEND is fetching it.
+            logger.warning(f"DataFetcher [CHILD]: Blocked REST fetch for {cache_key}. Polling shared disk cache for up to 30s...")
             start_poll = time.time()
-            while time.time() - start_poll < 120:  # FIX: increased from 60s to 120s
+            while time.time() - start_poll < 30:  # FIX: lowered from 120s to 30s
                 disk_data = self._read_disk_cache(cache_key, force_fresh=True)
                 if disk_data is not None:
                     logger.info(f"DataFetcher [CHILD]: Found Shared Data for {cache_key} after polling.")
@@ -165,10 +165,17 @@ class DataFetcher:
                     return self._merge_live_candle(disk_data, symbol_token, interval)
                 time.sleep(2)
             
-            logger.error(f"DataFetcher [CHILD]: Timeout (120s) waiting for BACKEND to populate {cache_key}. Returning None.")
+            logger.error(f"DataFetcher [CHILD]: Timeout (30s) waiting for BACKEND to populate {cache_key}. Falling back to stale data.")
             with self._inflight_lock_guard:
                 ev = self._inflight_locks.pop(cache_key, None)
             if ev: ev.set()
+            
+            # Emergency fallback: use any available cache for up to 4 hours if backend timed out
+            stale_data = self._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
+            if stale_data is not None:
+                logger.warning(f"DataFetcher [CHILD]: Using STALE data for {cache_key} (up to 4h fallback).")
+                return self._merge_live_candle(stale_data, symbol_token, interval)
+                
             return None
 
         # BACKEND PROCESS (MASTER): Proceed with REST Fetch

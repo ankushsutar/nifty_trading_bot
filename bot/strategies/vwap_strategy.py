@@ -215,14 +215,16 @@ class VWAPStrategy:
             logger.error(">>> [Error] Token not found")
             return
 
+        # Viability Check: Option Premium vs Brokerage
+        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        
         # Apply Compounding (Exponential Scaling)
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
         qty = lots * Config.NIFTY_LOT_SIZE
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
-        # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
              return
              

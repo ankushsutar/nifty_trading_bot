@@ -114,29 +114,22 @@ class InsideBarStrategy:
             logger.info(">>> [Wait] Pattern formed but NO BREAKOUT yet.")
             return
 
+        strike = round(ltp / 50) * 50
+        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type if "leg_type" in locals() else ("CE" if signal == "BUY_CE" else "PE"))
+        if not token: 
+             logger.error(">>> [Error] Token Not Found")
+             return
+
+        # Viability Check: Option Premium vs Brokerage
+        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        
         # Apply Compounding (Exponential Scaling)
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
         qty = lots * Config.NIFTY_LOT_SIZE
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
-        # ATM Strike (rounded to nearest 50)
-        strike = round(ltp / 50) * 50
-
-        # 5. Entry
-        if signal == "BUY_CE":
-            self.place_trade(expiry, strike, "CE", qty, index_sl_level)
-        elif signal == "BUY_PE":
-            self.place_trade(expiry, strike, "PE", qty, index_sl_level)
-
-    def place_trade(self, expiry, strike, leg_type, qty, index_sl_level):
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type)
-        if not token: 
-             logger.error(">>> [Error] Token Not Found")
-             return
-        
-        # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
              return
              

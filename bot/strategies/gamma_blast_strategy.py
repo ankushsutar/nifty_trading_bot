@@ -178,17 +178,6 @@ class GammaBlastStrategy:
             
         logger.info(f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | Selected OTM Strike={strike}")
         
-        # 5. Position Sizing (Dedicated small capital for High Risk)
-        # Use only 50% of standard compounded slots for "Hero" trade
-        lots = max(1, int(self.gatekeeper.get_compounded_lots(margin_per_lot=5000) * 0.5))
-        qty = lots * Config.NIFTY_LOT_SIZE
-        
-        self.place_entry(expiry, strike, leg, qty)
-        
-        # If we didn't enter or monitoring finished, loop again after sleep
-        time.sleep(30) # Throttle loop
-
-    def place_entry(self, expiry, strike, leg, qty):
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
         if not token:
             logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
@@ -196,6 +185,23 @@ class GammaBlastStrategy:
 
         # Fetch Option LTP for early record and price estimate
         quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
+        
+        # 5. Position Sizing (Dedicated small capital for High Risk)
+        # Use only 50% of standard compounded slots for "Hero" trade
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        lots = max(1, int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * 0.5))
+        qty = lots * Config.NIFTY_LOT_SIZE
+        
+        self.place_entry(expiry, strike, leg, qty, quote_ltp)
+        
+        # If we didn't enter or monitoring finished, loop again after sleep
+        time.sleep(30) # Throttle loop
+
+    def place_entry(self, expiry, strike, leg, qty, quote_ltp):
+        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+        if not token:
+            logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
+            return
         
         # Place Smart-Limit Order with 5% buffer from LTP
         # This replaces raw LIMIT/MARKET to reduce slippage

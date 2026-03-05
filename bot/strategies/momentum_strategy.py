@@ -535,22 +535,6 @@ class MomentumStrategy:
         
         sl_points = 2 * atr
         
-        # Position Sizing based on Capital
-        capital = self.gatekeeper.get_current_capital()
-        if capital <= 0: capital = Config.SIMULATION_CAPITAL # Fallback
-        
-        risk_per_trade = capital * Config.RISK_PER_TRADE_PERCENT
-        if risk_per_trade < 500: risk_per_trade = 500 # Min floor
-        
-        option_sl_points = atr
-        if option_sl_points < 5: option_sl_points = 5 
-        
-        # Apply Compounding (Exponential Scaling)
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
-        qty = lots * Config.NIFTY_LOT_SIZE  # FIX: was NameError - lot_size was never defined
-        
-        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
-
         direction = "LONG" if leg == "CE" else "SHORT"
         if not self.gatekeeper.check_sentiment_risk(direction):
              logger.warning(f"Trade Skipped due to Sentiment Risk.")
@@ -582,6 +566,25 @@ class MomentumStrategy:
         except Exception as e:
             logger.warning(f"Could not fetch option LTP for margin check: {e}")
             
+        # Position Sizing based on Capital and Actual Option Price
+        capital = self.gatekeeper.get_current_capital()
+        if capital <= 0: capital = Config.SIMULATION_CAPITAL # Fallback
+        
+        risk_per_trade = capital * Config.RISK_PER_TRADE_PERCENT
+        if risk_per_trade < 500: risk_per_trade = 500 # Min floor
+        
+        option_sl_points = atr
+        if option_sl_points < 5: option_sl_points = 5 
+        
+        # Calculate actual margin per lot. Fallback to 5000 if quote_ltp is 0.
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        
+        # Apply Compounding (Exponential Scaling) using real estimated cost
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
+        qty = lots * Config.NIFTY_LOT_SIZE
+        
+        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
+
         # 1.5 Cost Viability Check (Small Account Protection)
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
              return

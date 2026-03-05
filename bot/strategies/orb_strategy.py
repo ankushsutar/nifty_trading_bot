@@ -145,15 +145,16 @@ class ORBStrategy:
             logger.error(">>> [Error] Token not found.")
             return
 
-        # Apply Compounding (Exponential Scaling)
-        capital = self.gatekeeper.get_current_capital()  # FIX: was NameError - capital never defined
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=5000)
-        qty = lots * Config.NIFTY_LOT_SIZE
-        
-        logger.info(f">>> [Sizing] Capital: {capital:.0f} | Qty: {qty} ({lots} lots)")
-
         # Viability Check: Option Premium vs Brokerage
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        
+        # Apply Compounding (Exponential Scaling)
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
+        qty = lots * Config.NIFTY_LOT_SIZE
+        
+        logger.info(f">>> [Sizing] Qty: {qty} ({lots} lots)")
+
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
              return
              
