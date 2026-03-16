@@ -9,3 +9,5 @@ websockets
 feedparser
 vadersentiment
 pymongo
+logzero
+websocket-client

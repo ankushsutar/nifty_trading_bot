@@ -9,6 +9,14 @@ NC='\033[0m'
 
 echo -e "${BLUE}>>> Starting Nifty Trading Bot System 📈${NC}"
 
+# 0. Activate Virtual Environment
+if [ -d "venv" ]; then
+    echo -e "${BLUE}>>> Activating virtual environment...${NC}"
+    source venv/bin/activate
+else
+    echo -e "${YELLOW}>>> Warning: venv not found. Please run ./setup.sh first.${NC}"
+fi
+
 # Function to kill all child processes on exit
 cleanup() {
     echo -e "\n${RED}🛑 Shutting down system...${NC}"
