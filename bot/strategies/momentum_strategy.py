@@ -223,16 +223,22 @@ class MomentumStrategy:
                         symbol = self.active_position['symbol']
                         entry_price = self.active_position['entry_price']
                         qty = self.active_position['qty']
-                        
+
                         curr_ltp = market_feed.get_ltp(token)
-                        
+
                         if curr_ltp and curr_ltp > 0:
                             curr_unrealized_pnl = (curr_ltp - entry_price) * qty
+                            # Phase 5: Push unrealized P&L to metrics exporter
+                            try:
+                                from bot.core.metrics_exporter import metrics_exporter
+                                metrics_exporter.push_unrealized(symbol, curr_unrealized_pnl)
+                            except Exception:
+                                pass
                             # Global Safety Check (Realized + This Unrealized)
                             if not self.gatekeeper.check_max_daily_loss(curr_unrealized_pnl):
                                 logger.critical(f"🛑 EMERGENCY EXIT: Global Loss Limit Breached.")
                                 self.close_position("MAX_DAILY_LOSS")
-                                break 
+                                break
                     except Exception as e:
                         logger.error(f"Global Safety Check Error: {e}")
 
@@ -286,17 +292,26 @@ class MomentumStrategy:
                         self.data_failure_count = 0 
                     
                     if not self.active_position:
+                        # Phase 3: STRICT Multi-Timeframe Confluence
+                        # 5m signal MUST align with 15m EMA9/EMA21 direction —
+                        # "not opposite" is insufficient; we require explicit confirmation.
                         if trend == "BULLISH":
-                            if htf_trend == "BEARISH":
-                                logger.info("Signal Ignored: 5m Bullish but 15m is BEARISH (Trend Misalignment).")
+                            if htf_trend != "BULLISH":
+                                logger.info(
+                                    f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} "
+                                    "(need 15m BULLISH for CE entry — strict MTF confluence)."
+                                )
                             elif rsi < 70:
                                 self.enter_position(expiry, "CE")
                             else:
                                 logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
-                                
+
                         elif trend == "BEARISH":
-                            if htf_trend == "BULLISH":
-                                logger.info("Signal Ignored: 5m Bearish but 15m is BULLISH (Trend Misalignment).")
+                            if htf_trend != "BEARISH":
+                                logger.info(
+                                    f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} "
+                                    "(need 15m BEARISH for PE entry — strict MTF confluence)."
+                                )
                             elif rsi > 30:
                                 self.enter_position(expiry, "PE")
                             else:
@@ -550,7 +565,24 @@ class MomentumStrategy:
         except Exception as e:
              logger.error(f"Expiry Guard Check Error: {e}")
 
-        strike = round(nifty_ltp / 50) * 50
+        # Phase 3: Volatility-Adjusted Strike Selection
+        # High ATR → go deeper OTM for more leverage (accepts lower delta).
+        # Low ATR  → stay near ATM for higher fill probability and delta.
+        atm_strike = round(nifty_ltp / 50) * 50
+        if atr < 15:
+            otm_offset = 0      # ATM — tight market, maximise delta
+        elif atr < 30:
+            otm_offset = 1      # 1 strike OTM (~50 pts)
+        else:
+            otm_offset = 2      # 2 strikes OTM (~100 pts) — high vol, wide swings expected
+
+        strike_direction = 1 if leg == "CE" else -1
+        strike = atm_strike + strike_direction * otm_offset * 50
+        logger.info(
+            f"⚡ Vol-Adjusted Strike: ATR={atr:.1f} → "
+            f"{'ATM' if otm_offset == 0 else f'{otm_offset} OTM'} | "
+            f"Strike={strike}"
+        )
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
         if not token: 
             logger.error(f"Token not found for {strike} {leg}")
@@ -613,23 +645,47 @@ class MomentumStrategy:
             'oi_sentiment': self.last_analysis.get('sentiment', "NEUTRAL")
         }
 
-        actual_sl_points = option_sl_points
+        # Phase 3: Dynamic RR based on Market Regime
+        # TRENDING:   Tight breakeven (1:1) but let winner run to 5:1 target.
+        # RANGEBOUND: Fixed 1.5:1 target; exit at first sign of reversal.
+        current_regime = self.last_analysis.get("regime", "UNKNOWN")
+        if current_regime == "TRENDING":
+            # Aggressive: tight SL (1x ATR), big target (5x ATR in index → ~2.5x in option)
+            sl_option_pts  = option_sl_points          # 1 ATR on option space
+            tgt_option_pts = option_sl_points * 2.5    # 5:1 index → ~2.5x option leverage
+            dynamic_rr     = "TRENDING_5:1"
+        else:
+            # Conservative: 1.5:1 in option space
+            sl_option_pts  = option_sl_points
+            tgt_option_pts = option_sl_points * 1.5
+            dynamic_rr     = "RANGEBOUND_1.5:1"
+
+        logger.info(
+            f"📐 Dynamic RR ({current_regime}): SL={sl_option_pts:.1f}pts | "
+            f"Target={tgt_option_pts:.1f}pts | Mode={dynamic_rr}"
+        )
+
+        actual_sl_points = sl_option_pts
         sl_price = max(0.1, quote_ltp - actual_sl_points)
-        
+
+        target_price = quote_ltp + tgt_option_pts
+
         if self.dry_run:
             oid = self.order_manager.place_smart_limit(
-                symbol, token, qty, quote_ltp, 
-                transaction_type="BUY", 
+                symbol, token, qty, quote_ltp,
+                transaction_type="BUY",
                 strategy_name="MOMENTUM"
             )
-            
+
             self.active_position = {
-                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': quote_ltp, 
-                'sl_price': sl_price, 
+                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token,
+                'entry_price': quote_ltp,
+                'sl_price': sl_price,
+                'target_price': target_price,
+                'dynamic_rr': dynamic_rr,
                 'context': trade_context
             }
-            
+
             # Update DB Fill (Simulation)
             tid = self.order_manager.update_trade_fill(symbol, "MOMENTUM", quote_ltp)
             if tid: self.active_position['id'] = tid
@@ -670,11 +726,14 @@ class MomentumStrategy:
              
              actual_sl = max(0.1, fill_price - actual_sl_points)
 
+             actual_target = fill_price + tgt_option_pts
              self.active_position = {
                 'id': trade_id,
-                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token, 
-                'entry_price': fill_price, 
+                'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token,
+                'entry_price': fill_price,
                 'sl_price': actual_sl,
+                'target_price': actual_target,
+                'dynamic_rr': dynamic_rr,
                 'atr': atr,
                 'context': trade_context
             }
@@ -837,69 +896,109 @@ class MomentumStrategy:
                      )
                  self.active_position = None
                  logger.info("✅ Strategy State: Trade Closed.")
+                 # Phase 5: Clear unrealized P&L from metrics exporter
+                 try:
+                     from bot.core.metrics_exporter import metrics_exporter
+                     metrics_exporter.clear_unrealized(symbol)
+                 except Exception:
+                     pass
         except Exception as e:
             logger.error(f"DB Update Error: {e}")
 
     def check_trailing_stop(self):
         """
-        ATR-Based Multi-Stage Trailing Stop.
-        Stage 1: @ 1.0 ATR -> Move SL to Break-Even.
-        Stage 2: @ 1.5 ATR -> Close 50% Position.
-        Stage 3: Trail remainder with 0.5 ATR buffer.
+        Phase 3: Dynamic RR Trailing Stop.
+
+        TRENDING  (5:1 target) regime:
+          Stage 1: @ 1.0 ATR profit → move SL to breakeven immediately (fast pivot).
+          Stage 2: @ 2.5 ATR profit → close 50% and trail the rest.
+          Target  : honour target_price from active_position.
+
+        RANGEBOUND (1.5:1 target) regime:
+          Stage 1: @ 0.75 ATR profit → breakeven.
+          Exit early on any sign of structural reversal (trend fade).
+          Stage 2: @ 1.5 ATR → full exit.
         """
         if not self.active_position: return False
-        
-        token = self.active_position['token']
-        symbol = self.active_position['symbol']
-        entry_price = self.active_position.get('entry_price', 0.0)
-        current_sl = self.active_position.get('sl_price', 0.0)
+
+        token        = self.active_position['token']
+        symbol       = self.active_position['symbol']
+        entry_price  = self.active_position.get('entry_price', 0.0)
+        current_sl   = self.active_position.get('sl_price', 0.0)
         atr_at_entry = self.active_position.get('atr', 20.0)
-        is_partial = self.active_position.get('partially_booked', False)
-        
-        if entry_price == 0: return False 
-        
+        is_partial   = self.active_position.get('partially_booked', False)
+        target_price = self.active_position.get('target_price', 0.0)
+        dynamic_rr   = self.active_position.get('dynamic_rr', 'RANGEBOUND_1.5:1')
+        is_trending  = dynamic_rr.startswith('TRENDING')
+
+        if entry_price == 0: return False
+
         ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
         if not ltp:
-             try:
-                 from bot.utils.rate_limiter import rate_limiter
-                 rate_limiter.wait()
-                 q_resp = self.api.ltpData("NFO", symbol, token)
-                 if q_resp and q_resp.get('status'):
-                     ltp = float(q_resp['data']['ltp'])
-             except Exception as e:
+            try:
+                from bot.utils.rate_limiter import rate_limiter
+                rate_limiter.wait()
+                q_resp = self.api.ltpData("NFO", symbol, token)
+                if q_resp and q_resp.get('status'):
+                    ltp = float(q_resp['data']['ltp'])
+            except Exception as e:
                 logger.warning(f"Trailing Stop LTP fetch error: {e}")
                 return False
-        
+
         if not ltp or ltp == 0: return False
-        
-        # 0. Basic Stop Loss Check
+
+        # 0. Hard Stop Loss Check
         if current_sl > 0 and ltp <= current_sl:
             logger.info(f"🛑 Stop Hit! Price: {ltp} <= SL: {current_sl}")
             self.close_position("STOPLOSS_HIT")
             return True
-            
-        profit_points = ltp - entry_price
-        
-        # We use half the ATR for trailing to be reactive in options
-        trail_atr = atr_at_entry * 0.5
-        if trail_atr < 5: trail_atr = 5
-        
-        # Stage 1: Break-Even (Move SL to Entry +  ₹1 buffer)
-        if profit_points > (1.0 * trail_atr) and current_sl < entry_price:
-            new_sl = entry_price + 1.0 
-            logger.info("🎯 Stage 1 Hit (1.0 ATR). Moving SL to Break-Even.")
-            self.update_sl(new_sl, ltp)
-            return False
 
-        # Stage 2: Partial Profit Booking (Close 50%)
-        if profit_points > (1.5 * trail_atr) and not is_partial:
-            qty_to_close = self.active_position['qty'] // 2
-            if qty_to_close >= Config.NIFTY_LOT_SIZE: # Only if we have >1 lot
-                logger.info(f"💰 Stage 2 Hit (1.5 ATR). Booking 50% Profit ({qty_to_close} qty).")
-                self.close_position("PARTIAL_PROFIT", override_qty=qty_to_close)
+        # 0b. Target Hit Check (Dynamic RR Target)
+        if target_price > 0 and ltp >= target_price:
+            logger.info(f"🎯 Target Hit! Price: {ltp} >= Target: {target_price} ({dynamic_rr})")
+            self.close_position("TARGET_HIT")
+            return True
+
+        profit_points = ltp - entry_price
+        trail_atr = max(5.0, atr_at_entry * 0.5)
+
+        if is_trending:
+            # TRENDING regime: fast breakeven, let winners run to 5:1
+            be_trigger  = 1.0 * trail_atr  # Move to breakeven at 1:1
+            book_trigger = 2.5 * trail_atr  # Book 50% at 2.5:1
+
+            if profit_points > be_trigger and current_sl < entry_price:
+                new_sl = entry_price + 1.0
+                logger.info("🎯 TRENDING Stage 1 (1:1 ATR). Moving SL to Break-Even (fast pivot).")
+                self.update_sl(new_sl, ltp)
                 return False
 
-        # Stage 3: Aggressive Trailing for remainder
+            if profit_points > book_trigger and not is_partial:
+                qty_to_close = self.active_position['qty'] // 2
+                if qty_to_close >= Config.NIFTY_LOT_SIZE:
+                    logger.info(f"💰 TRENDING Stage 2 (2.5x ATR). Booking 50% ({qty_to_close} qty).")
+                    self.close_position("PARTIAL_PROFIT", override_qty=qty_to_close)
+                    return False
+        else:
+            # RANGEBOUND regime: tighter stages, early reversal exit
+            be_trigger   = 0.75 * trail_atr
+            book_trigger = 1.5  * trail_atr
+
+            if profit_points > be_trigger and current_sl < entry_price:
+                new_sl = entry_price + 1.0
+                logger.info("🎯 RANGEBOUND Stage 1 (0.75 ATR). Moving SL to Break-Even.")
+                self.update_sl(new_sl, ltp)
+                return False
+
+            if profit_points > book_trigger and not is_partial:
+                qty_to_close = self.active_position['qty'] // 2
+                if qty_to_close >= Config.NIFTY_LOT_SIZE:
+                    logger.info(f"💰 RANGEBOUND Stage 2 (1.5 ATR). Full exit (range target reached).")
+                    self.close_position("RANGEBOUND_TARGET")
+                    return True
+
+        # Stage 3: Aggressive trailing for TRENDING remainder after partial booking
+
         if profit_points > (2.0 * trail_atr):
             target_sl = ltp - trail_atr
             if target_sl > current_sl:

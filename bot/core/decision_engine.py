@@ -4,6 +4,14 @@ import datetime
 from bot.utils.logger import logger
 
 
+# Minimum strategy confidence score (0-100) to allow trade entry.
+# Based on last 5-day win-rate from the live/paper trade history.
+MIN_CONFIDENCE_SCORE = 70.0
+
+# Minimum trades needed before applying the confidence gate (warm-up period).
+MIN_TRADES_FOR_CONFIDENCE = 5
+
+
 class DecisionEngine:
     def __init__(self, api, token_loader, dry_run=False):
         self.api = api
@@ -233,7 +241,120 @@ class DecisionEngine:
                 logger.warning(">>> [Brain] ❌ No cheaper strategy available. Aborting.")
                 return None, 1.0
         
+        # CONFIDENCE GATE (Phase 2): Only proceed if strategy score ≥ 70%
+        confidence = self.get_strategy_confidence(selected_strategy)
+        if confidence < MIN_CONFIDENCE_SCORE:
+            logger.warning(
+                f">>> [Brain] ⏸️ Confidence Gate: {selected_strategy} score "
+                f"{confidence:.1f} < {MIN_CONFIDENCE_SCORE}. Skipping."
+            )
+            # Try the 4H regime classifier as secondary validation
+            regime_4h = self._classify_4h_regime()
+            if regime_4h.get("regime") == "UNKNOWN":
+                return None, 1.0
+            # If 4H regime still aligns with the strategy, override the gate
+            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP")
+            regime_4h_trending   = regime_4h.get("regime") == "TRENDING"
+            if strategy_is_trending == regime_4h_trending:
+                logger.info(
+                    f">>> [Brain] 4H Regime override: {regime_4h.get('regime')} "
+                    f"aligns with {selected_strategy}. Proceeding at reduced size."
+                )
+                risk_multiplier *= 0.5   # Half size when confidence gate overridden
+            else:
+                return None, 1.0
+
         return selected_strategy, risk_multiplier
+
+    # ------------------------------------------------------------------ #
+    #  Strategy Confidence Score (Phase 2 upgrade)                         #
+    # ------------------------------------------------------------------ #
+
+    def get_strategy_confidence(self, strategy_name: str) -> float:
+        """
+        Computes a 0-100 confidence score for a strategy based on its
+        recent performance over the last 5 trading days.
+
+        Score formula:
+            win_rate (60%) + avg_rr_score (30%) + trade_frequency_score (10%)
+
+        Returns:
+            float: score in [0, 100]. Returns 100.0 (pass-through) when
+            insufficient historical data exists (warm-up period).
+        """
+        try:
+            from bot.core.trade_repo import trade_repo
+            mode = "PAPER" if self.dry_run else "LIVE"
+
+            # Fetch last 5 days of closed trades for this strategy
+            five_days_ago = datetime.datetime.now() - datetime.timedelta(days=5)
+            all_trades = trade_repo.get_recent_closed_trades(
+                mode=mode, strategy=strategy_name, since=five_days_ago
+            )
+
+            if len(all_trades) < MIN_TRADES_FOR_CONFIDENCE:
+                # Warm-up: not enough data → allow all strategies
+                logger.info(
+                    f">>> [Brain] Confidence for {strategy_name}: N/A "
+                    f"(only {len(all_trades)} trades, need {MIN_TRADES_FOR_CONFIDENCE}). "
+                    "Passing through."
+                )
+                return 100.0
+
+            wins      = [t for t in all_trades if t.get("pnl", 0) > 0]
+            losses    = [t for t in all_trades if t.get("pnl", 0) <= 0]
+            win_rate  = len(wins) / len(all_trades) * 100  # 0-100
+
+            # Average Risk-Reward on winning vs losing trades
+            avg_win  = sum(t.get("pnl", 0) for t in wins)  / max(len(wins), 1)
+            avg_loss = abs(sum(t.get("pnl", 0) for t in losses)) / max(len(losses), 1)
+            rr_ratio = avg_win / avg_loss if avg_loss > 0 else 2.0
+            # Map rr_ratio to 0-100: rr ≥ 2.0 → 100, rr ≤ 0.5 → 0
+            rr_score = min(100.0, max(0.0, (rr_ratio - 0.5) / 1.5 * 100))
+
+            # Trade frequency (penalise strategies with too few signals)
+            # 3+ trades/day over 5 days = full score
+            freq_score = min(100.0, len(all_trades) / (3 * 5) * 100)
+
+            score = win_rate * 0.60 + rr_score * 0.30 + freq_score * 0.10
+            logger.info(
+                f">>> [Brain] Confidence[{strategy_name}]: "
+                f"Score={score:.1f} | WinRate={win_rate:.1f}% | "
+                f"RR={rr_ratio:.2f} | Trades={len(all_trades)}"
+            )
+            return round(score, 1)
+
+        except Exception as e:
+            logger.warning(f">>> [Brain] Confidence score error for {strategy_name}: {e}")
+            return 100.0  # Fail open — don't block on DB errors
+
+    def _classify_4h_regime(self) -> dict:
+        """
+        Classifies the market regime using the last 4 hours (240 1-min candles)
+        of NIFTY data from MarketFeedService.
+
+        Returns:
+            dict with keys: regime, trend, adx, atr, ema9, ema21
+        """
+        try:
+            from bot.core.market_feed import market_feed
+            from bot.core.regime_classifier import RegimeClassifier
+
+            df = market_feed.get_1min_candles("99926000")  # NIFTY spot token
+            if df is None or len(df) < 10:
+                return {"regime": "UNKNOWN", "trend": "NEUTRAL"}
+
+            # Use only last 240 bars (4 hours of 1-min data)
+            df_4h = df.tail(240)
+            result = RegimeClassifier().classify(df_4h)
+            logger.info(
+                f">>> [Brain] 4H Regime: {result.get('regime')} / "
+                f"{result.get('trend')} | ADX={result.get('adx', 0):.1f}"
+            )
+            return result
+        except Exception as e:
+            logger.warning(f">>> [Brain] 4H Regime classify error: {e}")
+            return {"regime": "UNKNOWN", "trend": "NEUTRAL"}
 
     def record_trade(self):
         """Kept for compatibility. The real gate is now DB-backed in analyze_and_select()."""

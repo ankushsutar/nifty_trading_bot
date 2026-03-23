@@ -368,6 +368,64 @@ class TradeRepository:
             logger.info("[Reconcile] All DB trades match broker state.")
 
 
+    def get_recent_closed_trades(self, mode=None, strategy=None, since=None):
+        """
+        Returns CLOSED trades optionally filtered by mode, strategy, and start date.
+        Used by DecisionEngine confidence scoring to evaluate recent performance.
+        """
+        if not self.client:
+            return []
+        try:
+            query = {"status": "CLOSED"}
+            if mode:
+                query["mode"] = mode
+            if strategy:
+                query["strategy"] = strategy
+            if since:
+                query["closed_at"] = {"$gte": since}
+            cursor = self.collection.find(query).sort("closed_at", -1)
+            return list(cursor)
+        except Exception as e:
+            logger.error(f"TradeRepository get_recent_closed_trades Error: {e}")
+            return []
+
+    def get_slippage_stats(self, mode=None, strategy=None, days=5):
+        """
+        Aggregates slippage data across recent trades for auto-adjusting
+        Smart-Limit walk speed in OrderManager.
+
+        Returns:
+            dict with avg_slippage_pct, avg_slippage_points, sample_size
+        """
+        if not self.client:
+            return {"avg_slippage_pct": 0.0, "avg_slippage_points": 0.0, "sample_size": 0}
+        try:
+            since = datetime.datetime.now() - datetime.timedelta(days=days)
+            query = {
+                "created_at": {"$gte": since},
+                "slippage_points": {"$exists": True},
+            }
+            if mode:
+                query["mode"] = mode
+            if strategy:
+                query["strategy"] = strategy
+
+            trades = list(self.collection.find(query, {"slippage_points": 1, "slippage_percent": 1}))
+            if not trades:
+                return {"avg_slippage_pct": 0.0, "avg_slippage_points": 0.0, "sample_size": 0}
+
+            points_list = [abs(float(t.get("slippage_points", 0))) for t in trades]
+            pct_list    = [abs(float(t.get("slippage_percent", 0))) for t in trades]
+
+            return {
+                "avg_slippage_pct":    round(sum(pct_list)    / len(pct_list), 3),
+                "avg_slippage_points": round(sum(points_list) / len(points_list), 3),
+                "sample_size":         len(trades),
+            }
+        except Exception as e:
+            logger.error(f"TradeRepository get_slippage_stats Error: {e}")
+            return {"avg_slippage_pct": 0.0, "avg_slippage_points": 0.0, "sample_size": 0}
+
     def force_close_trade(self, trade_id, exit_price=0.0, reason="MANUAL_EXIT"):
         """
         Forcefully closes a specific trade by ID — used when user manually

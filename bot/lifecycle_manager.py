@@ -82,7 +82,14 @@ class LifecycleManager:
         """Starts the lifecycle loop in a separate thread."""
         from bot.core.kill_switch import deactivate_kill_switch
         deactivate_kill_switch()
-        
+
+        # Phase 5: Start real-time metrics exporter
+        try:
+            from bot.core.metrics_exporter import metrics_exporter
+            metrics_exporter.start()
+        except Exception as e:
+            self.log(f"[Metrics] Exporter start failed (non-critical): {e}")
+
         if self.running: return
         self.running = True
         self.thread = threading.Thread(target=self._run_loop)
@@ -93,7 +100,13 @@ class LifecycleManager:
         """Stops the lifecycle and kills any child processes."""
         from bot.core.kill_switch import activate_kill_switch
         activate_kill_switch()
-        
+
+        try:
+            from bot.core.metrics_exporter import metrics_exporter
+            metrics_exporter.stop()
+        except Exception:
+            pass
+
         self.log("Stopping Lifecycle Manager...")
         self.running = False
         if self.current_process:

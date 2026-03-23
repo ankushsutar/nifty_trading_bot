@@ -1,6 +1,7 @@
 smartapi-python
 pyotp
 pandas
+numpy
 python-dotenv
 requests
 fastapi
@@ -11,3 +12,5 @@ vadersentiment
 pymongo
 logzero
 websocket-client
+numba          # Phase 4: JIT-compiled indicator calculations (EMA, RSI, ADX)
+prometheus-client  # Phase 5: optional Prometheus endpoint (metrics_exporter uses JSON by default)
