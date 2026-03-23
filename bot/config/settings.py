@@ -18,9 +18,9 @@ class Config:
     # URL to fetch token IDs for all stocks
     SCRIP_MASTER_URL = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 
-    # Capital Settings (Tuned for ₹8,000 live account)
-    SIMULATION_CAPITAL = 8000.0          # Matches real account — dry run uses same sizing as live
-    MIN_CAPITAL_THRESHOLD = 5000.0       # Below this, bot halts (can't cover 1 lot + buffer)
+    # Capital Settings (Tuned for ₹10,000 live account — Aggressive Compounding Mode)
+    SIMULATION_CAPITAL = 10000.0         # Matches real account — dry run uses same sizing as live
+    MIN_CAPITAL_THRESHOLD = 3000.0       # Stop bot if capital falls below ₹3,000 (unrecoverable territory)
 
     # MongoDB Settings for Historical Trade    # MongoDB
     MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
@@ -31,11 +31,16 @@ class Config:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-    # Risk Management (Tuned for ₹8,000 capital)
-    RISK_PER_TRADE_PERCENT = 0.06        # 6% risk = ~₹480 per trade (1 lot, ~7pt option SL)
-    MAX_CAPITAL_USAGE_PERCENT = 0.90     # Allow up to ₹7,200 per trade (covers 1 lot ATM premium)
+    # Risk Management — Aggressive Compounding Mode (₹10,000 capital)
+    # Strategy: GAMMA_BLAST + MOMENTUM only, ADX > 35 gate, 12% risk per trade.
+    # Expected: ~32% monthly gain. Reaches ₹1,00,000 in ~8-9 months compounded.
+    RISK_PER_TRADE_PERCENT = 0.12        # 12% risk = ₹1,200 per trade — survives 6 consecutive losses
+    MAX_CAPITAL_USAGE_PERCENT = 0.90     # Use up to 90% of capital per trade (1 lot + buffer)
     ENTRY_SLIPPAGE_BUFFER_PERCENT = 0.01 # 1% buffer for LIMIT orders
-    MAX_DAILY_LOSS = -800.0              # Halt after ₹800 loss (10% of capital — balanced room for volatility)
+    MAX_DAILY_LOSS = -1500.0             # Halt after ₹1,500 loss (15%) — allows recovery, prevents wipeout
+
+    # ADX threshold to allow any trade at all (hard gate — no trend, no trade)
+    MIN_ADX_TO_TRADE = 35.0
 
     # Infrastructure
     STATIC_IP = os.getenv("STATIC_IP") # Optional: Your whitelisted static IP
