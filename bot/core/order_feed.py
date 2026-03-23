@@ -157,6 +157,10 @@ class OrderFeedService:
                     continue
 
                 auth_token = api.access_token
+                if not auth_token:
+                    logger.warning(">>> [OrderFeed] Session token is None — session may have expired. Retrying in 10s.")
+                    time.sleep(10)
+                    continue
                 if not auth_token.startswith("Bearer "):
                     auth_token = f"Bearer {auth_token}"
 

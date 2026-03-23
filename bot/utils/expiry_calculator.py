@@ -20,6 +20,25 @@ NSE_HOLIDAYS_2026 = {
     datetime.date(2026, 12, 25),  # Christmas
 }
 
+# Locale-safe month abbreviations (strftime %b is locale-dependent on Windows).
+# Angel One scrip master uses uppercase English abbreviations — always match this exactly.
+_MONTH_ABBR = {
+    1: "JAN", 2: "FEB", 3: "MAR", 4: "APR",
+    5: "MAY", 6: "JUN", 7: "JUL", 8: "AUG",
+    9: "SEP", 10: "OCT", 11: "NOV", 12: "DEC",
+}
+
+
+def _format_expiry(date: datetime.date) -> str:
+    """
+    Formats a date as 'DDMMMYYYY' in a locale-safe way.
+    e.g. datetime.date(2026, 1, 6) → '06JAN2026'
+
+    strftime('%b') is locale-dependent and can return regional month names
+    on some Indian Windows systems — this function always returns English.
+    """
+    return f"{date.day:02d}{_MONTH_ABBR[date.month]}{date.year}"
+
 
 def is_trading_day(date=None):
     """
@@ -38,17 +57,21 @@ def is_trading_day(date=None):
 
 def get_next_weekly_expiry():
     """
-    Returns the next Nifty weekly expiry date as 'DDMMMYYYY' (e.g. '20JAN2026').
-    Nifty expiry is Tuesday (weekday=1) as of Sep 2025.
-    If Tuesday is an NSE holiday, shifts to the previous Monday.
+    Returns the next NIFTY weekly expiry as 'DDMMMYYYY' (e.g. '06JAN2026').
+    NIFTY expiry is Tuesday (weekday=1) as of Sep 2025.
+
+    Holiday handling: if Tuesday is an NSE holiday OR a weekend, walk
+    backwards one day at a time until a valid trading day is found.
+    Uses is_trading_day() so both holiday AND weekend cases are covered.
     """
     today = datetime.date.today()
     target_weekday = 1  # Tuesday
     days_ahead = (target_weekday - today.weekday()) % 7
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
-    # Holiday shift: if Tuesday is a holiday, use Monday
-    while next_expiry in NSE_HOLIDAYS_2026:
+    # Walk backwards until we land on a valid trading day.
+    # Handles: holiday-only, holiday+weekend (e.g. Tuesday+Monday both off → Friday).
+    while not is_trading_day(next_expiry):
         next_expiry -= datetime.timedelta(days=1)
 
-    return next_expiry.strftime("%d%b%Y").upper()
+    return _format_expiry(next_expiry)

@@ -90,7 +90,8 @@ class OrderManager:
                 "producttype": "INTRADAY",
                 "duration": "DAY",
                 "quantity": qty,
-                "price": limit_price
+                "price": limit_price,
+                "disclosedquantity": 0
             }
             
             logger.info(f"⚡ Placing LIMIT Order for {symbol} @ {limit_price}")
@@ -184,7 +185,8 @@ class OrderManager:
                 "quantity": qty,
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "exchange": "NFO"
+                "exchange": "NFO",
+                "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:
                 logger.info(f"🧪 [DRY RUN] Simulating Modify Limit Price: {order_id} -> {price}")
@@ -218,14 +220,15 @@ class OrderManager:
                 "variety": "STOPLOSS",
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "transactiontype": transaction_type, 
+                "transactiontype": transaction_type,
                 "exchange": "NFO",
-                "ordertype": "STOPLOSS_LIMIT", 
+                "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
                 "quantity": qty,
                 "triggerprice": trigger_price,
-                "price": limit_price
+                "price": limit_price,
+                "disclosedquantity": 0
             }
             
             logger.info(f"🛡️ Placing Broker-Side SL (SL-M) for {symbol} @ {trigger_price}")
@@ -291,7 +294,8 @@ class OrderManager:
                 "triggerprice": trigger_price,
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "exchange": "NFO"
+                "exchange": "NFO",
+                "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:
                 logger.info(f"🧪 [DRY RUN] Simulating Modify: {order_id} -> {price}")

@@ -2,6 +2,7 @@ import os
 import json
 import time
 import datetime
+import tempfile
 import requests
 import pandas as pd
 from bot.config.settings import Config
@@ -14,9 +15,14 @@ class TokenLookup:
         self._cache_date = None  # Track which date the in-memory df was loaded for
 
     def _get_cache_path(self):
-        """Cache file is date-stamped — auto-invalidates each new trading day."""
+        """
+        Cache file is date-stamped — auto-invalidates each new trading day.
+        Uses the OS temp directory so it works on both Windows and Linux.
+        Windows: C:\\Users\\<user>\\AppData\\Local\\Temp\\
+        Linux:   /tmp/
+        """
         today = datetime.date.today().strftime("%Y%m%d")
-        return f"/tmp/scrip_master_{today}.json"
+        return os.path.join(tempfile.gettempdir(), f"scrip_master_{today}.json")
 
     def load_scrip_master(self):
         """

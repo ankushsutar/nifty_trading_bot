@@ -692,8 +692,9 @@ class MomentumStrategy:
             return
 
         try:
-             # For BUY orders, we are willing to pay slightly ABOVE current LTP to ensure fill.
-             limit_price = quote_ltp * (1.0 + buffer)
+             # For BUY orders, pay slightly above LTP to improve fill probability.
+             # Uses ENTRY_SLIPPAGE_BUFFER_PERCENT from settings (default 1%).
+             limit_price = quote_ltp * (1.0 + Config.ENTRY_SLIPPAGE_BUFFER_PERCENT)
                  
              oid = self.order_manager.place_smart_limit(
                 symbol, token, qty, limit_price, 
