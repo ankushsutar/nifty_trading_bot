@@ -139,70 +139,99 @@ class GammaBlastStrategy:
                 )
                 break # Monitoring finished or trade closed
 
-            # 2. Market analysis & Final Confirmation 
-        # (Though DecisionEngine already checked, we double check local indicators)
-        from backend.market_service import market_service
-        market_data = market_service.get_market_data()
-        analysis = market_data.get('analysis', {})
-        
-        if not analysis or analysis.get('regime') == 'UNKNOWN':
-            logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
-            # Final fallback to direct fetch only if market_service is failing
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
-            if df is None or len(df) < 20: return
-            ltp = df.iloc[-1]['close']
-            adx = self.calculate_adx(df).iloc[-1]
-            ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
-            ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        else:
-            ltp = market_data.get('nifty', 0)
-            adx = analysis.get('adx', 0)
-            ema9 = analysis.get('ema9', 0)
-            ema21 = analysis.get('ema21', 0)
-            logger.info(f"Gamma Blast: Using Shared Analysis (ADX: {adx:.1f} | Regime: {analysis.get('regime')})")
+            # 2. Market analysis & Final Confirmation
+            # (Though DecisionEngine already checked, we double check local indicators)
+            from backend.market_service import market_service
+            market_data = market_service.get_market_data()
+            analysis = market_data.get('analysis', {})
 
-        if adx < 30: # Threshold for Parabolic check
-            logger.warning(f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below threshold (30). Aborting.")
-            return
+            if not analysis or analysis.get('regime') == 'UNKNOWN':
+                logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
+                # Final fallback to direct fetch only if market_service is failing
+                df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                if df is None or len(df) < 20:
+                    time.sleep(30)
+                    continue
+                ltp = df.iloc[-1]['close']
+                adx = self.calculate_adx(df).iloc[-1]
+                ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
+                ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
+            else:
+                ltp = market_data.get('nifty', 0)
+                adx = analysis.get('adx', 0)
+                ema9 = analysis.get('ema9', 0)
+                ema21 = analysis.get('ema21', 0)
+                logger.info(f"Gamma Blast: Using Shared Analysis (ADX: {adx:.1f} | Regime: {analysis.get('regime')})")
 
-        # 3. Determine Leg (Trend Direction)
-        leg = "CE" if ema9 > ema21 else "PE"
-        
-        # 4. Strike Selection (OTM Logic)
-        # Nifty moves in 50pt increments. OTM is 50-100 pts away.
-        strike = round(ltp / 50) * 50
-        if leg == "CE":
-            strike += 50 # Buy 1 strikes OTM
-        else:
-            strike -= 50 # Buy 1 strikes OTM
-            
-        logger.info(f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | Selected OTM Strike={strike}")
-        
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
-        if not token:
-            logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
-            return
+            if not ltp or ltp <= 0:
+                logger.warning("Gamma Blast: NIFTY LTP is 0 or unavailable. Skipping.")
+                time.sleep(30)
+                continue
 
-        # Fetch Option LTP for early record and price estimate
-        quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
-        
-        # 5. Position Sizing (Dedicated small capital for High Risk)
-        # Use only 50% of standard compounded slots for "Hero" trade
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
-        lots = max(1, int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * 0.5))
-        qty = lots * Config.NIFTY_LOT_SIZE
-        
-        self.place_entry(expiry, strike, leg, qty, quote_ltp)
-        
-        # If we didn't enter or monitoring finished, loop again after sleep
-        time.sleep(30) # Throttle loop
+            if not ema9 or not ema21:
+                logger.warning(f"Gamma Blast: EMA data unavailable (ema9={ema9}, ema21={ema21}). Skipping.")
+                time.sleep(30)
+                continue
+
+            if adx < 30: # Threshold for Parabolic check
+                logger.warning(f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below threshold (30). Aborting.")
+                time.sleep(30)
+                continue
+
+            # 3. Determine Leg (Trend Direction)
+            leg = "CE" if ema9 > ema21 else "PE"
+
+            # 4. Strike Selection (OTM Logic)
+            # Nifty moves in 50pt increments. OTM is 50-100 pts away.
+            strike = round(ltp / 50) * 50
+            if leg == "CE":
+                strike += 50 # Buy 1 strikes OTM
+            else:
+                strike -= 50 # Buy 1 strikes OTM
+
+            logger.info(f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | Selected OTM Strike={strike}")
+
+            token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+            if not token:
+                logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
+                time.sleep(30)
+                continue
+
+            # Fetch Option LTP for early record and price estimate
+            quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
+
+            # 5. Position Sizing (Dedicated small capital for High Risk)
+            # Use only 50% of standard compounded slots for "Hero" trade
+            margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * 0.5)
+            if lots < 1:
+                # Only force 1 lot if capital can actually cover a single lot
+                estimated_cost = margin_per_lot
+                if self.gatekeeper.check_trade_margin(estimated_cost, silent=True):
+                    lots = 1
+                else:
+                    logger.warning(f"Gamma Blast: ❌ Insufficient capital for 1 lot (₹{estimated_cost:,.0f} required). Skipping.")
+                    time.sleep(60)
+                    continue
+            qty = lots * Config.NIFTY_LOT_SIZE
+
+            self.place_entry(expiry, strike, leg, qty, quote_ltp)
+
+            # If we didn't enter or monitoring finished, loop again after sleep
+            time.sleep(30) # Throttle loop
 
     def place_entry(self, expiry, strike, leg, qty, quote_ltp):
         token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
         if not token:
             logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
             return
-        
+
+        # Hard margin check before touching the broker API
+        estimated_cost = quote_ltp * qty
+        if not self.gatekeeper.check_trade_margin(estimated_cost):
+            logger.warning(f"Gamma Blast: ❌ Margin check failed. Need ₹{estimated_cost:,.0f}. Aborting entry.")
+            return
+
         # Place Smart-Limit Order with 5% buffer from LTP
         # This replaces raw LIMIT/MARKET to reduce slippage
         limit_price = round(quote_ltp * 1.05, 1)
@@ -230,7 +259,11 @@ class GammaBlastStrategy:
                             rest_status = ord_info.get('status', '').lower()
                             if rest_status == 'complete':
                                 logger.info(f"Gamma Blast: ✅ Order {oid} actually FILLED on REST check!")
-                                fill_result = {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
+                                try:
+                                    avg_price = float(ord_info.get('averageprice') or 0)
+                                except (ValueError, TypeError):
+                                    avg_price = 0.0
+                                fill_result = {'status': 'FILLED', 'price': avg_price}
                             break
             except Exception as e:
                 logger.error(f"Gamma Blast Final REST Check Error: {e}")
@@ -254,21 +287,36 @@ class GammaBlastStrategy:
                 fill_result = {'status': 'FILLED', 'price': limit_price} # Assume limit price fill to survive
                 
         fill_price = fill_result['price']
-        
+
+        # Guard: if fill_price is 0 (bad REST data), fall back to limit_price
+        if not fill_price or fill_price <= 0:
+            logger.warning(f"Gamma Blast: fill_price is 0 — using limit_price {limit_price} as fallback.")
+            fill_price = limit_price
+
         # 3. Update Trade with Actual Fill & Mark OPEN
         sl_price = round(fill_price * 0.80, 1)
-        
+
         # Link and Update DB Record
         trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
         if trade_id:
             trade_repo.update_sl(trade_id, sl_price)
         else:
-            # Fallback for dry-run or if DB write failed
             logger.warning("Gamma Blast: Could not link fill to DB record. Status might be out of sync.")
-        
+
+        if not trade_id:
+            logger.critical(f"Gamma Blast: 🚨 trade_id is None after fill! Cannot track trade safely. Exiting position.")
+            exit_params = {
+                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO",
+                "ordertype": "MARKET", "price": 0,
+                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+            }
+            self.order_manager.place_order(exit_params)
+            return
+
         # Place Broker SL
         sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)
-        
+
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
     def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg):
@@ -407,7 +455,7 @@ class GammaBlastStrategy:
         from bot.core.order_feed import order_feed
         logger.info(f">>> [Gamma Blast] Waiting for WebSocket Fill Event ({order_id})...")
         
-        result = order_feed.wait_for_fill(order_id, timeout=10)
+        result = order_feed.wait_for_fill(order_id, timeout=30)
         
         if result['status'] == 'TIMEOUT':
              logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")

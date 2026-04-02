@@ -42,7 +42,8 @@ class LevelsProvider:
                 return None
 
             # Filter for Previous Day Data (Excluding Today)
-            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+            today_start = datetime.datetime.now(tz=ist).replace(hour=0, minute=0, second=0, microsecond=0)
             prev_day_df = df[df['timestamp'] < today_start]
             
             if prev_day_df.empty:

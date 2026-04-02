@@ -287,9 +287,13 @@ class SafetyGatekeeper:
             # Use 10% margin buffer (was 20% — too tight for ₹8k)
             lots = int(capital / (margin_per_lot * 1.1))
 
-            # Floor at 1 lot for small accounts
-            if capital >= Config.MIN_CAPITAL_THRESHOLD and lots < 1:
-                lots = 1
+            # Floor at 1 lot only if capital can actually cover it
+            if lots < 1:
+                if capital >= margin_per_lot:
+                    lots = 1
+                else:
+                    logger.warning(f">>> [Gatekeeper] ❌ Cannot afford 1 lot. Capital: ₹{capital:,.0f}, Margin needed: ₹{margin_per_lot:,.0f}. Returning 0 lots.")
+                    return 0
 
             return lots
         except Exception as e:
