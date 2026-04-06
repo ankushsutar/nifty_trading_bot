@@ -295,16 +295,29 @@ class MomentumStrategy:
                         # Phase 3: STRICT Multi-Timeframe Confluence
                         # 5m signal MUST align with 15m EMA9/EMA21 direction —
                         # "not opposite" is insufficient; we require explicit confirmation.
+                        _bbw = float(self.last_analysis.get('bbw', 0.0))
+                        _oi_bias = self.last_analysis.get('sentiment', 'NEUTRAL')
+
                         if trend == "BULLISH":
                             if htf_trend != "BULLISH":
                                 logger.info(
                                     f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} "
                                     "(need 15m BULLISH for CE entry — strict MTF confluence)."
                                 )
-                            elif rsi < 70:
-                                self.enter_position(expiry, "CE")
-                            else:
+                            elif rsi >= 70:
                                 logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
+                            elif _bbw > 0 and _bbw < 0.008:
+                                logger.info(
+                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
+                                    "Waiting for band expansion before CE entry."
+                                )
+                            elif _oi_bias == "BEARISH":
+                                logger.info(
+                                    f"Signal Ignored: CE entry blocked — OI bias is BEARISH. "
+                                    "Waiting for options market alignment."
+                                )
+                            else:
+                                self.enter_position(expiry, "CE")
 
                         elif trend == "BEARISH":
                             if htf_trend != "BEARISH":
@@ -312,34 +325,35 @@ class MomentumStrategy:
                                     f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} "
                                     "(need 15m BEARISH for PE entry — strict MTF confluence)."
                                 )
-                            elif rsi > 30:
-                                self.enter_position(expiry, "PE")
-                            else:
+                            elif rsi <= 30:
                                 logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
+                            elif _bbw > 0 and _bbw < 0.008:
+                                logger.info(
+                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
+                                    "Waiting for band expansion before PE entry."
+                                )
+                            elif _oi_bias == "BULLISH":
+                                logger.info(
+                                    f"Signal Ignored: PE entry blocked — OI bias is BULLISH. "
+                                    "Waiting for options market alignment."
+                                )
+                            else:
+                                self.enter_position(expiry, "PE")
                     
                     else:
                         current_leg = self.active_position['leg']
                         if current_leg == "CE" and trend == "BEARISH":
                              logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
                              self.close_position("REVERSAL")
-                             # FIX Obs #2: 1-candle cooldown before reversal re-entry to avoid whipsaws
-                             logger.info("⏳ Reversal Cooldown: Waiting 1 candle (5 min) before re-entry.")
-                             time.sleep(300)  # 5 minutes = 1 candle
-                             if rsi > 30:
-                                 self.enter_position(expiry, "PE") 
-                             else:
-                                 logger.info("Reversal Entry Ignored: RSI Oversold.")
+                             # Cooldown: skip immediate re-entry — next 5-min candle will evaluate PE.
+                             # Avoids whipsaws without blocking the global safety kill-switch (sleep removed).
+                             logger.info("⏳ Reversal Cooldown: PE entry will be evaluated on the next candle.")
 
                         elif current_leg == "PE" and trend == "BULLISH":
                              logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
                              self.close_position("REVERSAL")
-                             # FIX Obs #2: 1-candle cooldown before reversal re-entry to avoid whipsaws
-                             logger.info("⏳ Reversal Cooldown: Waiting 1 candle (5 min) before re-entry.")
-                             time.sleep(300)  # 5 minutes = 1 candle
-                             if rsi < 70:
-                                 self.enter_position(expiry, "CE")
-                             else:
-                                 logger.info("Reversal Entry Ignored: RSI Overbought.")
+                             # Cooldown: skip immediate re-entry — next 5-min candle will evaluate CE.
+                             logger.info("⏳ Reversal Cooldown: CE entry will be evaluated on the next candle.")
 
                     now = datetime.datetime.now()
                     minute = now.minute
@@ -958,6 +972,9 @@ class MomentumStrategy:
             self.close_position("STOPLOSS_HIT")
             return True
 
+        profit_points = ltp - entry_price
+        trail_atr = max(5.0, atr_at_entry * 0.5)
+
         # 0b. Target Hit Check (Dynamic RR Target)
         # In TRENDING mode, once 50% is already booked (is_partial=True) we skip
         # the fixed target and let the trailing SL run the remainder indefinitely.
@@ -977,9 +994,6 @@ class MomentumStrategy:
                 logger.info(f"🎯 Target Hit! Price: {ltp} >= Target: {target_price} ({dynamic_rr})")
                 self.close_position("TARGET_HIT")
                 return True
-
-        profit_points = ltp - entry_price
-        trail_atr = max(5.0, atr_at_entry * 0.5)
 
         if is_trending:
             # TRENDING regime: fast breakeven, let winners run to 5:1
