@@ -83,18 +83,23 @@ class SafetyGatekeeper:
 
     def check_funds(self, required_margin_per_lot=150000, silent=False):
         """
-        Rule: Available Cash > Required Margin * 1.1 (10% Buffer)
-        Note: required_margin_per_lot is an estimate.
+        Rule: Available Cash > Required Margin * (1 + tier.margin_buffer_pct)
+        Buffer scales with capital tier — tighter for small accounts, looser for large.
         """
         try:
+            from bot.config.settings import Config
             available_cash = self.get_current_capital()
-            required_total = required_margin_per_lot * 1.1 # 10% Buffer
-            
+            tier = Config.get_tier(available_cash)
+            required_total = required_margin_per_lot * (1 + tier.margin_buffer_pct)
+
             if available_cash >= required_total:
                 return True
             else:
                 if not silent:
-                    logger.warning(f">>> [Gatekeeper] ❌ LOW FUNDS. Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}")
+                    logger.warning(
+                        f">>> [Gatekeeper] ❌ LOW FUNDS [{tier.name}]. "
+                        f"Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}"
+                    )
                 return False
 
         except Exception as e:
@@ -173,22 +178,28 @@ class SafetyGatekeeper:
 
     def check_max_daily_loss(self, active_unrealized_pnl=0.0):
         """
-        Rule: Stop trading if (Realized + Unrealized) loss exceeds MAX_DAILY_LOSS.
-        Returns: 
-          - True: Safe to continue.
+        Rule: Stop trading if (Realized + Unrealized) loss exceeds tier daily loss limit.
+        Limit is a percentage of current capital — scales automatically with account size.
+        Returns:
+          - True:  Safe to continue.
           - False: Limit reached. Kill trades.
         """
         from bot.config.settings import Config
-        max_loss = Config.MAX_DAILY_LOSS  # e.g. -800.0
-        
+        capital  = self.get_current_capital()
+        tier     = Config.get_tier(capital)
+        max_loss = -(capital * tier.max_daily_loss_pct)
+
         realized_pnl = self.get_daily_realized_pnl()
-        total_pnl = realized_pnl + active_unrealized_pnl
-        
+        total_pnl    = realized_pnl + active_unrealized_pnl
+
         if total_pnl <= max_loss:
-             logger.critical(f">>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT!")
-             logger.critical(f"    Realized: ₹{realized_pnl:.2f} | Unrealized: ₹{active_unrealized_pnl:.2f} | Total: ₹{total_pnl:.2f}")
-             logger.critical(f"    Limit: ₹{max_loss:.2f}. Halting Operations.")
-             return False
+            logger.critical(f">>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT! [{tier.name} tier]")
+            logger.critical(
+                f"    Realized: ₹{realized_pnl:.2f} | Unrealized: ₹{active_unrealized_pnl:.2f} | "
+                f"Total: ₹{total_pnl:.2f} | Limit: ₹{max_loss:.2f} ({tier.max_daily_loss_pct*100:.0f}%)"
+            )
+            logger.critical("    Halting Operations.")
+            return False
         return True
 
     def is_blackout_period(self):
@@ -239,11 +250,17 @@ class SafetyGatekeeper:
             except Exception as e:
                 logger.error(f">>> [Risk] VIX ltpData fallback error: {e}")
 
-        # 4. Apply rule and cache result
+        # 4. Apply rule and cache result — threshold and multiplier from capital tier
+        from bot.config.settings import Config
+        capital    = self.get_current_capital()
+        tier       = Config.get_tier(capital)
         multiplier = 1.0
-        if vix > 25.0:
-            logger.warning(f">>> [Risk] ⚠️ High VIX ({vix:.1f} > 25). Reducing Quantity by 50%.")
-            multiplier = 0.5
+        if vix > tier.vix_reduction_threshold:
+            logger.warning(
+                f">>> [Risk] ⚠️ High VIX ({vix:.1f} > {tier.vix_reduction_threshold}). "
+                f"Reducing Quantity by {int((1 - tier.vix_qty_multiplier)*100)}% [{tier.name} tier]."
+            )
+            multiplier = tier.vix_qty_multiplier
 
         SafetyGatekeeper._vix_cache_time = time.time()
         SafetyGatekeeper._vix_multiplier = multiplier
@@ -273,27 +290,38 @@ class SafetyGatekeeper:
 
     def get_compounded_lots(self, margin_per_lot):
         """
-        Calculates lot size based on current capital.
-        Tuned for ₹8,000: uses 10% buffer (not 20%) so 1 lot fits within capital.
-        Formula: Lots = floor(Capital / (margin_per_lot * 1.1))
+        Calculates lot size based on current capital and the active capital tier.
+        Formula: Lots = floor(Capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
+        Hard-capped at tier.max_lots (0 = unlimited for LARGE accounts).
         """
         try:
             from bot.config.settings import Config
             capital = self.get_current_capital()
-            if capital < Config.MIN_CAPITAL_THRESHOLD: 
-                logger.warning(f">>> [Gatekeeper] Capital ₹{capital:.0f} below minimum ₹{Config.MIN_CAPITAL_THRESHOLD:.0f}. No lots.")
+            tier    = Config.get_tier(capital)
+
+            if capital < tier.min_capital_threshold:
+                logger.warning(
+                    f">>> [Gatekeeper] Capital ₹{capital:.0f} below "
+                    f"[{tier.name}] minimum ₹{tier.min_capital_threshold:.0f}. No lots."
+                )
                 return 0
 
-            # Use 10% margin buffer (was 20% — too tight for ₹8k)
-            lots = int(capital / (margin_per_lot * 1.1))
+            lots = int(capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
 
-            # Floor at 1 lot only if capital can actually cover it
+            # Floor at 1 lot only if capital can actually cover bare margin
             if lots < 1:
                 if capital >= margin_per_lot:
                     lots = 1
                 else:
-                    logger.warning(f">>> [Gatekeeper] ❌ Cannot afford 1 lot. Capital: ₹{capital:,.0f}, Margin needed: ₹{margin_per_lot:,.0f}. Returning 0 lots.")
+                    logger.warning(
+                        f">>> [Gatekeeper] ❌ Cannot afford 1 lot [{tier.name}]. "
+                        f"Capital: ₹{capital:,.0f}, Margin needed: ₹{margin_per_lot:,.0f}. Returning 0 lots."
+                    )
                     return 0
+
+            # Cap at tier maximum (0 = no cap for LARGE tier)
+            if tier.max_lots > 0:
+                lots = min(lots, tier.max_lots)
 
             return lots
         except Exception as e:

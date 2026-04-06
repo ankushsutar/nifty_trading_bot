@@ -18,7 +18,7 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.MAX_TRADES_PER_DAY = 3    # Hard cap to prevent brokerage drain
+        # MAX_TRADES_PER_DAY is now tier-driven — fetched live in analyze_and_select()
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
     def analyze_and_select(self):
@@ -44,7 +44,7 @@ class DecisionEngine:
              logger.critical(">>> [Brain] 🛑 Decision Blocked: Max Daily Loss reached.")
              return None, 1.0
 
-        # Rule D: Daily Trade Limit Check (DB-backed)
+        # Rule D: Daily Trade Limit Check (DB-backed, limit from capital tier)
         try:
             from bot.core.trade_repo import trade_repo
             mode = "PAPER" if self.dry_run else "LIVE"
@@ -55,13 +55,20 @@ class DecisionEngine:
             today_trades = []
             trades_today = 0
 
-        if trades_today >= self.MAX_TRADES_PER_DAY:
-            logger.warning(f">>> [Brain] 🛑 Daily trade limit reached ({trades_today}/{self.MAX_TRADES_PER_DAY}). No new entries.")
+        # Resolve tier once using already-fetched capital — no extra API call
+        from bot.config.settings import Config
+        available_cash_early = self.gatekeeper.get_current_capital()
+        tier = Config.get_tier(available_cash_early)
+
+        if trades_today >= tier.max_trades_per_day:
+            logger.warning(
+                f">>> [Brain] 🛑 Daily trade limit reached "
+                f"({trades_today}/{tier.max_trades_per_day}) [{tier.name} tier]. No new entries."
+            )
             return None, 1.0
 
-        # 0b. Consecutive Loss Circuit Breaker
-        # Halt after 2 consecutive losses — prevents compounding in a bad session
-        MAX_CONSECUTIVE_LOSSES = 2
+        # 0b. Consecutive Loss Circuit Breaker — halts after tier-defined consecutive losses
+        MAX_CONSECUTIVE_LOSSES = tier.max_consecutive_losses
         try:
             closed_today = [t for t in today_trades if t.get('status') == 'CLOSED']
             if len(closed_today) >= MAX_CONSECUTIVE_LOSSES:
@@ -77,19 +84,24 @@ class DecisionEngine:
         except Exception:
             pass  # Fail open — don't block on DB error
 
-        # 1. Check Capital & Mode
-        available_cash = self.gatekeeper.get_current_capital()
-        logger.info(f">>> [Brain] Current available capital: ₹{available_cash:,.2f}")
-        is_small_account = available_cash < 15000
-        
+        # 1. Check Capital & Mode  (tier already resolved above, reuse available_cash_early)
+        available_cash = available_cash_early
+        logger.info(f">>> [Brain] Current available capital: ₹{available_cash:,.2f} [{tier.name} tier]")
+
+        # MICRO tier = small account mode (focus on A+ setups only)
+        is_small_account = (tier.name == "MICRO")
         if is_small_account:
             logger.info(">>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)")
 
-        funds_for_straddle = self.gatekeeper.check_funds(required_margin_per_lot=150000, silent=True)
-        funds_for_buying = self.gatekeeper.check_funds(required_margin_per_lot=5000, silent=True)
+        # Minimum buying power check — uses tier's capital floor as the reference
+        min_viable_margin = tier.min_capital_threshold * 0.5
+        funds_for_buying = self.gatekeeper.check_funds(required_margin_per_lot=min_viable_margin, silent=True)
 
         if not funds_for_buying:
-            logger.warning(f">>> [Brain] ❌ Insufficient Capital for ANY strategy. Available: ₹{available_cash:,.2f} (Need: ~₹5.5k for 1 lot buys).")
+            logger.warning(
+                f">>> [Brain] ❌ Insufficient Capital for ANY strategy. "
+                f"Available: ₹{available_cash:,.2f} (Need: ~₹{min_viable_margin:,.0f} for 1 lot [{tier.name}])."
+            )
             return None, 1.0
 
         # 2. Check Time
@@ -127,35 +139,35 @@ class DecisionEngine:
                  confidence_high = True
                  risk_multiplier *= 1.2
 
-        # 6. Small Account "A+ Filter"
+        # 6. Small Account "A+ Filter" (MICRO tier only)
         if is_small_account:
-            # Rule: Only take trades if Regime is TRENDING and (Trend aligns with Sentiment OR Trend is Strong)
+            # Only take trades if Regime is TRENDING and Trend aligns with Sentiment OR ADX is strong
             adx = regime_data.get('adx', 0)
-            if not confidence_high and adx <= 25:
-                reason = "Trend-Bias Misalignment" if not confidence_high else "Weak Trend (ADX < 25)"
-                logger.warning(f">>> [Brain] ⏸️ Skipping Trade Loop: {reason}. Waiting for A+ Setup.")
+            if not confidence_high and adx <= tier.min_adx_to_trade:
+                reasons = [
+                    f"Trend-OI Misalignment ({trend} trend vs {bias} OI)",
+                    f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade} [{tier.name}])",
+                ]
+                logger.warning(f">>> [Brain] ⏸️ Skipping — {' + '.join(reasons)}. Waiting for A+ Setup.")
                 return None, 1.0
-            elif not confidence_high and adx > 25:
+            elif not confidence_high and adx > tier.min_adx_to_trade:
                 logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
 
         # ── HARD ADX GATE ─────────────────────────────────────────────────────────
-        # No trade unless the trend is strong enough.
-        # With ₹10,000 capital we cannot afford mediocre setups — only A+ entries.
+        # No trade unless trend is strong enough for the current capital tier.
+        # Larger accounts tolerate lower ADX; small accounts need strong trends only.
         adx = regime_data.get('adx', 0)
-        from bot.config.settings import Config as _Cfg
-        min_adx = getattr(_Cfg, 'MIN_ADX_TO_TRADE', 35.0)
-        if adx < min_adx:
+        if adx < tier.min_adx_to_trade:
             logger.info(
-                f">>> [Brain] ⏸️ ADX GATE: ADX={adx:.1f} < {min_adx} minimum. "
+                f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < {tier.min_adx_to_trade} minimum. "
                 "No trade — waiting for a strong trend."
             )
             return None, 1.0
         # ──────────────────────────────────────────────────────────────────────────
 
-        # 6. Strategy Whitelist — GAMMA_BLAST + MOMENTUM only
-        # Rationale: these two strategies have the highest expected value on
-        # strong-trend days (ADX > 35). All other strategies are disabled to
-        # eliminate low-conviction noise trades that eat into capital.
+        # 6. Strategy Whitelist — driven by capital tier
+        # MICRO: MOMENTUM + GAMMA_BLAST only (highest EV on strong-trend days)
+        # SMALL: adds ORB  |  MEDIUM: adds VWAP  |  LARGE: all six strategies
         selected_strategy = "MOMENTUM"  # Default within whitelist
 
         if regime == "VOLATILE":
@@ -191,15 +203,23 @@ class DecisionEngine:
 
             logger.info(f">>> [Brain] 🔍 Trending. ADX={adx:.1f} — evaluating whitelist...")
 
-            # PARABOLIC (ADX > 45) → GAMMA_BLAST: biggest leverage on the strongest days
-            if adx > 45:
-                logger.info(f">>> [Brain] 💎 PARABOLIC DAY (ADX={adx:.1f}). Selected: GAMMA_BLAST")
+            # PARABOLIC (ADX > tier threshold) → GAMMA_BLAST: biggest leverage on the strongest days
+            if adx > tier.adx_gamma_blast:
+                logger.info(f">>> [Brain] 💎 PARABOLIC DAY (ADX={adx:.1f} > {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
                 selected_strategy = "GAMMA_BLAST"
 
-            # STRONG TREND (ADX 35-45) → MOMENTUM: EMA crossover + MTF confluence
+            # STRONG TREND → MOMENTUM: EMA crossover + MTF confluence
             else:
                 logger.info(f">>> [Brain] ⚡ STRONG TREND (ADX={adx:.1f}). Selected: MOMENTUM")
                 selected_strategy = "MOMENTUM"
+
+            # Whitelist guard — strategy must be enabled for this tier
+            if selected_strategy not in tier.allowed_strategies:
+                logger.info(
+                    f">>> [Brain] ⏸️ {selected_strategy} not in [{tier.name}] whitelist "
+                    f"{tier.allowed_strategies}. Staying in CASH."
+                )
+                return None, 1.0
 
         # Scenario: Rangebound / Sideways — skip entirely (no edge without strong trend)
         elif regime in ["SIDEWAYS", "CHOP"]:
@@ -209,12 +229,12 @@ class DecisionEngine:
             )
             return None, 1.0
 
-        # BUDGET CHECK — both whitelisted strategies need ~₹5,500-6,500 for 1 lot
-        required = 5500
+        # BUDGET CHECK — minimum viable margin for 1 lot (tier-aware)
+        required = tier.min_capital_threshold * 0.5
         if not self.gatekeeper.check_funds(required_margin_per_lot=required, silent=True):
             logger.warning(
-                f">>> [Brain] ❌ Insufficient funds for {selected_strategy} "
-                f"(Need ~₹{required}, capital may be below ₹3k threshold)."
+                f">>> [Brain] ❌ Insufficient funds for {selected_strategy} [{tier.name}] "
+                f"(Need ~₹{required:,.0f})."
             )
             return None, 1.0
         
@@ -335,5 +355,5 @@ class DecisionEngine:
 
     def record_trade(self):
         """Kept for compatibility. The real gate is now DB-backed in analyze_and_select()."""
-        logger.info(f">>> [Brain] 📊 Trade recorded. DB will enforce the {self.MAX_TRADES_PER_DAY}/day limit on next cycle.")
+        logger.info(">>> [Brain] 📊 Trade recorded. DB will enforce the tier daily limit on next cycle.")
 

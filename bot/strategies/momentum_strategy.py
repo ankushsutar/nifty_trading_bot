@@ -601,15 +601,19 @@ class MomentumStrategy:
         # Position Sizing based on Capital and Actual Option Price
         capital = self.gatekeeper.get_current_capital()
         if capital <= 0: capital = Config.SIMULATION_CAPITAL # Fallback
-        
-        risk_per_trade = capital * Config.RISK_PER_TRADE_PERCENT
-        if risk_per_trade < 500: risk_per_trade = 500 # Min floor
-        
+
+        # All risk parameters come from the capital tier — no hardcoded values
+        tier = Config.get_tier(capital)
+
+        risk_per_trade = capital * tier.risk_per_trade_pct
+        if risk_per_trade < tier.min_risk_floor:
+            risk_per_trade = tier.min_risk_floor
+
         option_sl_points = atr
-        if option_sl_points < 5: option_sl_points = 5 
-        
-        # Calculate actual margin per lot. Fallback to 5000 if quote_ltp is 0.
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        if option_sl_points < 5: option_sl_points = 5
+
+        # Calculate actual margin per lot. Fallback to half the tier threshold if LTP unknown.
+        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
         
         # Apply Compounding (Exponential Scaling) using real estimated cost
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
@@ -693,8 +697,8 @@ class MomentumStrategy:
 
         try:
              # For BUY orders, pay slightly above LTP to improve fill probability.
-             # Uses ENTRY_SLIPPAGE_BUFFER_PERCENT from settings (default 1%).
-             limit_price = quote_ltp * (1.0 + Config.ENTRY_SLIPPAGE_BUFFER_PERCENT)
+             # Slippage buffer from capital tier (smaller accounts use 1%, larger use 0.5%).
+             limit_price = quote_ltp * (1.0 + tier.entry_slippage_pct)
                  
              oid = self.order_manager.place_smart_limit(
                 symbol, token, qty, limit_price, 
@@ -955,10 +959,24 @@ class MomentumStrategy:
             return True
 
         # 0b. Target Hit Check (Dynamic RR Target)
+        # In TRENDING mode, once 50% is already booked (is_partial=True) we skip
+        # the fixed target and let the trailing SL run the remainder indefinitely.
+        # This turns a capped 2.5R trade into an open-ended runner.
         if target_price > 0 and ltp >= target_price:
-            logger.info(f"🎯 Target Hit! Price: {ltp} >= Target: {target_price} ({dynamic_rr})")
-            self.close_position("TARGET_HIT")
-            return True
+            if is_trending and is_partial:
+                # 50% already locked — tighten trail aggressively, don't exit
+                new_sl = round(ltp - (trail_atr * 0.4), 1)
+                if new_sl > current_sl:
+                    logger.info(
+                        f"🎯 TRENDING Target Passed ({ltp:.1f} ≥ {target_price:.1f}). "
+                        f"50% booked. Tightening trail: SL → {new_sl:.1f} and letting it run."
+                    )
+                    self.update_sl(new_sl, ltp)
+                # fall through — no return, trailing continues
+            else:
+                logger.info(f"🎯 Target Hit! Price: {ltp} >= Target: {target_price} ({dynamic_rr})")
+                self.close_position("TARGET_HIT")
+                return True
 
         profit_points = ltp - entry_price
         trail_atr = max(5.0, atr_at_entry * 0.5)

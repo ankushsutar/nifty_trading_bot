@@ -42,8 +42,8 @@ class BacktestEngine:
         max_daily_loss_pct: float = 0.10,
         risk_per_trade_pct: float = 0.06,
         brokerage_per_lot: float = 40.0,
-        option_delta: float = 0.50,          # ATM delta approximation
-        option_premium_atr_mult: float = 2.5, # ATM premium ≈ ATR * this multiplier
+        option_delta: float = 0.50,           # ATM delta approximation
+        option_premium_atr_mult: float = 2.5,  # ATM premium ≈ ATR * this multiplier
         max_trades_per_day: int = 3,
     ):
         self.initial_capital = initial_capital
@@ -58,6 +58,28 @@ class BacktestEngine:
         self.df_1m: pd.DataFrame | None = None
         self.df_5m: pd.DataFrame | None = None
         self.df_15m: pd.DataFrame | None = None
+
+    @classmethod
+    def from_capital(cls, initial_capital: float, lot_size: int = 65) -> "BacktestEngine":
+        """
+        Factory: builds a BacktestEngine whose risk parameters mirror the live bot
+        for the given capital amount.  Uses the same CapitalTier system as the bot,
+        so backtest results are honest — they reflect what the live bot would actually do.
+
+        Usage:
+            engine = BacktestEngine.from_capital(initial_capital=100_000)
+            engine.load_data(df_1m)
+            results = engine.run_all_strategies()
+        """
+        from bot.config.settings import Config
+        tier = Config.get_tier(initial_capital)
+        return cls(
+            initial_capital=initial_capital,
+            lot_size=lot_size,
+            max_daily_loss_pct=tier.max_daily_loss_pct,
+            risk_per_trade_pct=tier.risk_per_trade_pct,
+            max_trades_per_day=tier.max_trades_per_day,
+        )
 
     # ------------------------------------------------------------------ #
     #  Data Loading                                                         #

@@ -173,23 +173,39 @@ class GammaBlastStrategy:
                 time.sleep(30)
                 continue
 
-            if adx < 30: # Threshold for Parabolic check
-                logger.warning(f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below threshold (30). Aborting.")
+            # ADX gate from capital tier — no hardcoded threshold
+            from bot.config.settings import Config as _Cfg
+            _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+            if adx < _tier.min_adx_to_trade:
+                logger.warning(
+                    f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below "
+                    f"[{_tier.name}] threshold ({_tier.min_adx_to_trade}). Aborting."
+                )
                 time.sleep(30)
                 continue
 
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"
 
-            # 4. Strike Selection (OTM Logic)
-            # Nifty moves in 50pt increments. OTM is 50-100 pts away.
-            strike = round(ltp / 50) * 50
-            if leg == "CE":
-                strike += 50 # Buy 1 strikes OTM
+            # 4. Strike Selection — OTM depth scales with ADX strength.
+            # Stronger trend = deeper OTM = exponentially higher leverage.
+            #   ADX 35–50 → 1 OTM (delta ~0.35, moderate leverage, safer)
+            #   ADX 50–55 → 2 OTM (delta ~0.20, high leverage)
+            #   ADX > 55  → 3 OTM (delta ~0.10, maximum leverage, parabolic days only)
+            atm_strike = round(ltp / 50) * 50
+            if adx < 50:
+                otm_depth = 1
+            elif adx < 55:
+                otm_depth = 2
             else:
-                strike -= 50 # Buy 1 strikes OTM
+                otm_depth = 3
 
-            logger.info(f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | Selected OTM Strike={strike}")
+            strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
+
+            logger.info(
+                f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | "
+                f"OTM depth={otm_depth} strikes | Strike={strike}"
+            )
 
             token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
             if not token:
@@ -200,10 +216,11 @@ class GammaBlastStrategy:
             # Fetch Option LTP for early record and price estimate
             quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
 
-            # 5. Position Sizing (Dedicated small capital for High Risk)
-            # Use only 50% of standard compounded slots for "Hero" trade
-            margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
-            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * 0.5)
+            # 5. Position Sizing — lot fraction from capital tier (MICRO=50%, SMALL=60%, etc.)
+            from bot.config.settings import Config as _Cfg
+            _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+            margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
+            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * _tier.gamma_blast_lot_pct)
             if lots < 1:
                 # Only force 1 lot if capital can actually cover a single lot
                 estimated_cost = margin_per_lot
@@ -293,8 +310,10 @@ class GammaBlastStrategy:
             logger.warning(f"Gamma Blast: fill_price is 0 — using limit_price {limit_price} as fallback.")
             fill_price = limit_price
 
-        # 3. Update Trade with Actual Fill & Mark OPEN
-        sl_price = round(fill_price * 0.80, 1)
+        # 3. Update Trade with Actual Fill & Mark OPEN — SL% from capital tier
+        from bot.config.settings import Config as _Cfg
+        _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+        sl_price = round(fill_price * (1 - _tier.sl_pct), 1)
 
         # Link and Update DB Record
         trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
@@ -320,15 +339,27 @@ class GammaBlastStrategy:
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
     def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg):
-        logger.info(f"Gamma Blast: Monitoring. Entry: {entry_price} | SL: {sl}")
-        
-        # Hero-to-Zero logic: We look for 3x ATR target or 3:1 RR
-        target = round(entry_price + (abs(entry_price - sl) * 3), 1)
-        breakeven_hit = False
-        
+        """
+        Progressive 3-stage trailing exit — replaces fixed 3:1 target.
+
+        Stage 0 → 1  (ltp ≥ entry + 1R): SL → breakeven.  Trail: 1.0R below LTP.
+        Stage 1 → 2  (ltp ≥ entry + 2R): Book 50% at market. SL → entry+0.5R. Trail: 0.75R.
+        Stage 2 → 3  (ltp ≥ entry + 3R): Tighten trail to 0.50R. Let the trend run.
+
+        No fixed profit target. The trailing SL decides when the move is over.
+        """
+        risk          = abs(entry_price - sl)   # Initial risk distance — reference point
+        stage         = 0                        # 0→initial  1→breakeven  2→half_booked  3→tight_trail
+        remaining_qty = qty                      # Shrinks after partial booking
+
+        logger.info(
+            f"Gamma Blast: 🎯 PROGRESSIVE TRAIL | "
+            f"Entry={entry_price} | SL={sl} | Risk={risk:.1f}pts | Qty={qty}"
+        )
+
         while self.running:
             try:
-                # --- Periodic Sync (Throttled) ---
+                # ── Periodic broker sync ──────────────────────────────────
                 if not self.dry_run and time.time() - self.last_sync_time > 15:
                     self.sync_state()
                     self.last_sync_time = time.time()
@@ -338,56 +369,137 @@ class GammaBlastStrategy:
 
                 time.sleep(0.5)
                 ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
-                if not ltp: continue
+                if not ltp:
+                    continue
 
-                # Global Kill Switch
-                unrealized_pnl = (ltp - entry_price) * qty
+                # ── Global kill switch ────────────────────────────────────
+                unrealized_pnl = (ltp - entry_price) * remaining_qty
                 if not self.gatekeeper.check_max_daily_loss(unrealized_pnl):
                     logger.critical("🛑 EMERGENCY: Account Daily Loss Limit Breach in Gamma Blast!")
-                    self.exit_market(token, symbol, qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
+                    self.exit_market(token, symbol, remaining_qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
                     break
 
-                # --- SENIOR TRADER ENHANCEMENT: Trend-Fade Check ---
-                # Use centralized MarketService to avoid API rate limits
+                # ── Trend-fade check ──────────────────────────────────────
                 from backend.market_service import market_service
+                from bot.config.settings import Config as _Cfg
                 analysis = market_service.get_market_data().get('analysis', {})
                 curr_adx = analysis.get('adx', 0)
-                
-                if curr_adx > 0 and curr_adx < 25:
-                    logger.info(f"Gamma Blast: ⚠️ Trend Fading (ADX: {curr_adx:.1f}). Booking profits/cutting loss.")
-                    if self.exit_market(token, symbol, qty, "TREND_FADE", trade_id, sl_oid):
+                _tier    = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+                if curr_adx > 0 and curr_adx < _tier.adx_trend_fade_exit:
+                    logger.info(
+                        f"Gamma Blast: ⚠️ Trend Fading (ADX={curr_adx:.1f} < {_tier.adx_trend_fade_exit} "
+                        f"[{_tier.name}]). Exiting {remaining_qty} qty."
+                    )
+                    if self.exit_market(token, symbol, remaining_qty, "TREND_FADE", trade_id, sl_oid):
+                        sl_oid = None
                         break
-                    else: continue
+                    continue
 
-                # Trailing / Breakeven (Fast)
-                if not breakeven_hit and ltp >= entry_price + abs(entry_price - sl):
-                    logger.info(f"Gamma Blast: 🛡️ 1:1 Profit reached. Moving SL to Breakeven.")
-                    if sl_oid and not self.dry_run:
-                        self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
-                    sl = entry_price
-                    breakeven_hit = True
+                # ── Stage 1: Breakeven at 1R ──────────────────────────────
+                if stage < 1 and ltp >= entry_price + risk:
+                    logger.info(f"Gamma Blast: 🛡️ Stage 1 (1R). SL → Breakeven ({entry_price})")
+                    sl    = entry_price
+                    stage = 1
                     trade_repo.update_sl(trade_id, sl)
+                    if sl_oid and not self.dry_run:
+                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
 
-                # Target Hit (The "Blast")
-                if ltp >= target:
-                    logger.info(f"💎 GAMMA BLAST HIT! Target {target} reached. Liquidating.")
-                    if self.exit_market(token, symbol, qty, "TARGET", trade_id, sl_oid):
-                        break
-                    else: continue
+                # ── Stage 2: Book 50% at 2R ───────────────────────────────
+                if stage < 2 and ltp >= entry_price + 2 * risk:
+                    lot_size  = Config.NIFTY_LOT_SIZE
+                    half_lots = max(0, (remaining_qty // lot_size) // 2)
+                    half_qty  = half_lots * lot_size
 
-                # SL Hit
+                    if half_qty >= lot_size and remaining_qty > lot_size:
+                        partial_pnl = round((ltp - entry_price) * half_qty, 2)
+                        logger.info(
+                            f"💰 Gamma Blast: Stage 2 (2R). Booking {half_qty} qty @ ₹{ltp:.1f} "
+                            f"(locked P&L: ₹{partial_pnl:+,.0f}). "
+                            f"Remaining {remaining_qty - half_qty} qty runs free."
+                        )
+                        if not self.dry_run:
+                            partial_limit = round(ltp * 0.98, 1)
+                            partial_params = {
+                                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                                "transactiontype": "SELL", "exchange": "NFO",
+                                "ordertype": "LIMIT", "price": partial_limit,
+                                "producttype": "INTRADAY", "duration": "DAY", "quantity": half_qty,
+                            }
+                            p_oid = self.order_manager.place_order(partial_params)
+                            if p_oid:
+                                fill = self.wait_for_fill(p_oid)
+                                if fill['status'] == 'FILLED':
+                                    partial_pnl = round((fill['price'] - entry_price) * half_qty, 2)
+
+                        trade_repo.reduce_position(
+                            trade_id=trade_id,
+                            reduction_qty=half_qty,
+                            exit_price=ltp,
+                            pnl_segment=partial_pnl,
+                            reason="PARTIAL_PROFIT_2R",
+                        )
+                        remaining_qty -= half_qty
+
+                    # Raise SL floor to lock 0.5R on the remaining position
+                    sl = round(entry_price + 0.5 * risk, 1)
+                    stage = 2
+                    trade_repo.update_sl(trade_id, sl)
+                    if sl_oid and not self.dry_run:
+                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
+
+                # ── Stage 3: Tighten trail at 3R ──────────────────────────
+                if stage < 3 and ltp >= entry_price + 3 * risk:
+                    logger.info(
+                        f"Gamma Blast: 💎 Stage 3 (3R+). "
+                        f"Activating tight trail on {remaining_qty} qty. No target cap."
+                    )
+                    stage = 3
+
+                # ── Progressive trailing SL ───────────────────────────────
+                # Trail distance shrinks as profit grows so winners run further:
+                #   Stage 1 (1R–2R):  trail at 1.0R  — wide, avoids post-breakeven whipsaws
+                #   Stage 2 (2R–3R):  trail at 0.75R — tighter, profit locked, let it breathe
+                #   Stage 3 (3R+):    trail at 0.50R  — very tight, milk every point
+                if stage >= 1:
+                    trail_dist = risk * (1.0 if stage == 1 else 0.75 if stage == 2 else 0.5)
+                    trail_dist = max(trail_dist, 3.0)   # never trail closer than ₹3 (bid/ask noise)
+                    new_sl = round(ltp - trail_dist, 1)
+                    if new_sl > sl:
+                        logger.info(
+                            f"Gamma Blast: 📈 Trail SL {sl} → {new_sl} "
+                            f"(LTP={ltp:.1f}, dist={trail_dist:.1f}, stage={stage})"
+                        )
+                        sl = new_sl
+                        trade_repo.update_sl(trade_id, sl)
+                        if sl_oid and not self.dry_run:
+                            self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
+
+                # ── SL hit → exit remaining ───────────────────────────────
                 if ltp <= sl:
-                    logger.info(f"Gamma Blast: SL Hit at {ltp}.")
-                    trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
-                    # Self-cancel broker SL if we exit locally
-                    if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                    reason = "TRAIL_SL_HIT" if stage > 0 else "SL_HIT"
+                    logger.info(
+                        f"Gamma Blast: {reason} at ₹{ltp:.1f} (SL={sl:.1f}). "
+                        f"Exiting {remaining_qty} qty."
+                    )
+                    trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason=reason)
+                    if sl_oid:
+                        self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                    if not self.dry_run:
+                        exit_params = {
+                            "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                            "transactiontype": "SELL", "exchange": "NFO",
+                            "ordertype": "MARKET", "price": 0,
+                            "producttype": "INTRADAY", "duration": "DAY", "quantity": remaining_qty,
+                        }
+                        self.order_manager.place_order(exit_params)
+                    self.active_position = None
                     break
 
-                # Time Exit
+                # ── Time exit at 15:10 ────────────────────────────────────
                 if datetime.datetime.now().time() >= datetime.time(15, 10):
-                    if self.exit_market(token, symbol, qty, "TIME", trade_id, sl_oid):
+                    if self.exit_market(token, symbol, remaining_qty, "TIME", trade_id, sl_oid):
+                        sl_oid = None
                         break
-                    else: continue
 
             except Exception as e:
                 logger.error(f"Gamma Blast Monitor Error: {e}")

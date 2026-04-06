@@ -42,9 +42,9 @@ class LevelsProvider:
                 return None
 
             # Filter for Previous Day Data (Excluding Today)
-            ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
-            today_start = datetime.datetime.now(tz=ist).replace(hour=0, minute=0, second=0, microsecond=0)
-            prev_day_df = df[df['timestamp'] < today_start]
+            # Use timezone-naive comparison — NIFTY candle timestamps are already in IST without tz info.
+            today_start = pd.Timestamp(datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
+            prev_day_df = df[pd.to_datetime(df['timestamp']).dt.tz_localize(None) < today_start]
             
             if prev_day_df.empty:
                 logger.warning("[Levels] No previous day data found. Using earliest available session.")
