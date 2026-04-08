@@ -97,6 +97,7 @@ def run_bot():
 
     # 3. Smart Auto-Selection (The Brain)
     # Check for Orphaned Trades first for auto-resumption
+    from bot.core.trade_repo import trade_repo  # Guaranteed import (test + live paths)
     mode = "PAPER" if args.dry_run else "LIVE"
     orphaned_trade = trade_repo.get_active_trade(mode=mode)
     
@@ -153,6 +154,7 @@ def run_bot():
     elif args.strategy == "GAMMA_BLAST":
         logger.info(f"\n>>> [Strategy] Selected: Gamma Blast (OTM Momentum) 🚀💎")
         bot = GammaBlastStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
     else:
         logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)

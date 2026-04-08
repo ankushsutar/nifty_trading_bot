@@ -8,6 +8,8 @@ class SafetyGatekeeper:
     # Class-level VIX cache — shared across all instances (all strategies same process)
     _vix_cache_time = 0
     _vix_multiplier = 1.0
+    # Class-level IV Rank cache (0 = cheapest options in 30 days, 1 = most expensive)
+    _iv_rank = 0.5
 
     def __init__(self, api, dry_run=False):
         self.api = api
@@ -264,7 +266,48 @@ class SafetyGatekeeper:
 
         SafetyGatekeeper._vix_cache_time = time.time()
         SafetyGatekeeper._vix_multiplier = multiplier
+
+        # 5. Track rolling 30-day VIX range → compute IV Rank
+        # IV Rank tells strategies whether options are cheap or expensive right now.
+        if vix > 0:
+            try:
+                vix_hist_file = os.path.join(os.getcwd(), "data", "vix_history.json")
+                today_str = datetime.date.today().isoformat()
+                vix_hist = {}
+                if os.path.exists(vix_hist_file):
+                    with open(vix_hist_file, "r") as f:
+                        vix_hist = json.load(f)
+                vix_hist[today_str] = round(vix, 2)
+                # Prune to last 30 calendar days
+                cutoff = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+                vix_hist = {k: v for k, v in vix_hist.items() if k >= cutoff}
+                with open(vix_hist_file, "w") as f:
+                    json.dump(vix_hist, f)
+                if len(vix_hist) >= 5:
+                    vals = list(vix_hist.values())
+                    vix_lo, vix_hi = min(vals), max(vals)
+                    iv_rank = (vix - vix_lo) / (vix_hi - vix_lo) if (vix_hi - vix_lo) > 0 else 0.5
+                    SafetyGatekeeper._iv_rank = round(iv_rank, 3)
+                    if iv_rank > 0.70:
+                        logger.warning(
+                            f">>> [Risk] 📈 IV Rank={iv_rank:.0%} "
+                            f"(VIX {vix:.1f}, 30d range {vix_lo:.1f}–{vix_hi:.1f}): "
+                            "Options are EXPENSIVE. Strategies will prefer near-ATM strikes."
+                        )
+            except Exception as e:
+                logger.warning(f">>> [Risk] IV Rank update error: {e}")
+
         return multiplier
+
+    def get_iv_rank(self) -> float:
+        """
+        Returns the current IV Rank (0.0–1.0) based on the rolling 30-day VIX range.
+          0.0 = cheapest options seen in 30 days (buy OTM freely)
+          1.0 = most expensive options seen in 30 days (prefer ATM, reduce OTM depth)
+        Returns 0.5 (neutral) when insufficient history exists (<5 trading days).
+        Updated automatically each time get_vix_adjustment() is called (every 60s).
+        """
+        return SafetyGatekeeper._iv_rank
 
     def check_sentiment_risk(self, direction="LONG"):
         """
@@ -288,10 +331,10 @@ class SafetyGatekeeper:
             logger.warning(f">>> [Gatekeeper] Sentiment Check Error: {e}")
             return True
 
-    def get_compounded_lots(self, margin_per_lot):
+    def get_compounded_lots(self, margin_per_lot, multiplier=1.0):
         """
         Calculates lot size based on current capital and the active capital tier.
-        Formula: Lots = floor(Capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
+        Formula: Lots = floor(Capital / (margin_per_lot * (1 + tier.margin_buffer_pct))) * multiplier
         Hard-capped at tier.max_lots (0 = unlimited for LARGE accounts).
         """
         try:
@@ -306,7 +349,11 @@ class SafetyGatekeeper:
                 )
                 return 0
 
-            lots = int(capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
+            # Base count based on bare affordability
+            base_lots = int(capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
+            
+            # Apply multiplier (Scaling up/down based on confidence)
+            lots = int(base_lots * multiplier)
 
             # Floor at 1 lot only if capital can actually cover bare margin
             if lots < 1:
@@ -322,6 +369,20 @@ class SafetyGatekeeper:
             # Cap at tier maximum (0 = no cap for LARGE tier)
             if tier.max_lots > 0:
                 lots = min(lots, tier.max_lots)
+
+            # --- RISK-BASED CAPPING (Safety Enhancement) ---
+            # Ensure that a single trade hit (at sl_pct) doesn't wipe out the daily loss limit.
+            daily_loss_limit = capital * tier.max_daily_loss_pct
+            risk_per_lot = margin_per_lot * tier.sl_pct  # Max % loss per lot
+            
+            if lots * risk_per_lot > daily_loss_limit:
+                max_safe_lots = int(daily_loss_limit / risk_per_lot)
+                if max_safe_lots < lots:
+                    logger.warning(
+                        f">>> [Gatekeeper] 🛡️ Risk Cap: Reducing lots from {lots} to {max_safe_lots} "
+                        f"to protect Daily Loss Limit (₹{daily_loss_limit:.0f})."
+                    )
+                    lots = max(1, max_safe_lots)
 
             return lots
         except Exception as e:

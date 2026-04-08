@@ -567,11 +567,29 @@ class MomentumStrategy:
             logger.error("Could not fetch Nifty LTP for Entry.")
             return
 
-        atr = self.last_analysis.get('atr', 20.0) 
+        atr = self.last_analysis.get('atr', 20.0)
         if atr == 0: atr = 20.0
-        
+
+        # --- RSI OVEREXTENSION FILTER ---
+        # Block entries when the move is already exhausted.
+        # CE entry blocked if RSI > 68 (overbought); PE entry blocked if RSI < 32 (oversold).
+        # Note: not applied to GAMMA_BLAST — parabolic days are supposed to be "overbought".
+        entry_rsi = self.last_analysis.get('rsi', 50.0)
+        if leg == "CE" and entry_rsi > 68:
+            logger.warning(
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} > 68 (overbought). "
+                "Skipping CE entry — not chasing an exhausted move."
+            )
+            return
+        if leg == "PE" and entry_rsi < 32:
+            logger.warning(
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} < 32 (oversold). "
+                "Skipping PE entry — not chasing an exhausted move."
+            )
+            return
+
         sl_points = 2 * atr
-        
+
         direction = "LONG" if leg == "CE" else "SHORT"
         if not self.gatekeeper.check_sentiment_risk(direction):
              logger.warning(f"Trade Skipped due to Sentiment Risk.")
@@ -597,6 +615,17 @@ class MomentumStrategy:
             otm_offset = 1      # 1 strike OTM (~50 pts)
         else:
             otm_offset = 2      # 2 strikes OTM (~100 pts) — high vol, wide swings expected
+
+        # --- IV RANK: OTM DEPTH REDUCTION ---
+        # When options are expensive (high IV Rank), going OTM means paying a fat premium
+        # for low delta. Pull back 1 strike toward ATM to improve cost vs. payoff.
+        iv_rank = self.gatekeeper.get_iv_rank()
+        if iv_rank > 0.70 and otm_offset > 0:
+            otm_offset = max(0, otm_offset - 1)
+            logger.info(
+                f"📉 IV Rank={iv_rank:.0%} (>70%): Options expensive, "
+                f"pulling OTM depth back to {otm_offset} strike(s) — prefer near-ATM."
+            )
 
         strike_direction = 1 if leg == "CE" else -1
         strike = atm_strike + strike_direction * otm_offset * 50
@@ -638,7 +667,7 @@ class MomentumStrategy:
         margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
         
         # Apply Compounding (Exponential Scaling) using real estimated cost
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
+        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
         qty = lots * Config.NIFTY_LOT_SIZE
         
         logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
@@ -692,8 +721,17 @@ class MomentumStrategy:
         )
 
         actual_sl_points = sl_option_pts
-        sl_price = max(0.1, quote_ltp - actual_sl_points)
+        
+        # --- HARD SL FLOOR (20% safety cap) ---
+        max_allowed_sl_pts = quote_ltp * tier.sl_pct
+        if actual_sl_points > max_allowed_sl_pts:
+            logger.warning(
+                f"🛡️ Hard SL Triggered: Truncating {actual_sl_points:.1f}pts "
+                f"to {max_allowed_sl_pts:.1f}pts ({tier.sl_pct*100}% cap)"
+            )
+            actual_sl_points = max_allowed_sl_pts
 
+        sl_price = max(0.1, quote_ltp - actual_sl_points)
         target_price = quote_ltp + tgt_option_pts
 
         if self.dry_run:
@@ -1005,7 +1043,9 @@ class MomentumStrategy:
 
         if is_trending:
             # TRENDING regime: fast breakeven, let winners run to 5:1
-            be_trigger  = 1.0 * trail_atr  # Move to breakeven at 1:1
+            # SAFETY UPGRADE: If lots >= 4, move to BE even earlier (0.6x instead of 1.0x)
+            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+            be_trigger  = be_mult * trail_atr  # Move to breakeven at 1:1 (or 0.6:1 for high qty)
             book_trigger = 2.5 * trail_atr  # Book 50% at 2.5:1
 
             if profit_points > be_trigger and current_sl < entry_price:
@@ -1022,8 +1062,9 @@ class MomentumStrategy:
                     return False
         else:
             # RANGEBOUND regime: tighter stages, early reversal exit
-            be_trigger   = 0.75 * trail_atr
-            book_trigger = 1.5  * trail_atr
+            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 0.75
+            be_trigger   = be_mult  * trail_atr
+            book_trigger = 1.5   * trail_atr
 
             if profit_points > be_trigger and current_sl < entry_price:
                 new_sl = entry_price + 1.0

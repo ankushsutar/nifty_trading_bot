@@ -27,6 +27,8 @@ class GammaBlastStrategy:
         self.running = True
         self.active_position = None
         self.last_sync_time = 0
+        self.risk_multiplier = 1.0        # Set by DecisionEngine before execute()
+        self.last_trend_fade_check = 0    # Throttle market_service calls in monitor
 
     def sync_state(self):
         """
@@ -181,7 +183,8 @@ class GammaBlastStrategy:
 
             # ADX gate from capital tier — no hardcoded threshold
             from bot.config.settings import Config as _Cfg
-            _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+            _capital = self.gatekeeper.get_current_capital()
+            _tier = _Cfg.get_tier(_capital)
             if adx < _tier.min_adx_to_trade:
                 logger.warning(
                     f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below "
@@ -192,6 +195,19 @@ class GammaBlastStrategy:
 
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"
+
+            # --- OI BIAS CONFIRMATION ---
+            # Block entry if institutional OI flow contradicts the EMA-derived leg.
+            # On a parabolic day, we want trend AND institutions aligned.
+            oi_data = market_data.get('oi_data', {})
+            oi_bias = oi_data.get('bias', 'NEUTRAL')
+            if (leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH"):
+                logger.warning(
+                    f"Gamma Blast: ⚠️ OI Bias Conflict — Leg={leg} but institutions say {oi_bias}. "
+                    "Skipping entry to avoid trading against smart money."
+                )
+                time.sleep(30)
+                continue
 
             # 4. Strike Selection — OTM depth scales with ADX strength.
             # Stronger trend = deeper OTM = exponentially higher leverage.
@@ -205,6 +221,18 @@ class GammaBlastStrategy:
                 otm_depth = 2
             else:
                 otm_depth = 3
+
+            # --- IV RANK: OTM DEPTH CAP ---
+            # When options are expensive (IV Rank > 70%), avoid going too deep OTM —
+            # a fat premium on a low-delta strike needs a huge move to break even.
+            # Floor at 1 OTM (never go ATM for gamma blast — it's a leverage strategy).
+            iv_rank = self.gatekeeper.get_iv_rank()
+            if iv_rank > 0.70 and otm_depth > 1:
+                otm_depth = max(1, otm_depth - 1)
+                logger.info(
+                    f"📉 IV Rank={iv_rank:.0%}: Options expensive, "
+                    f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
+                )
 
             strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
 
@@ -223,10 +251,10 @@ class GammaBlastStrategy:
             quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
 
             # 5. Position Sizing — lot fraction from capital tier (MICRO=50%, SMALL=60%, etc.)
-            from bot.config.settings import Config as _Cfg
-            _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+            # Reuse _tier already resolved above — no extra API call needed.
             margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
-            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot) * _tier.gamma_blast_lot_pct)
+            # Lots are scaled by the Brain's risk multiplier AND the strategy's specific lot fraction
+            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier) * _tier.gamma_blast_lot_pct)
             if lots < 1:
                 # Only force 1 lot if capital can actually cover a single lot
                 estimated_cost = margin_per_lot
@@ -237,6 +265,14 @@ class GammaBlastStrategy:
                     time.sleep(60)
                     continue
             qty = lots * Config.NIFTY_LOT_SIZE
+
+            # --- TRADE VIABILITY CHECK ---
+            # Ensure brokerage (₹60 round-trip) doesn't exceed 15% of trade value.
+            # Catches cheap deep-OTM options where costs eat the profit.
+            if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
+                logger.warning("Gamma Blast: ❌ Trade viability check failed (brokerage ratio too high). Skipping.")
+                time.sleep(60)
+                continue
 
             self.place_entry(expiry, strike, leg, qty, quote_ltp)
 
@@ -255,9 +291,11 @@ class GammaBlastStrategy:
             logger.warning(f"Gamma Blast: ❌ Margin check failed. Need ₹{estimated_cost:,.0f}. Aborting entry.")
             return
 
-        # Place Smart-Limit Order with 5% buffer from LTP
-        # This replaces raw LIMIT/MARKET to reduce slippage
-        limit_price = round(quote_ltp * 1.05, 1)
+        # Place Smart-Limit Order — slippage buffer from capital tier config.
+        # Smaller accounts (MICRO/SMALL) use a tighter buffer; avoids over-paying for OTM options.
+        from bot.config.settings import Config as _Cfg
+        _entry_tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+        limit_price = round(quote_ltp * (1.0 + _entry_tier.entry_slippage_pct), 1)
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
         
@@ -385,25 +423,30 @@ class GammaBlastStrategy:
                     self.exit_market(token, symbol, remaining_qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
                     break
 
-                # ── Trend-fade check ──────────────────────────────────────
-                from backend.market_service import market_service
-                from bot.config.settings import Config as _Cfg
-                analysis = market_service.get_market_data().get('analysis', {})
-                curr_adx = analysis.get('adx', 0)
-                _tier    = _Cfg.get_tier(self.gatekeeper.get_current_capital())
-                if curr_adx > 0 and curr_adx < _tier.adx_trend_fade_exit:
-                    logger.info(
-                        f"Gamma Blast: ⚠️ Trend Fading (ADX={curr_adx:.1f} < {_tier.adx_trend_fade_exit} "
-                        f"[{_tier.name}]). Exiting {remaining_qty} qty."
-                    )
-                    if self.exit_market(token, symbol, remaining_qty, "TREND_FADE", trade_id, sl_oid):
-                        sl_oid = None
-                        break
-                    continue
+                # ── Trend-fade check (throttled to every 30s) ─────────────
+                # market_service data refreshes every ~3 min — polling faster wastes resources.
+                if time.time() - self.last_trend_fade_check > 30:
+                    self.last_trend_fade_check = time.time()
+                    from backend.market_service import market_service
+                    from bot.config.settings import Config as _Cfg
+                    analysis = market_service.get_market_data().get('analysis', {})
+                    curr_adx = analysis.get('adx', 0)
+                    _tier    = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+                    if curr_adx > 0 and curr_adx < _tier.adx_trend_fade_exit:
+                        logger.info(
+                            f"Gamma Blast: ⚠️ Trend Fading (ADX={curr_adx:.1f} < {_tier.adx_trend_fade_exit} "
+                            f"[{_tier.name}]). Exiting {remaining_qty} qty."
+                        )
+                        if self.exit_market(token, symbol, remaining_qty, "TREND_FADE", trade_id, sl_oid):
+                            sl_oid = None
+                            self.active_position = None
+                            break
+                        continue
 
-                # ── Stage 1: Breakeven at 1R ──────────────────────────────
-                if stage < 1 and ltp >= entry_price + risk:
-                    logger.info(f"Gamma Blast: 🛡️ Stage 1 (1R). SL → Breakeven ({entry_price})")
+                # ── Stage 1: Breakeven at 1R (or 0.5R for high qty) ───
+                be_trigger_mult = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+                if stage < 1 and ltp >= entry_price + (be_trigger_mult * risk):
+                    logger.info(f"Gamma Blast: 🛡️ Stage 1 ({be_trigger_mult}R). SL → Breakeven ({entry_price})")
                     sl    = entry_price
                     stage = 1
                     trade_repo.update_sl(trade_id, sl)
@@ -505,6 +548,7 @@ class GammaBlastStrategy:
                 if datetime.datetime.now().time() >= datetime.time(15, 10):
                     if self.exit_market(token, symbol, remaining_qty, "TIME", trade_id, sl_oid):
                         sl_oid = None
+                        self.active_position = None
                         break
 
             except Exception as e:

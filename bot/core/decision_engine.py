@@ -85,6 +85,22 @@ class DecisionEngine:
         except Exception:
             pass  # Fail open — don't block on DB error
 
+        # --- SESSION-ADAPTIVE ADX BOOST ---
+        # After 2+ consecutive losses, demand a stronger trend before entering again.
+        # This prevents over-trading on choppy days where early signals were wrong.
+        adx_boost = 0
+        try:
+            _closed = [t for t in today_trades if t.get('status') == 'CLOSED']
+            if len(_closed) >= 2 and all(t.get('pnl', 0) < 0 for t in _closed[-2:]):
+                adx_boost = 5
+                logger.warning(
+                    f">>> [Brain] ⚠️ Session Stress: Last 2 trades both lost. "
+                    f"ADX threshold raised by +{adx_boost} (need ADX ≥ {tier.min_adx_to_trade + adx_boost}) "
+                    "for remaining entries today."
+                )
+        except Exception:
+            pass
+
         # 1. Check Capital & Mode  (tier already resolved above, reuse available_cash_early)
         available_cash = available_cash_early
         logger.info(f">>> [Brain] Current available capital: ₹{available_cash:,.2f} [{tier.name} tier]")
@@ -109,10 +125,16 @@ class DecisionEngine:
         now = datetime.datetime.now().time()
         logger.info(f">>> [Brain] Current Time: {now}")
 
-        # Rule A: Market Opening (09:15 - 09:20) -> OHL Scalp
+        # Rule A: Market Opening (09:15 - 09:20) -> OHL Scalp (only if tier allows it)
         if datetime.time(9, 15) <= now < datetime.time(9, 20):
-            logger.info(">>> [Brain] 🌅 Market Opening Phase. Selected: OHL Scalp")
-            return "OHL", 1.0
+            if "OHL" in tier.allowed_strategies:
+                logger.info(">>> [Brain] 🌅 Market Opening Phase. Selected: OHL Scalp")
+                return "OHL", 1.0
+            else:
+                logger.info(
+                    f">>> [Brain] 🌅 Market Opening Phase, but OHL not in [{tier.name}] whitelist "
+                    f"{tier.allowed_strategies}. Skipping."
+                )
 
         # 3. Market Regime Analysis
         logger.info(">>> [Brain] 📊 Fetching Market Data from Service Layer...")
@@ -129,39 +151,79 @@ class DecisionEngine:
         logger.info(f">>> [Brain] Option Chain Bias: {bias} (PCR: {sentiment.get('pcr', 0)})")
 
         # 5. Volatility Scaling & Confidence Analysis (Alpha Optimization)
-        risk_multiplier = self.gatekeeper.get_vix_adjustment()
+        vix_multiplier = self.gatekeeper.get_vix_adjustment()
         volume_spike = regime_data.get('volume_spike', False)
         
-        confidence_high = False
-        # Confluence: Trend + Sentiment + Institutional Volume
+        # --- CONFLUENCE SCORING (0–7 points → proportional position sizing) ---
+        # Each factor that confirms the trade idea adds points.
+        # Final score drives sizing: more confluence = larger position.
+        _adx_now = regime_data.get('adx', 0)
+        _rsi_now = regime_data.get('rsi', 50.0)
+        confluence_score = 0
+
+        # Trend + OI Bias alignment — the single strongest confirmation (+2)
         if (trend == "BULLISH" and bias == "BULLISH") or (trend == "BEARISH" and bias == "BEARISH"):
-             if regime == "TRENDING" or volume_spike:
-                 logger.info(">>> [Brain] 💎 High Confidence: Trend, Sentiment & Volume Align.")
-                 confidence_high = True
-                 risk_multiplier *= 1.2
+            confluence_score += 2
+
+        # Market regime confirms a trending environment (+2)
+        if regime == "TRENDING":
+            confluence_score += 2
+
+        # Institutional volume spike — smart money participating (+1)
+        if volume_spike:
+            confluence_score += 1
+
+        # RSI is in the "sweet spot" — momentum confirmed, not yet overextended (+1)
+        # Bullish: RSI between 45–70 | Bearish: RSI between 30–55
+        if (trend == "BULLISH" and 45 < _rsi_now < 70) or (trend == "BEARISH" and 30 < _rsi_now < 55):
+            confluence_score += 1
+
+        # ADX strength is parabolic — extremely strong directional move (+1)
+        if _adx_now > tier.adx_gamma_blast:
+            confluence_score += 1
+
+        confidence_high = (confluence_score >= 5)
+
+        # Map score to scaling factor (4 discrete tiers for clean lot arithmetic)
+        if confluence_score >= 6:
+            scaling_factor = 1.0    # A+ setup — full size
+        elif confluence_score >= 4:
+            scaling_factor = 0.75   # Good setup — 3/4 size
+        elif confluence_score >= 2:
+            scaling_factor = 0.5    # Weak setup — half size
+        else:
+            scaling_factor = 0.25   # Conflicting signals — minimal size
+
+        logger.info(
+            f">>> [Brain] 🎯 Confluence: {confluence_score}/7 | "
+            f"Scale={scaling_factor}x | Confidence={'HIGH' if confidence_high else 'NORMAL' if confluence_score >= 3 else 'LOW'}"
+        )
+        risk_multiplier = scaling_factor * vix_multiplier
 
         # 6. Small Account "A+ Filter" (MICRO tier only)
         if is_small_account:
             # Only take trades if Regime is TRENDING and Trend aligns with Sentiment OR ADX is strong
             adx = regime_data.get('adx', 0)
-            if not confidence_high and adx <= tier.min_adx_to_trade:
+            if not confidence_high and adx <= tier.min_adx_to_trade + adx_boost:
                 reasons = [
                     f"Trend-OI Misalignment ({trend} trend vs {bias} OI)",
-                    f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade} [{tier.name}])",
+                    f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade + adx_boost} [{tier.name}])",
                 ]
                 logger.warning(f">>> [Brain] ⏸️ Skipping — {' + '.join(reasons)}. Waiting for A+ Setup.")
                 return None, 1.0
-            elif not confidence_high and adx > tier.min_adx_to_trade:
+            elif not confidence_high and adx > tier.min_adx_to_trade + adx_boost:
                 logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
 
         # ── HARD ADX GATE ─────────────────────────────────────────────────────────
         # No trade unless trend is strong enough for the current capital tier.
         # Larger accounts tolerate lower ADX; small accounts need strong trends only.
         adx = regime_data.get('adx', 0)
-        if adx < tier.min_adx_to_trade:
+        if adx < tier.min_adx_to_trade + adx_boost:
             logger.info(
-                f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < {tier.min_adx_to_trade} minimum. "
-                "No trade — waiting for a strong trend."
+                f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
+                f"{tier.min_adx_to_trade + adx_boost} minimum"
+                + (f" (base {tier.min_adx_to_trade} + session boost {adx_boost})" if adx_boost else "")
+                + ". No trade — waiting for a strong trend."
             )
             return None, 1.0
         # ──────────────────────────────────────────────────────────────────────────
