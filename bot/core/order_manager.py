@@ -328,9 +328,12 @@ class OrderManager:
         try:
             if self.dry_run: return {"status": True, "data": []}
             rate_limiter.wait()
-            return self.api.orderBook()
+            res = self.api.orderBook()
+            if res is None:
+                logger.error("OrderBook Fetch Error: API returned None")
+            return res
         except Exception as e:
-            logger.error(f"OrderBook Fetch Error: {e}")
+            logger.error(f"OrderBook Fetch Exception: {e}")
             return None
 
     def get_positions(self):
@@ -338,9 +341,12 @@ class OrderManager:
         try:
             if self.dry_run: return {"status": True, "data": []}
             rate_limiter.wait()
-            return self.api.position()
+            res = self.api.position()
+            if res is None:
+                 logger.error("Position Fetch Error: API returned None")
+            return res
         except Exception as e:
-            logger.error(f"Position Fetch Error: {e}")
+            logger.error(f"Position Fetch Exception: {e}")
             return None
 
     def get_rms_limit(self):
@@ -348,9 +354,12 @@ class OrderManager:
         try:
             if self.dry_run: return {"status": True, "data": {"net": "1000000"}}
             rate_limiter.wait()
-            return self.api.rmsLimit()
+            res = self.api.rmsLimit()
+            if res is None:
+                logger.error("RMS Limit Fetch Error: API returned None")
+            return res
         except Exception as e:
-            logger.error(f"RMS Limit Fetch Error: {e}")
+            logger.error(f"RMS Limit Fetch Exception: {e}")
             return None
 
     def update_trade_fill(self, symbol, strategy_name, fill_price, expected_price=None):

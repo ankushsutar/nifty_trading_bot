@@ -2,6 +2,7 @@ from bot.core.safety_checks import SafetyGatekeeper
 from backend.market_service import market_service
 import datetime
 from bot.utils.logger import logger
+from bot.utils.expiry_calculator import get_next_weekly_expiry
 
 
 # Minimum strategy confidence score (0-100) to allow trade entry.
@@ -165,25 +166,23 @@ class DecisionEngine:
             return None, 1.0
         # ──────────────────────────────────────────────────────────────────────────
 
-        # 6. Strategy Whitelist — driven by capital tier
-        # MICRO: MOMENTUM + GAMMA_BLAST only (highest EV on strong-trend days)
-        # SMALL: adds ORB  |  MEDIUM: adds VWAP  |  LARGE: all six strategies
-        selected_strategy = "MOMENTUM"  # Default within whitelist
+        # 6. Strategy selection
+        today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+        expiry_calc = get_next_weekly_expiry()
+        is_expiry_day = (expiry_calc == today_str)
+        is_afternoon = (now >= datetime.time(13, 0))
 
         if regime == "VOLATILE":
             logger.warning(">>> [Brain] ⚠️ Market is VOLATILE. Staying in CASH.")
             return None, 1.0
 
-        # Scenario: Trending Market (only valid path forward given ADX gate)
         if regime == "TRENDING":
-
-            # --- PROXIMITY FILTER (THE WALL CHECK — preserved) ---
+            # --- PROXIMITY FILTER (THE WALL CHECK) ---
             levels    = market_data.get('levels', {})
             nifty_ltp = market_data.get('nifty', 0)
 
             if levels and nifty_ltp > 0:
                 proximity_threshold = nifty_ltp * 0.0015
-
                 if trend == "BULLISH":
                     resistances = [levels.get('pdh'), levels.get('cam_h3'), levels.get('cam_h4')]
                     resistances = [r for r in resistances if r and r > nifty_ltp]
@@ -191,7 +190,6 @@ class DecisionEngine:
                         if (r - nifty_ltp) < proximity_threshold:
                             logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Resistance ₹{r:.0f}. Deferred.")
                             return None, 1.0
-
                 elif trend == "BEARISH":
                     supports = [levels.get('pdl'), levels.get('cam_l3'), levels.get('cam_l4')]
                     supports = [s for s in supports if s and s < nifty_ltp]
@@ -199,33 +197,37 @@ class DecisionEngine:
                         if (nifty_ltp - s) < proximity_threshold:
                             logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Support ₹{s:.0f}. Deferred.")
                             return None, 1.0
-            # -------------------------------------------------------
 
-            logger.info(f">>> [Brain] 🔍 Trending. ADX={adx:.1f} — evaluating whitelist...")
-
-            # PARABOLIC (ADX > tier threshold) → GAMMA_BLAST: biggest leverage on the strongest days
-            if adx > tier.adx_gamma_blast:
+            # --- STRATEGY SELECTION ---
+            # Rule: On Expiry after 1 PM, we force Gamma Blast for "Zero-to-Hero"
+            if is_expiry_day and is_afternoon:
+                logger.info(f">>> [Brain] 🚀 EXPIRY AFTERNOON: Forcing GAMMA_BLAST (ADX: {adx:.1f})")
+                selected_strategy = "GAMMA_BLAST"
+            
+            # Normal Selection Logic
+            elif adx > tier.adx_gamma_blast:
                 logger.info(f">>> [Brain] 💎 PARABOLIC DAY (ADX={adx:.1f} > {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
                 selected_strategy = "GAMMA_BLAST"
-
-            # STRONG TREND → MOMENTUM: EMA crossover + MTF confluence
             else:
                 logger.info(f">>> [Brain] ⚡ STRONG TREND (ADX={adx:.1f}). Selected: MOMENTUM")
                 selected_strategy = "MOMENTUM"
 
-            # Whitelist guard — strategy must be enabled for this tier
-            if selected_strategy not in tier.allowed_strategies:
-                logger.info(
-                    f">>> [Brain] ⏸️ {selected_strategy} not in [{tier.name}] whitelist "
-                    f"{tier.allowed_strategies}. Staying in CASH."
-                )
-                return None, 1.0
-
-        # Scenario: Rangebound / Sideways — skip entirely (no edge without strong trend)
         elif regime in ["SIDEWAYS", "CHOP"]:
             logger.info(
                 f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
                 "Whitelist requires TRENDING regime. Staying in CASH."
+            )
+            return None, 1.0
+        
+        else:
+            logger.warning(f">>> [Brain] ⏸️ Unknown/Incompatible Regime: {regime}. Staying in CASH.")
+            return None, 1.0
+
+        # Whitelist guard — strategy must be enabled for this tier
+        if selected_strategy not in tier.allowed_strategies:
+            logger.info(
+                f">>> [Brain] ⏸️ {selected_strategy} not in [{tier.name}] whitelist "
+                f"{tier.allowed_strategies}. Staying in CASH."
             )
             return None, 1.0
 

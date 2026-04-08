@@ -95,42 +95,50 @@ class MomentumStrategy:
 
              pos_resp = self.order_manager.get_positions()
              
-             if pos_resp and pos_resp.get('status') and pos_resp.get('data'):
-                 found_active = None
-                 
-                 for pos in pos_resp['data']:
-                     if (pos['symbolname'] == 'NIFTY' and 
-                         pos['producttype'] == 'INTRADAY' and 
-                         int(pos['netqty']) != 0):
-                         
-                         qty = int(pos['netqty'])
-                         
-                         found_active = {
-                             'leg': "CE" if "CE" in pos['symbolname'] else "PE", 
-                             'symbol': pos['tradingsymbol'],
-                             'token': pos['symboltoken'],
-                             'qty': abs(qty),
-                             'entry_price': float(pos['avgnetprice']),
-                             'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
-                         }
-                         if self.active_position is None:
-                             logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
-                         
-                         break 
-                 
-                 if found_active:
-                     self.active_position = found_active
-                 elif self.active_position is not None:
-                     logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
-                     trade_repo.close_trade(symbol=self.active_position['symbol'])
-                     self.active_position = None
-                 
-                 if self.active_position and 'id' not in self.active_position:
-                     db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
-                     if db_trade and db_trade['symbol'] == self.active_position['symbol']:
-                         self.active_position['id'] = db_trade['id']
-                         self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
-                         logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} (Partial: {self.active_position['partially_booked']})")
+             # transients (DNS, timeout) return None or False status
+             if pos_resp is None or not pos_resp.get('status'):
+                 logger.warning("⚠️ Sync State: API failure. Skipping sync to preserve local state.")
+                 if pos_resp and ("Access denied" in str(pos_resp.get('message', '')) or "AB1004" in str(pos_resp.get('message', ''))):
+                     rate_limiter.trigger_circuit_breaker()
+                 return
+
+             # If we reach here, the API call was successful
+             found_active = None
+             pos_data = pos_resp.get('data') or []
+             
+             for pos in pos_data:
+                 if (pos.get('symbolname') == 'NIFTY' and 
+                     pos.get('producttype') == 'INTRADAY' and 
+                     int(pos.get('netqty', 0)) != 0):
+                     
+                     qty = int(pos['netqty'])
+                     
+                     found_active = {
+                         'leg': "CE" if "CE" in pos.get('tradingsymbol', '') else "PE", 
+                         'symbol': pos['tradingsymbol'],
+                         'token': pos['symboltoken'],
+                         'qty': abs(qty),
+                         'entry_price': float(pos['avgnetprice']),
+                         'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
+                     }
+                     if self.active_position is None:
+                         logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                     
+                     break 
+             
+             if found_active:
+                 self.active_position = found_active
+             elif self.active_position is not None:
+                 logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
+                 trade_repo.close_trade(symbol=self.active_position['symbol'])
+                 self.active_position = None
+             
+             if self.active_position and 'id' not in self.active_position:
+                 db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
+                 if db_trade and db_trade['symbol'] == self.active_position['symbol']:
+                     self.active_position['id'] = db_trade['id']
+                     self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
+                     logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} (Partial: {self.active_position['partially_booked']})")
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")

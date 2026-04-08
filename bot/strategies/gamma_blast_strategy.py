@@ -55,45 +55,51 @@ class GammaBlastStrategy:
             rate_limiter.wait()
             pos_resp = self.order_manager.get_positions()
             
-            if pos_resp and pos_resp.get('status') and pos_resp.get('data'):
-                found_active = None
-                
-                for pos in pos_resp['data']:
-                    # Look for NIFTY Intraday options with non-zero quantity
-                    if (pos['symbolname'] == 'NIFTY' and 
-                        pos['producttype'] == 'INTRADAY' and 
-                        int(pos['netqty']) != 0):
-                        
-                        qty = int(pos['netqty'])
-                        
-                        found_active = {
-                            'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
-                            'symbol': pos['tradingsymbol'],
-                            'token': pos['symboltoken'],
-                            'qty': abs(qty),
-                            'entry_price': float(pos['avgnetprice']),
-                            # If no local sl_price, default to 20% stop
-                            'sl_price': float(pos['avgnetprice']) * 0.8
-                        }
-                        
-                        # Match with DB record to get correct sl_price if available
-                        db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
-                        if db_trade:
-                            found_active['id'] = db_trade['id']
-                            found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
-                            logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
-                        
-                        if self.active_position is None:
-                            logger.info(f"♻️ [Gamma Blast] RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
-                        
-                        break 
-                
-                if found_active:
-                    self.active_position = found_active
-                elif self.active_position is not None:
-                    logger.warning("⚠️ [Gamma Blast] SYNC: Active Position closed externally! Resetting State.")
-                    trade_repo.close_trade(symbol=self.active_position['symbol'])
-                    self.active_position = None
+            # transients (DNS, timeout) return None or False status
+            if pos_resp is None or not pos_resp.get('status'):
+                logger.warning("⚠️ [Gamma Blast] Sync State: API failure. Skipping sync to preserve local state.")
+                return
+
+            # If we reach here, the API call was successful
+            found_active = None
+            pos_data = pos_resp.get('data') or []
+            
+            for pos in pos_data:
+                # Look for NIFTY Intraday options with non-zero quantity
+                if (pos.get('symbolname') == 'NIFTY' and 
+                    pos.get('producttype') == 'INTRADAY' and 
+                    int(pos.get('netqty', 0)) != 0):
+                    
+                    qty = int(pos['netqty'])
+                    
+                    found_active = {
+                        'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
+                        'symbol': pos['tradingsymbol'],
+                        'token': pos['symboltoken'],
+                        'qty': abs(qty),
+                        'entry_price': float(pos['avgnetprice']),
+                        # If no local sl_price, default to 20% stop
+                        'sl_price': float(pos['avgnetprice']) * 0.8
+                    }
+                    
+                    # Match with DB record to get correct sl_price if available
+                    db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
+                    if db_trade:
+                        found_active['id'] = db_trade['id']
+                        found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
+                        logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
+                    
+                    if self.active_position is None:
+                        logger.info(f"♻️ [Gamma Blast] RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                    
+                    break 
+            
+            if found_active:
+                self.active_position = found_active
+            elif self.active_position is not None:
+                logger.warning("⚠️ [Gamma Blast] SYNC: Active Position closed externally! Resetting State.")
+                trade_repo.close_trade(symbol=self.active_position['symbol'])
+                self.active_position = None
                     
         except Exception as e:
             logger.error(f"[Gamma Blast] Sync State Error: {e}")
