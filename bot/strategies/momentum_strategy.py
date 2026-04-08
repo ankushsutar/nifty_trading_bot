@@ -306,7 +306,17 @@ class MomentumStrategy:
                         _bbw = float(self.last_analysis.get('bbw', 0.0))
                         _oi_bias = self.last_analysis.get('sentiment', 'NEUTRAL')
 
-                        if trend == "BULLISH":
+                        # ADX RE-CHECK: DecisionEngine verified ADX at startup, but ADX can
+                        # decay mid-session. Re-gate here to avoid low-quality late entries.
+                        _adx_now = self.last_analysis.get('adx', 0)
+                        _tier_now = Config.get_tier(self.gatekeeper.get_current_capital())
+                        if _adx_now > 0 and _adx_now < _tier_now.min_adx_to_trade:
+                            logger.info(
+                                f"⏸️ ADX DECAY: ADX={_adx_now:.1f} dropped below "
+                                f"[{_tier_now.name}] threshold ({_tier_now.min_adx_to_trade}). "
+                                "Skipping entry — trend too weak."
+                            )
+                        elif trend == "BULLISH":
                             if htf_trend != "BULLISH":
                                 logger.info(
                                     f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} "

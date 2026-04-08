@@ -466,6 +466,7 @@ class GammaBlastStrategy:
                             f"(locked P&L: ₹{partial_pnl:+,.0f}). "
                             f"Remaining {remaining_qty - half_qty} qty runs free."
                         )
+                        partial_confirmed = self.dry_run  # dry_run always confirms
                         if not self.dry_run:
                             partial_limit = round(ltp * 0.98, 1)
                             partial_params = {
@@ -479,15 +480,24 @@ class GammaBlastStrategy:
                                 fill = self.wait_for_fill(p_oid)
                                 if fill['status'] == 'FILLED':
                                     partial_pnl = round((fill['price'] - entry_price) * half_qty, 2)
+                                    partial_confirmed = True
+                                else:
+                                    logger.warning(
+                                        f"Gamma Blast: ⚠️ Partial booking order {p_oid} not filled "
+                                        f"(status={fill['status']}). Keeping full position active."
+                                    )
 
-                        trade_repo.reduce_position(
-                            trade_id=trade_id,
-                            reduction_qty=half_qty,
-                            exit_price=ltp,
-                            pnl_segment=partial_pnl,
-                            reason="PARTIAL_PROFIT_2R",
-                        )
-                        remaining_qty -= half_qty
+                        # Only update state if the broker actually filled the partial sell.
+                        # Avoids desync where local state shows half-position but broker holds full.
+                        if partial_confirmed:
+                            trade_repo.reduce_position(
+                                trade_id=trade_id,
+                                reduction_qty=half_qty,
+                                exit_price=ltp,
+                                pnl_segment=partial_pnl,
+                                reason="PARTIAL_PROFIT_2R",
+                            )
+                            remaining_qty -= half_qty
 
                     # Raise SL floor to lock 0.5R on the remaining position
                     sl = round(entry_price + 0.5 * risk, 1)
