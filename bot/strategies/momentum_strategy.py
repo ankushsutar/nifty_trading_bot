@@ -82,6 +82,7 @@ class MomentumStrategy:
                         'qty': db_trade['qty'],
                         'entry_price': db_trade['entry_price'],
                         'sl_price': db_trade['sl_price'],
+                        'sl_order_id': db_trade.get('sl_order_id'),
                         'atr': 0.0,
                         'partially_booked': db_trade.get('partially_booked', False)
                     }
@@ -140,7 +141,8 @@ class MomentumStrategy:
                  if db_trade and db_trade['symbol'] == self.active_position['symbol']:
                      self.active_position['id'] = db_trade['id']
                      self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
-                     logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} (Partial: {self.active_position['partially_booked']})")
+                     self.active_position['sl_order_id'] = db_trade.get('sl_order_id')
+                     logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} | SL-OID: {self.active_position['sl_order_id']} | Partial: {self.active_position['partially_booked']}")
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
@@ -943,6 +945,8 @@ class MomentumStrategy:
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
              if sl_oid:
                  self.active_position['sl_order_id'] = sl_oid
+                 if trade_id:
+                     trade_repo.update_sl_order_id(trade_id, sl_oid)
                  logger.info(f"🛡️ Broker-Side SL Placed: {sl_oid}")
              
              # Notify

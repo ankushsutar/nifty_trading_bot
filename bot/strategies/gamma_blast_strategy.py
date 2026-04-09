@@ -148,7 +148,7 @@ class GammaBlastStrategy:
                     # Do not return; continue loop to look for new signals
                     continue
                 
-                logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']}")
+                logger.info(f">>> [Resumption] Found Open Trade: {active_trade['symbol']} | OID: {active_trade.get('sl_order_id')} | Stage: {active_trade.get('monitoring_stage', 0)}")
                 self.monitor_position(
                     active_trade['symbol'], 
                     active_trade['token'], 
@@ -157,7 +157,9 @@ class GammaBlastStrategy:
                     active_trade['entry_price'],
                     active_trade['id'],
                     active_trade.get('sl_order_id'),
-                    active_trade.get('leg')
+                    active_trade.get('leg'),
+                    stage=active_trade.get('monitoring_stage', 0),
+                    remaining_qty=active_trade.get('remaining_qty')
                 )
                 break # Monitoring finished or trade closed
 
@@ -480,10 +482,14 @@ class GammaBlastStrategy:
 
         # Place Broker SL
         sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)
+        
+        # PERSIST SL OID: Critical for recovery after restarts
+        if trade_id and sl_oid:
+            trade_repo.update_sl_order_id(trade_id, sl_oid)
 
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
-    def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg):
+    def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg, stage=0, remaining_qty=None):
         """
         Progressive 3-stage trailing exit — replaces fixed 3:1 target.
 
@@ -493,9 +499,10 @@ class GammaBlastStrategy:
 
         No fixed profit target. The trailing SL decides when the move is over.
         """
+        if remaining_qty is None:
+            remaining_qty = qty
+            
         risk          = abs(entry_price - sl)   # Initial risk distance — reference point
-        stage         = 0                        # 0→initial  1→breakeven  2→half_booked  3→tight_trail
-        remaining_qty = qty                      # Shrinks after partial booking
 
         logger.info(
             f"Gamma Blast: 🎯 PROGRESSIVE TRAIL | "
@@ -573,6 +580,10 @@ class GammaBlastStrategy:
                         f"SL=₹{sl:.1f} | Qty={remaining_qty} | Stage={stage} | "
                         f"P&L=₹{_pnl:+,.0f} ({_pnl_pct:+.1f}%) | Next: {_next_str}"
                     )
+                    
+                    # SYNC PERSISTENCE: Keep DB updated with current monitoring state
+                    if trade_id:
+                        trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
 
                 # ── Stage 1: Breakeven at 1R (or 0.5R for high qty) ───
                 be_trigger_mult = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
@@ -581,6 +592,7 @@ class GammaBlastStrategy:
                     sl    = entry_price
                     stage = 1
                     trade_repo.update_sl(trade_id, sl)
+                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
                     if sl_oid and not self.dry_run:
                         self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
 
@@ -634,6 +646,7 @@ class GammaBlastStrategy:
                     sl = round(entry_price + 0.5 * risk, 1)
                     stage = 2
                     trade_repo.update_sl(trade_id, sl)
+                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
                     if sl_oid and not self.dry_run:
                         self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
 
@@ -644,6 +657,7 @@ class GammaBlastStrategy:
                         f"Activating tight trail on {remaining_qty} qty. No target cap."
                     )
                     stage = 3
+                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
 
                 # ── Progressive trailing SL ───────────────────────────────
                 # Trail distance shrinks as profit grows so winners run further:

@@ -68,8 +68,11 @@ class TradeRepository:
                     "leg": leg,
                     "side": side,
                     "qty": qty,
+                    "remaining_qty": qty,
                     "entry_price": entry_price,
                     "sl_price": sl_price,
+                    "sl_order_id": None,
+                    "monitoring_stage": 0,
                     "exit_price": None,
                     "pnl": 0.0,
                     "exit_reason": None,
@@ -105,6 +108,38 @@ class TradeRepository:
             logger.info(f"TradeRepository: Updated Trade #{trade_id} SL to ₹{new_sl}")
         except Exception as e:
             logger.error(f"TradeRepository Update SL Error: {e}")
+
+    def update_sl_order_id(self, trade_id, sl_oid):
+        """Persists the Broker-Side SL Order ID for recovery after restarts."""
+        if not self.client or not sl_oid: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": {"sl_order_id": str(sl_oid), "updated_at": datetime.datetime.now()}}
+            )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} SL Order ID to {sl_oid}")
+        except Exception as e:
+            logger.error(f"TradeRepository Update SL OID Error: {e}")
+
+    def update_monitoring_state(self, trade_id, stage, remaining_qty=None):
+        """Persists the current strategy stage and remaining quantity."""
+        if not self.client: return
+        try:
+            update_data = {
+                "monitoring_stage": stage,
+                "updated_at": datetime.datetime.now()
+            }
+            if remaining_qty is not None:
+                update_data["remaining_qty"] = remaining_qty
+
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": update_data}
+            )
+            # Throttled log or debug log for state updates to avoid log bloat
+            logger.debug(f"TradeRepository: Updated Trade #{trade_id} Stage: {stage}, Qty: {remaining_qty}")
+        except Exception as e:
+            logger.error(f"TradeRepository Update Monitoring State Error: {e}")
 
     def update_entry_price(self, trade_id, actual_price, expected_price=None):
         """Updates a trade with the actual fill details and calculates slippage."""
