@@ -40,6 +40,7 @@ class MomentumStrategy:
         self.oi_data = {}
         self._ltp_cache = {} # SafeLTP Cache
         self.risk_multiplier = 1.0
+        self._last_status_log  = 0  # Throttle for periodic monitor heartbeat
         
         self.sync_state() # Initial Sync with Broker
 
@@ -1021,6 +1022,30 @@ class MomentumStrategy:
                 return False
 
         if not ltp or ltp == 0: return False
+
+        # ── 30s status heartbeat ──────────────────────────────────────────────
+        if time.time() - self._last_status_log > 30:
+            self._last_status_log = time.time()
+            _qty     = self.active_position.get('qty', 0)
+            _pnl     = round((ltp - entry_price) * _qty, 2)
+            _pnl_pct = round((_pnl / (entry_price * _qty)) * 100, 2) if entry_price > 0 and _qty > 0 else 0
+            _tgt     = self.active_position.get('target_price', 0)
+            _rr      = self.active_position.get('dynamic_rr', '?')
+            _is_part = self.active_position.get('partially_booked', False)
+
+            _sl_dist  = round(ltp - current_sl, 1)  if current_sl > 0 else 0
+            _tgt_dist = round(_tgt - ltp, 1)        if _tgt > 0 else 0
+            _tgt_str  = (
+                f"Target=₹{_tgt:.1f} ({_tgt_dist:+.1f}pts)"
+                if _tgt > 0 else "No fixed target (trailing)"
+            )
+            _partial_str = " [50% BOOKED]" if _is_part else ""
+
+            logger.info(
+                f"Momentum: 📊 MONITOR | LTP=₹{ltp:.1f} | Entry=₹{entry_price:.1f} | "
+                f"SL=₹{current_sl:.1f} ({_sl_dist:.1f}pts below) | {_tgt_str} | "
+                f"Qty={_qty}{_partial_str} | P&L=₹{_pnl:+,.0f} ({_pnl_pct:+.1f}%) | RR={_rr}"
+            )
 
         # 0. Hard Stop Loss Check
         if current_sl > 0 and ltp <= current_sl:

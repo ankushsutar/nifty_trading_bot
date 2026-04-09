@@ -30,6 +30,7 @@ class GammaBlastStrategy:
         self.risk_multiplier = 1.0        # Set by DecisionEngine before execute()
         self.last_trend_fade_check = 0    # Throttle market_service calls in monitor
         self._last_sl_hit_time = 0        # Timestamp of last SL hit — gates re-entry
+        self._last_status_log  = 0        # Throttle for periodic monitor heartbeat
 
     def sync_state(self):
         """
@@ -434,7 +435,7 @@ class GammaBlastStrategy:
                     self.exit_market(token, symbol, remaining_qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
                     break
 
-                # ── Trend-fade check (throttled to every 30s) ─────────────
+                # ── Trend-fade check + status heartbeat (throttled to every 30s) ──
                 # market_service data refreshes every ~3 min — polling faster wastes resources.
                 if time.time() - self.last_trend_fade_check > 30:
                     self.last_trend_fade_check = time.time()
@@ -453,6 +454,36 @@ class GammaBlastStrategy:
                             self.active_position = None
                             break
                         continue
+
+                    # ── 30s status heartbeat ──────────────────────────────────────
+                    _be_mult  = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+                    _pnl      = round((ltp - entry_price) * remaining_qty, 2)
+                    _pnl_pct  = round((_pnl / (entry_price * remaining_qty)) * 100, 2) if entry_price > 0 else 0
+
+                    if stage == 0:
+                        _next_label = f"BE trigger"
+                        _next_price = round(entry_price + _be_mult * risk, 1)
+                    elif stage == 1:
+                        _next_label = f"2R partial-book"
+                        _next_price = round(entry_price + 2 * risk, 1)
+                    elif stage == 2:
+                        _next_label = f"3R tight-trail"
+                        _next_price = round(entry_price + 3 * risk, 1)
+                    else:
+                        _next_label = "Tight trail active"
+                        _next_price = None
+
+                    _next_str = (
+                        f"{_next_label} @ ₹{_next_price} "
+                        f"({abs(_next_price - ltp):.1f}pts {'away' if _next_price > ltp else 'PASSED'})"
+                        if _next_price else _next_label
+                    )
+
+                    logger.info(
+                        f"Gamma Blast: 📊 MONITOR | LTP=₹{ltp:.1f} | Entry=₹{entry_price} | "
+                        f"SL=₹{sl:.1f} | Qty={remaining_qty} | Stage={stage} | "
+                        f"P&L=₹{_pnl:+,.0f} ({_pnl_pct:+.1f}%) | Next: {_next_str}"
+                    )
 
                 # ── Stage 1: Breakeven at 1R (or 0.5R for high qty) ───
                 be_trigger_mult = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
