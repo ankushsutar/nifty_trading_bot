@@ -7,6 +7,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.core.oi_analyzer import OIAnalyzer
+from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
 
 class GammaBlastStrategy:
@@ -24,6 +25,7 @@ class GammaBlastStrategy:
         self.data_fetcher = DataFetcher(self.api)
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
+        self.regime_classifier = RegimeClassifier()
         self.running = True
         self.active_position = None
         self.last_sync_time = 0
@@ -208,11 +210,24 @@ class GammaBlastStrategy:
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"
 
-            # --- OI BIAS CONFIRMATION ---
-            # Block entry if institutional OI flow contradicts the EMA-derived leg.
-            # On a parabolic day, we want trend AND institutions aligned.
-            oi_data = market_data.get('oi_data', {})
-            oi_bias = oi_data.get('bias', 'NEUTRAL')
+            # --- OI BIAS CONFIRMATION (fresh fetch, not market_service cache) ---
+            # Force-fetch current OI at entry — market_service oi_data can be up to
+            # 300s old. On volatile days, institutions can flip in minutes.
+            from bot.utils.expiry_calculator import get_next_weekly_expiry as _get_expiry
+            _expiry_now = expiry if expiry else _get_expiry()
+            _atm_now = round(ltp / 50) * 50
+            try:
+                _fresh_oi = self.oi_analyzer.get_market_sentiment(_expiry_now, _atm_now)
+                oi_bias = _fresh_oi.get('bias', 'NEUTRAL')
+                logger.info(
+                    f"Gamma Blast: 🔍 Fresh OI: bias={oi_bias} | "
+                    f"PCR={_fresh_oi.get('pcr', '?')} | ΔR={_fresh_oi.get('delta_ratio', '?')}"
+                )
+            except Exception as _oe:
+                logger.warning(f"Gamma Blast: Fresh OI fetch failed: {_oe}. Using market_service cache.")
+                oi_data = market_data.get('oi_data', {})
+                oi_bias = oi_data.get('bias', 'NEUTRAL')
+
             if (leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH"):
                 logger.warning(
                     f"Gamma Blast: ⚠️ OI Bias Conflict — Leg={leg} but institutions say {oi_bias}. "
@@ -220,6 +235,80 @@ class GammaBlastStrategy:
                 )
                 time.sleep(30)
                 continue
+
+            # --- CANDLE MOMENTUM FILTER ---
+            # At least 2 of the last 3 completed 5-min candles must close in the
+            # trade direction. Prevents entering on an EMA crossover from a single
+            # spike or post-SL bounce candle.
+            try:
+                _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
+                if _df_gb is not None and len(_df_gb) >= 3:
+                    _l3 = _df_gb.tail(3)
+                    _bull = (_l3['close'] > _l3['open']).sum()
+                    _bear = (_l3['close'] < _l3['open']).sum()
+                    if leg == "CE" and _bull < 2:
+                        logger.warning(
+                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
+                            "Waiting for stronger confirmation."
+                        )
+                        time.sleep(30)
+                        continue
+                    if leg == "PE" and _bear < 2:
+                        logger.warning(
+                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
+                            "Waiting for stronger confirmation."
+                        )
+                        time.sleep(30)
+                        continue
+            except Exception as _ce:
+                logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
+                _df_gb = None  # Ensure downstream filters know df is unavailable
+
+            # --- VWAP POSITION FILTER ---
+            # On parabolic days institutions drive the move — VWAP confirms which side
+            # they're on. CE when below VWAP or PE when above VWAP = fighting the flow.
+            try:
+                if _df_gb is not None and len(_df_gb) >= 1 and 'volume' in _df_gb.columns:
+                    _vol_gb = _df_gb['volume']
+                    if _vol_gb.sum() > 0:
+                        _typical_gb = (_df_gb['high'] + _df_gb['low'] + _df_gb['close']) / 3
+                        _vwap_gb = (_typical_gb * _vol_gb).sum() / _vol_gb.sum()
+                        logger.info(
+                            f"Gamma Blast: 📏 VWAP={_vwap_gb:.1f} | NIFTY={ltp:.1f} | Leg={leg}"
+                        )
+                        if leg == "CE" and ltp < _vwap_gb:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} < VWAP {_vwap_gb:.0f} — "
+                                "CE blocked. Price below institutional anchor."
+                            )
+                            time.sleep(30)
+                            continue
+                        if leg == "PE" and ltp > _vwap_gb:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} > VWAP {_vwap_gb:.0f} — "
+                                "PE blocked. Price above institutional anchor."
+                            )
+                            time.sleep(30)
+                            continue
+            except Exception as _ve:
+                logger.warning(f"Gamma Blast: VWAP filter error: {_ve}")
+
+            # --- ADX SLOPE FILTER ---
+            # ADX must be rising — a declining ADX on a "parabolic day" means the
+            # parabola has already peaked. No entry into an exhausting trend.
+            try:
+                if _df_gb is not None and len(_df_gb) >= 20:
+                    _adx_s_gb = self.regime_classifier._calculate_adx(_df_gb)
+                    if len(_adx_s_gb) >= 3 and _adx_s_gb.iloc[-1] < _adx_s_gb.iloc[-2]:
+                        logger.warning(
+                            f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining "
+                            f"({_adx_s_gb.iloc[-2]:.1f} → {_adx_s_gb.iloc[-1]:.1f}). "
+                            "Trend losing strength — skipping entry."
+                        )
+                        time.sleep(30)
+                        continue
+            except Exception as _ae:
+                logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
             # 4. Strike Selection — OTM depth scales with ADX strength.
             # Stronger trend = deeper OTM = exponentially higher leverage.

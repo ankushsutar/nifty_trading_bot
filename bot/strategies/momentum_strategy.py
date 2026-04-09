@@ -41,6 +41,7 @@ class MomentumStrategy:
         self._ltp_cache = {} # SafeLTP Cache
         self.risk_multiplier = 1.0
         self._last_status_log  = 0  # Throttle for periodic monitor heartbeat
+        self._last_sl_hit_time = 0  # Timestamp of last SL hit — gates re-entry
         
         self.sync_state() # Initial Sync with Broker
 
@@ -572,6 +573,13 @@ class MomentumStrategy:
         return rsi.fillna(50)
 
     def enter_position(self, expiry, leg):
+        # Post-SL cooldown: 5 min after any SL hit, no re-entry (matches gamma blast gate).
+        _SL_COOLDOWN_SECS = 300
+        if self._last_sl_hit_time > 0 and time.time() - self._last_sl_hit_time < _SL_COOLDOWN_SECS:
+            _remaining = int(_SL_COOLDOWN_SECS - (time.time() - self._last_sl_hit_time))
+            logger.info(f"Momentum: ⏳ Post-SL cooldown — {_remaining}s remaining. Skipping entry.")
+            return
+
         # 1. RISK CALCULATION
         nifty_ltp = self.get_nifty_ltp()
         if not nifty_ltp:
@@ -598,6 +606,108 @@ class MomentumStrategy:
                 "Skipping PE entry — not chasing an exhausted move."
             )
             return
+
+        # ── FRESH OI ALIGNMENT GATE ────────────────────────────────────────────
+        # Force-fetch current OI at every entry — never rely on the 5-min cache.
+        # Root cause of 2026-04-09 bad trade: stale OI showed BEARISH while market
+        # had already reversed to BULLISH after the first SL hit.
+        _fresh_bias = 'NEUTRAL'
+        try:
+            _fresh_atm = round(nifty_ltp / 50) * 50
+            _fresh_oi = self.oi_analyzer.get_market_sentiment(expiry, _fresh_atm)
+            _fresh_bias = _fresh_oi.get('bias', 'NEUTRAL')
+            logger.info(
+                f"🔍 Fresh OI at entry: bias={_fresh_bias} | "
+                f"PCR={_fresh_oi.get('pcr', '?')} | ΔR={_fresh_oi.get('delta_ratio', '?')}"
+            )
+        except Exception as _e:
+            logger.warning(f"Fresh OI fetch failed: {_e}. Falling back to cached bias.")
+            _fresh_bias = self.oi_data.get('bias', 'NEUTRAL')
+
+        if leg == "CE" and _fresh_bias == "BEARISH":
+            logger.warning(
+                "🛑 OI Alignment Gate: Fresh OI=BEARISH — CE blocked. "
+                "Institutions are against the bullish thesis. Skipping."
+            )
+            return
+        if leg == "PE" and _fresh_bias == "BULLISH":
+            logger.warning(
+                "🛑 OI Alignment Gate: Fresh OI=BULLISH — PE blocked. "
+                "Institutions are against the bearish thesis. Skipping."
+            )
+            return
+
+        # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
+        # Require at least 2 of the last 3 completed 5-min candles to close in
+        # the trade direction. Prevents entering on a single spike/bounce candle
+        # that flips the EMAs without real sustained momentum behind it.
+        _df_entry = None
+        try:
+            _df_entry = self.data_fetcher.fetch_latest_candles("99926000")
+            if _df_entry is not None and len(_df_entry) >= 3:
+                _last3 = _df_entry.tail(3)
+                _bull_count = (_last3['close'] > _last3['open']).sum()
+                _bear_count = (_last3['close'] < _last3['open']).sum()
+                if leg == "CE" and _bull_count < 2:
+                    logger.warning(
+                        f"🛑 Candle Momentum Filter: {_bull_count}/3 bullish candles — "
+                        "weak confirmation for CE entry. Skipping."
+                    )
+                    return
+                if leg == "PE" and _bear_count < 2:
+                    logger.warning(
+                        f"🛑 Candle Momentum Filter: {_bear_count}/3 bearish candles — "
+                        "weak confirmation for PE entry. Skipping."
+                    )
+                    return
+                self._last_df = _df_entry  # Update cache for ADX slope check below
+        except Exception as _e:
+            logger.warning(f"Candle momentum filter error: {_e}")
+
+        # ── VWAP POSITION FILTER ───────────────────────────────────────────────
+        # VWAP is the primary intraday reference for institutions and HFTs.
+        # CE entry when NIFTY is below VWAP = buying into institutional sell pressure.
+        # PE entry when NIFTY is above VWAP = shorting into institutional buy flow.
+        # We use the already-fetched 5-min candles to compute session VWAP — no extra API call.
+        try:
+            _df_vwap = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
+            if _df_vwap is not None and len(_df_vwap) >= 1 and 'volume' in _df_vwap.columns:
+                _vol = _df_vwap['volume']
+                if _vol.sum() > 0:
+                    _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
+                    _vwap = (_typical * _vol).sum() / _vol.sum()
+                    logger.info(f"📏 VWAP={_vwap:.1f} | NIFTY={nifty_ltp:.1f} | Leg={leg}")
+                    if leg == "CE" and nifty_ltp < _vwap:
+                        logger.warning(
+                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} < VWAP {_vwap:.0f} — "
+                            "CE blocked. Price trading below institutional anchor."
+                        )
+                        return
+                    if leg == "PE" and nifty_ltp > _vwap:
+                        logger.warning(
+                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} > VWAP {_vwap:.0f} — "
+                            "PE blocked. Price trading above institutional anchor."
+                        )
+                        return
+        except Exception as _e:
+            logger.warning(f"VWAP filter error: {_e}")
+
+        # ── ADX SLOPE FILTER ────────────────────────────────────────────────────
+        # ADX must be rising (trend is strengthening, not exhausting).
+        # ADX above the gate threshold but declining = bad entry timing.
+        try:
+            _df_adx = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
+            if _df_adx is not None and len(_df_adx) >= 20:
+                _adx_s = self.regime_classifier._calculate_adx(_df_adx)
+                if len(_adx_s) >= 3 and _adx_s.iloc[-1] < _adx_s.iloc[-2]:
+                    logger.warning(
+                        f"🛑 ADX Slope Filter: ADX declining "
+                        f"({_adx_s.iloc[-2]:.1f} → {_adx_s.iloc[-1]:.1f}). "
+                        "Trend is losing momentum — skipping entry."
+                    )
+                    return
+        except Exception as _e:
+            logger.warning(f"ADX slope filter error: {_e}")
 
         sl_points = 2 * atr
 
@@ -637,6 +747,17 @@ class MomentumStrategy:
                 f"📉 IV Rank={iv_rank:.0%} (>70%): Options expensive, "
                 f"pulling OTM depth back to {otm_offset} strike(s) — prefer near-ATM."
             )
+
+        # ── OTM CAP FOR SMALL/MICRO TIER ───────────────────────────────────────
+        # Small accounts go max 1-OTM (50pts from ATM). Going 2-OTM requires the
+        # underlying to move 150pts+ to reach a reasonable P&L on thin capital.
+        _cap_tier = Config.get_tier(self.gatekeeper.get_current_capital())
+        if _cap_tier.name in ("MICRO", "SMALL") and otm_offset > 1:
+            logger.info(
+                f"[{_cap_tier.name} tier] OTM depth capped: {otm_offset} → 1 "
+                "(max 1-OTM for small accounts)."
+            )
+            otm_offset = 1
 
         strike_direction = 1 if leg == "CE" else -1
         strike = atm_strike + strike_direction * otm_offset * 50
@@ -758,6 +879,7 @@ class MomentumStrategy:
                 'sl_price': sl_price,
                 'target_price': target_price,
                 'dynamic_rr': dynamic_rr,
+                'atr': atr,
                 'context': trade_context
             }
 
@@ -1051,6 +1173,7 @@ class MomentumStrategy:
         if current_sl > 0 and ltp <= current_sl:
             logger.info(f"🛑 Stop Hit! Price: {ltp} <= SL: {current_sl}")
             self.close_position("STOPLOSS_HIT")
+            self._last_sl_hit_time = time.time()  # Gate re-entry for 5 min
             return True
 
         profit_points = ltp - entry_price
