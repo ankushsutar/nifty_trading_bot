@@ -29,6 +29,7 @@ class GammaBlastStrategy:
         self.last_sync_time = 0
         self.risk_multiplier = 1.0        # Set by DecisionEngine before execute()
         self.last_trend_fade_check = 0    # Throttle market_service calls in monitor
+        self._last_sl_hit_time = 0        # Timestamp of last SL hit — gates re-entry
 
     def sync_state(self):
         """
@@ -121,6 +122,16 @@ class GammaBlastStrategy:
             if not self.gatekeeper.check_max_daily_loss(0.0):
                 logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
                 break
+
+            # Post-SL cooldown: wait 5 min before re-entering after a stop-loss hit.
+            # Prevents revenge trading on bounces and ensures OI data refreshes.
+            _SL_COOLDOWN_SECS = 300
+            _secs_since_sl = time.time() - self._last_sl_hit_time
+            if self._last_sl_hit_time > 0 and _secs_since_sl < _SL_COOLDOWN_SECS:
+                _remaining = int(_SL_COOLDOWN_SECS - _secs_since_sl)
+                logger.info(f"Gamma Blast: ⏳ Post-SL cooldown — {_remaining}s remaining before next entry.")
+                time.sleep(30)
+                continue
 
             # 1. Check for Resumption (DB check)
             mode = "PAPER" if self.dry_run else "LIVE"
@@ -540,9 +551,12 @@ class GammaBlastStrategy:
                         f"Gamma Blast: {reason} at ₹{ltp:.1f} (SL={sl:.1f}). "
                         f"Exiting {remaining_qty} qty."
                     )
-                    trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason=reason)
+                    # Step 1: Cancel broker SL FIRST so it can't double-fire
                     if sl_oid:
                         self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                        sl_oid = None
+                    # Step 2: Send market exit and capture actual fill price
+                    actual_exit_price = ltp  # fallback
                     if not self.dry_run:
                         exit_params = {
                             "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
@@ -550,8 +564,15 @@ class GammaBlastStrategy:
                             "ordertype": "MARKET", "price": 0,
                             "producttype": "INTRADAY", "duration": "DAY", "quantity": remaining_qty,
                         }
-                        self.order_manager.place_order(exit_params)
+                        exit_oid = self.order_manager.place_order(exit_params)
+                        if exit_oid:
+                            fill = self.wait_for_fill(exit_oid)
+                            if fill['status'] == 'FILLED' and fill.get('price', 0) > 0:
+                                actual_exit_price = fill['price']
+                    # Step 3: Close DB with real fill price (PnL auto-calculated)
+                    trade_repo.close_trade(trade_id=trade_id, exit_price=actual_exit_price, exit_reason=reason)
                     self.active_position = None
+                    self._last_sl_hit_time = time.time()
                     break
 
                 # ── Time exit at 15:10 ────────────────────────────────────

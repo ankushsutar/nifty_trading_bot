@@ -157,20 +157,56 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"TradeRepository Reduce Position Error: {e}")
 
-    def close_trade(self, trade_id=None, symbol=None, exit_price=0.0, pnl=0.0, exit_reason="UNKNOWN"):
-        """Closes trade by ID or all open trades for a symbol."""
+    def close_trade(self, trade_id=None, symbol=None, exit_price=0.0, pnl=None, exit_reason="UNKNOWN"):
+        """Closes trade by ID or all open trades for a symbol.
+
+        If pnl is not supplied (None), it is auto-calculated from the stored
+        entry_price and current qty, then added to any partial-booking pnl
+        already accumulated via reduce_position (uses $inc so partial profits
+        are preserved).  When pnl is passed explicitly it is written directly
+        with $set — used by reconcile and force-close paths.
+        """
         if not self.client: return
 
-        update_fields = {
-            "status": "CLOSED",
-            "exit_price": exit_price,
-            "pnl": pnl,
-            "exit_reason": exit_reason,
-            "closed_at": datetime.datetime.now(),
-            "updated_at": datetime.datetime.now()
-        }
-
         try:
+            if trade_id and pnl is None and exit_price > 0:
+                # Auto-calculate the final-close segment and accumulate
+                trade = self.collection.find_one({"id": trade_id})
+                if trade:
+                    entry_price = float(trade.get('entry_price') or 0)
+                    qty = int(trade.get('qty') or 0)
+                    pnl_segment = round((exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
+                    self.collection.update_one(
+                        {"id": trade_id},
+                        {
+                            "$set": {
+                                "status": "CLOSED",
+                                "exit_price": exit_price,
+                                "exit_reason": exit_reason,
+                                "closed_at": datetime.datetime.now(),
+                                "updated_at": datetime.datetime.now()
+                            },
+                            "$inc": {"pnl": pnl_segment}
+                        }
+                    )
+                    final_pnl = round((trade.get('pnl') or 0) + pnl_segment, 2)
+                    logger.info(f"TradeRepository: Trade Closed (PnL: {final_pnl:+.2f}).")
+                    return
+                # Fall through if trade not found
+
+            # Explicit pnl path (reconcile / force-close / symbol-based close)
+            if pnl is None:
+                pnl = 0.0
+
+            update_fields = {
+                "status": "CLOSED",
+                "exit_price": exit_price,
+                "pnl": pnl,
+                "exit_reason": exit_reason,
+                "closed_at": datetime.datetime.now(),
+                "updated_at": datetime.datetime.now()
+            }
+
             if trade_id:
                 self.collection.update_one(
                     {"id": trade_id},
@@ -181,8 +217,8 @@ class TradeRepository:
                     {"symbol": symbol, "status": "OPEN"},
                     {"$set": update_fields}
                 )
-            
-            logger.info(f"TradeRepository: Trade Closed (PnL: {pnl}).")
+
+            logger.info(f"TradeRepository: Trade Closed (PnL: {pnl:+.2f}).")
         except Exception as e:
             logger.error(f"TradeRepository Close Error: {e}")
 
