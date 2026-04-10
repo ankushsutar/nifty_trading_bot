@@ -235,7 +235,11 @@ class DecisionEngine:
         # 6. Strategy selection
         today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        expiry_calc = get_next_weekly_expiry(target_weekday=instr.expiry_day)
+        if instr.expiry_type == "MONTHLY":
+            from bot.utils.expiry_calculator import get_next_monthly_expiry
+            expiry_calc = get_next_monthly_expiry(expiry_day_of_month=instr.expiry_day_of_month)
+        else:
+            expiry_calc = get_next_weekly_expiry(target_weekday=instr.expiry_day)
         is_expiry_day = (expiry_calc == today_str)
         is_afternoon = (now >= datetime.time(13, 0))
 

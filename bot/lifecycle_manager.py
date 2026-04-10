@@ -41,11 +41,16 @@ class LifecycleManager:
         Runs main.py with the specified strategy or auto mode.
         """
         cmd = [sys.executable, "-u", "-m", "bot.main"]
-        
+
         if auto:
             cmd.append("--auto")
         elif strategy_name:
             cmd.extend(["--strategy", strategy_name])
+
+        # Always forward the active symbol so the child process trades the
+        # correct instrument instead of defaulting to NIFTY via os.getenv.
+        from bot.config.settings import Config
+        cmd.extend(["--symbol", Config.ACTIVE_SYMBOL])
         
         if self.dry_run:
             cmd.append("--dry-run")
@@ -131,10 +136,17 @@ class LifecycleManager:
         print("-------------------------------------------")
         print("1. 09:15 AM -> Attempt OHL Scalp")
         print("2. 09:20 AM -> Switch to Smart Auto Mode")
-        print("3. 15:30 PM -> Auto Shutdown")
+        print("3. Dynamic -> Auto Shutdown based on Instrument")
         print("-------------------------------------------\n")
 
         try:
+            from bot.core.safety_checks import SafetyGatekeeper
+            from bot.config.instruments import get_instrument
+            from bot.config.settings import Config
+            
+            gatekeeper = SafetyGatekeeper(None) # Lightweight for time checks
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            
             while self.running:
                 now = datetime.datetime.now().time()
                 today = datetime.date.today()
@@ -172,16 +184,18 @@ class LifecycleManager:
                         self.current_process = self.run_strategy(strategy_name="OHL")
                         self.ohl_attempted = True
 
-                # C. MAIN SESSION (09:20 - 15:15) -> AUTO MODE
-                elif datetime.time(9, 20) <= now < datetime.time(15, 15):
-                    if not self.current_process:
-                        self.log("⏰ Time 09:20+ Detected. Switching to Main Auto-Strategy...")
-                        self.current_process = self.run_strategy(auto=True)
-                        # Throttle: Wait at least 60s before checking again to prevent rapid restarts
-                        time.sleep(60)
+                # C. MAIN SESSION -> AUTO MODE
+                elif gatekeeper.is_market_open():
+                    # For OHL period (9:16-9:20), we already attempted it above.
+                    # Only start auto-mode if not in OHL window or if OHL finished.
+                    if now >= datetime.time(9, 20):
+                        if not self.current_process:
+                            self.log(f"⏰ Market Open ({instr.name}). Switching to Main Auto-Strategy...")
+                            self.current_process = self.run_strategy(auto=True)
+                            time.sleep(60)
                 
-                # D. MARKET CLOSE (> 15:15)
-                elif now >= datetime.time(15, 15):
+                # D. MARKET CLOSE
+                elif not gatekeeper.is_market_open() and now >= datetime.time(15, 0):
                     if self.current_process:
                         self.log("⏰ Market End (15:15). Sending kill signal...")
                         self.current_process.terminate()

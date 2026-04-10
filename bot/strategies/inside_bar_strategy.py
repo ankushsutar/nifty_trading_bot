@@ -12,7 +12,7 @@ from bot.strategies.base_strategy import BaseStrategy
 
 class InsideBarStrategy(BaseStrategy):
     def __init__(self, api, token_loader, dry_run=False):
-        super().__init__(api, token_loader, "INSIDE", dry_run)
+        super().__init__(api, token_loader, "INSIDE_BAR", dry_run)
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
@@ -141,7 +141,8 @@ class InsideBarStrategy(BaseStrategy):
         oid = self.order_manager.place_smart_limit(
             symbol, token, qty, limit_price, 
             transaction_type="BUY",
-            strategy_name="INSIDE_BAR"
+            strategy_name="INSIDE_BAR",
+            exchange=instr.exchange
         )
         if not oid: return
 
@@ -171,7 +172,7 @@ class InsideBarStrategy(BaseStrategy):
                   trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type, exchange=instr.exchange)
              
              # Monitor
              self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, trade_id, sl_oid, leg_type)
@@ -202,7 +203,7 @@ class InsideBarStrategy(BaseStrategy):
                     if (leg_type == "CE" and ltp >= threshold) or (leg_type == "PE" and ltp <= threshold):
                         logger.info(f"InsideBar: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
                         if sl_oid and not self.dry_run:
-                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty, exchange=instr.exchange)
                         
                         sl = entry_price # Update local SL for monitoring
                         if trade_id: trade_repo.update_sl(trade_id, sl)
@@ -227,7 +228,7 @@ class InsideBarStrategy(BaseStrategy):
                      break
 
                 # Time Exit
-                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                      logger.info("InsideBar: ⏰ Time Exit.")
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
                      break

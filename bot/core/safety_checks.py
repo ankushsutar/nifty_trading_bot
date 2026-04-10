@@ -174,15 +174,18 @@ class SafetyGatekeeper:
             return False
 
     def get_daily_realized_pnl(self):
-        """Fetches total realized P&L for today from the repository."""
+        """
+        Fetches total realized P&L for today across ALL traded symbols.
+        Multi-asset safety: each symbol has its own MongoDB (bot_nifty, bot_banknifty,
+        etc.), so summing only the active symbol's DB would allow the daily loss limit
+        to be breached independently on each asset.  This aggregates them all.
+        """
         try:
             from bot.core.trade_repo import trade_repo
             mode = "PAPER" if self.dry_run else "LIVE"
-            today_trades = trade_repo.get_today_trades(mode=mode)
-            # Sum PnL of all CLOSED trades
-            return sum(t.get('pnl', 0.0) or 0.0 for t in today_trades if t.get('status') == 'CLOSED')
+            return trade_repo.get_all_symbols_daily_pnl(mode=mode)
         except Exception as e:
-            logger.error(f"Error fetching daily realized P&L: {e}")
+            logger.error(f"Error fetching cross-asset daily realized P&L: {e}")
             return 0.0
 
     def check_max_daily_loss(self, active_unrealized_pnl=0.0):
@@ -213,19 +216,29 @@ class SafetyGatekeeper:
 
     def is_blackout_period(self):
         """
-        Rule: No new trades between 11:30 AM - 01:00 PM (Indices only).
+        Rule: No new trades during defined blackout windows.
+        - INDEX (NIFTY, BANKNIFTY): 11:30 – 13:00 (mid-day chop avoidance)
+        - COMMODITY: No mid-day blackout, but no new entries after the intraday
+          cutoff (17:00) to avoid illiquid MCX evening session.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        if instr.asset_type != "INDEX":
-            return False
-
         now = datetime.datetime.now().time()
-        start = datetime.time(11, 30)
-        end = datetime.time(13, 0)
-        
-        if start <= now <= end:
-            logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
+
+        if instr.asset_type == "INDEX":
+            start = datetime.time(11, 30)
+            end = datetime.time(13, 0)
+            if start <= now <= end:
+                logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
+                return True
+
+        # Commodity: block new entries after the intraday cutoff
+        if instr.asset_type == "COMMODITY" and now >= self.get_intraday_cutoff():
+            logger.info(
+                f">>> [Gatekeeper] ⏸️ MCX Intraday Cutoff ({self.get_intraday_cutoff()}). "
+                "No new entries in evening session."
+            )
             return True
+
         return False
 
     def get_vix_adjustment(self):
@@ -399,6 +412,24 @@ class SafetyGatekeeper:
         except Exception as e:
             logger.error(f"Compounding Error: {e}")
             return 1
+
+    def get_intraday_cutoff(self) -> datetime.time:
+        """
+        Returns the hard time-exit cutoff for the active instrument.
+        Positions must be closed before this time regardless of market hours.
+
+        - INDEX (NIFTY, BANKNIFTY): 15:15 — well before NSE close
+        - COMMODITY (CRUDEOIL, GOLD): 17:00 — captures the active liquid session
+          only; avoids the illiquid 17:00–23:00 MCX evening window entirely.
+        """
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        if instr.asset_type == "COMMODITY":
+            return datetime.time(17, 0)
+        return datetime.time(15, 15)
+
+    def is_past_intraday_cutoff(self) -> bool:
+        """Returns True when the active instrument's intraday cutoff has passed."""
+        return datetime.datetime.now().time() >= self.get_intraday_cutoff()
 
     def check_trade_viability(self, premium, qty):
         """

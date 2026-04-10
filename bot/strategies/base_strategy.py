@@ -74,9 +74,13 @@ class BaseStrategy:
             pos_data = pos_resp.get('data') or []
             instr = get_instrument(Config.ACTIVE_SYMBOL)
             
+            # MCX commodity positions use 'CARRYFORWARD' producttype while
+            # equity/index intraday positions use 'INTRADAY'.  Accept both so
+            # crash recovery works across all instrument types.
+            _valid_products = {'INTRADAY', 'CARRYFORWARD', 'DELIVERY'}
             for pos in pos_data:
-                if (pos.get('symbolname') == instr.name and 
-                    pos.get('producttype') == 'INTRADAY' and 
+                if (pos.get('symbolname') == instr.name and
+                    pos.get('producttype', '').upper() in _valid_products and
                     int(pos.get('netqty', 0)) != 0):
                     
                     qty = int(pos['netqty'])

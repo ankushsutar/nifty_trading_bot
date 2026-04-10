@@ -19,9 +19,9 @@ class DataFetcher:
                 cls._instance = super(DataFetcher, cls).__new__(cls)
                 cls._instance.api = api
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
-                # 600s cache = 10 minutes.
-                # WebSocket keeps prices live, so we only need REST for historical context.
-                cls._instance.cache_duration = 3600 # 1 Hour cache (Hybrid merge keeps candles live)
+                # 300s cache = 5 minutes.
+                # Technical indicators need a moving window; 1 hour was too long for live strategies.
+                cls._instance.cache_duration = 300 # 5 Minutes cache phase
                 cls._instance._ab1004_cooldowns = {} # Key: token, Value: timestamp of last AB1004
                 cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
                 cls._instance.disk_cache_lock = os.path.join(os.getcwd(), "data", "cache_candles.lock")
@@ -45,36 +45,46 @@ class DataFetcher:
         remainder = dt.minute % interval_mins
         return dt.replace(minute=dt.minute - remainder, second=0, microsecond=0)
 
-    def get_ltp(self, token, exchange=None):
+    def get_ltp(self, token, exchange=None, symbol=None):
         """
         Fetches LTP using WebSocket (Hot Path) or API (Cold Path).
+
+        Args:
+            token:    Angel One symbol token (primary lookup key).
+            exchange: Exchange string, e.g. "NSE", "MCX" (required for cold path).
+            symbol:   Trading symbol name, e.g. "CRUDEOIL20APR26FUT".
+                      Used in the ltpData cold-path call — Angel One accepts the
+                      token as the authoritative key, but the symbol should still
+                      be the real instrument name, not the literal "SYMBOL".
+                      Defaults to the token string if not provided.
         """
-        # 1. Hot Path: Check Real-Time Market Feed
-        # This is sub-millisecond if data is available
+        # 1. Hot Path: Check Real-Time Market Feed (sub-millisecond)
         from bot.core.market_feed import market_feed
         hot_ltp = market_feed.get_ltp(token)
         if hot_ltp:
-            # found in websocket cache
             return hot_ltp
 
         # 2. Cold Path: API Polling (Legacy)
         cache_key = (token, "LTP")
         if cache_key in self.data_cache:
             last_time, cached_ltp = self.data_cache[cache_key]
-            if time.time() - last_time < 15: # LTP cache is longer (15s) to avoid AB1004
+            if time.time() - last_time < 15:  # LTP cache: 15s to avoid AB1004
                 return cached_ltp
 
         try:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
-            resp = self.api.ltpData(exchange, "SYMBOL", token)
+            # Use the provided symbol name; fall back to the token string so we
+            # never send the literal "SYMBOL" to the broker API.
+            tradingsymbol = symbol if symbol else str(token)
+            resp = self.api.ltpData(exchange, tradingsymbol, token)
             if resp and resp.get('status'):
                 ltp = float(resp['data']['ltp'])
                 self.data_cache[cache_key] = (time.time(), ltp)
                 return ltp
         except Exception as e:
             logger.error(f"DataFetcher LTP Error: {e}")
-        
+
         return 0.0
 
     def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange=None):

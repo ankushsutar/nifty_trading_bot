@@ -168,7 +168,8 @@ class ORBStrategy(BaseStrategy):
         oid = self.order_manager.place_smart_limit(
             symbol, token, qty, limit_price, 
             transaction_type="BUY",
-            strategy_name="ORB" # Changed from "VWAP" to "ORB"
+            strategy_name="ORB",
+            exchange=instr.exchange
         )
         if not oid: return
 
@@ -214,7 +215,7 @@ class ORBStrategy(BaseStrategy):
                   trade_repo.update_sl(trade_id, sl_price)
              
              # Place Broker SL
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type, exchange=instr.exchange)
              
              # Start Monitoring
              self.monitor_position(symbol, token, qty, target_price, sl_price, fill_price, trade_id, sl_oid, option_type)
@@ -243,7 +244,7 @@ class ORBStrategy(BaseStrategy):
                         logger.info(f"ORB: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
                         if sl_oid and not self.dry_run:
                             # Move SL to entry_price + 0.1 (to ensure no loss after brokerage if possible, but entry is standard)
-                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty, exchange=instr.exchange)
                         
                         sl = entry_price # Update local SL for monitoring
                         if trade_id: trade_repo.update_sl(trade_id, sl)
@@ -259,15 +260,14 @@ class ORBStrategy(BaseStrategy):
                     logger.info(f"ORB: 🎯 Target Hit ({ltp}). Closing.")
                     self.exit_at_market(token, symbol, qty, "TARGET", trade_id, sl_oid)
                     break 
-                
-                # SL Check
+                    
                 if ltp <= sl:
                     logger.info(f"ORB: 🛑 SL Hit ({ltp}).")
                     if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_price=ltp, exit_reason="SL_HIT")
                     break
                     
                 # Time Exit
-                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                      logger.info("ORB: ⏰ Time Exit.")
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
                      break

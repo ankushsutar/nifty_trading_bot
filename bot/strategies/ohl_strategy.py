@@ -124,7 +124,8 @@ class OHLStrategy(BaseStrategy):
         oid = self.order_manager.place_smart_limit(
             symbol, token, qty, limit_price, 
             transaction_type="BUY",
-            strategy_name="OHL"
+            strategy_name="OHL",
+            exchange=instr.exchange
         )
         if not oid: return
 
@@ -157,7 +158,7 @@ class OHLStrategy(BaseStrategy):
                   trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type, exchange=instr.exchange)
              
              # Monitor
              self.monitor_trade(token, symbol, qty, target_price, sl_price, fill_price, trade_id, sl_oid, leg_type)
@@ -188,7 +189,7 @@ class OHLStrategy(BaseStrategy):
                     if (leg_type == "CE" and ltp >= threshold) or (leg_type == "PE" and ltp <= threshold):
                         logger.info(f"OHL: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
                         if sl_oid and not self.dry_run:
-                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty, exchange=instr.exchange)
                         
                         sl = entry_price # Update local SL for monitoring
                         if trade_id: trade_repo.update_sl(trade_id, sl)
@@ -214,7 +215,7 @@ class OHLStrategy(BaseStrategy):
                      break
 
                 # Check Time Exit
-                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                      logger.info("OHL: ⏰ Time 15:15. Closing.")
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
                      break

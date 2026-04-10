@@ -460,6 +460,37 @@ class TradeRepository:
             logger.error(f"TradeRepository get_recent_closed_trades Error: {e}")
             return []
 
+    def get_all_symbols_daily_pnl(self, mode="LIVE") -> float:
+        """
+        Aggregates realized P&L across ALL symbol databases for today.
+        Used by SafetyGatekeeper to enforce the daily loss limit globally,
+        not per-symbol.  Each symbol stores trades in its own database
+        (bot_nifty, bot_banknifty, etc.) — without this we could lose
+        12% on NIFTY and another 12% on BANKNIFTY in the same day.
+        """
+        if not self.client:
+            return 0.0
+        try:
+            from bot.config.instruments import INSTRUMENTS
+            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            total_pnl = 0.0
+            for symbol_name in INSTRUMENTS:
+                db_name = f"bot_{symbol_name.lower()}"
+                try:
+                    collection = self.client[db_name][Config.MONGO_COLLECTION]
+                    cursor = collection.find({
+                        "status": "CLOSED",
+                        "mode": mode,
+                        "created_at": {"$gte": today_start}
+                    }, {"pnl": 1})
+                    total_pnl += sum(float(t.get("pnl", 0.0) or 0.0) for t in cursor)
+                except Exception:
+                    pass  # Skip unavailable DBs — don't block on missing symbol
+            return total_pnl
+        except Exception as e:
+            logger.error(f"TradeRepository get_all_symbols_daily_pnl Error: {e}")
+            return 0.0
+
     def get_slippage_stats(self, mode=None, strategy=None, days=5):
         """
         Aggregates slippage data across recent trades for auto-adjusting

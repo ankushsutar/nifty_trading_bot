@@ -65,10 +65,11 @@ class NiftyStraddle(BaseStrategy):
             logger.warning(f">>> [Risk] ⚠️ Sentiment is {sentiment['bias']}. Straddle postponed.")
             return
 
-        # 3. Dynamic Position Sizing (1% Risk / Max Cap)
+        # 3. Dynamic Position Sizing — use tier-driven risk percentage
         capital = self.gatekeeper.get_current_capital()
-        risk_per_trade = capital * Config.RISK_PER_TRADE_PERCENT
-        if risk_per_trade < 1000: risk_per_trade = 1000
+        tier = Config.get_tier(capital)
+        risk_per_trade = capital * tier.risk_per_trade_pct
+        if risk_per_trade < tier.min_risk_floor: risk_per_trade = tier.min_risk_floor
         
         # Estimate Premium ~ 1.5% of symbol LTP combined.
         instr = get_instrument(Config.ACTIVE_SYMBOL)
@@ -181,9 +182,10 @@ class NiftyStraddle(BaseStrategy):
 
 
     def place_leg(self, token, symbol, action, qty):
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         orderparams = {
             "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-            "transactiontype": action, "exchange": "NFO", "ordertype": "MARKET",
+            "transactiontype": action, "exchange": instr.exchange, "ordertype": "MARKET",
             "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
         }
         return self.order_manager.place_order(orderparams)
@@ -198,7 +200,7 @@ class NiftyStraddle(BaseStrategy):
                 now = datetime.datetime.now().time()
                 
                 # Check Time Exit
-                if now >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                     logger.info(">>> [Exit] Time 15:15. Closing all positions.")
                     self.exit_all_market(quantity, "TIME")
                     break
@@ -271,13 +273,14 @@ class NiftyStraddle(BaseStrategy):
         new_trigger = entry_price
         new_price = round(entry_price + 1.0, 1)
         
-        success = self.order_manager.modify_sl_order(sl_oid, new_price, symbol, token, quantity)
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        success = self.order_manager.modify_sl_order(sl_oid, new_price, symbol, token, quantity, exchange=instr.exchange)
         if success:
              logger.info(f"    >>> Modified {leg_type} SL to {entry_price}")
         else:
              logger.error(f"    >>> Modification Failed. Cancelling and Replacing.")
              self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
-             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type)
+             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type, exchange=instr.exchange)
              if new_id: self.sl_orders[leg_type] = new_id
 
     def exit_all_market(self, quantity, reason):
@@ -296,9 +299,10 @@ class NiftyStraddle(BaseStrategy):
         if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
         
         # 2. Buy to Cover
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         orderparams = {
             "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-            "transactiontype": "BUY", "exchange": "NFO", "ordertype": "MARKET",
+            "transactiontype": "BUY", "exchange": instr.exchange, "ordertype": "MARKET",
             "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
         }
         oid = self.order_manager.place_order(orderparams)
@@ -332,7 +336,8 @@ class NiftyStraddle(BaseStrategy):
                 if now - last_time < 0.9:
                     return last_val
 
-            val = self.data_fetcher.get_ltp(token, exchange="NFO")
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            val = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
             if val:
                 self._ltp_cache[token] = (now, val)
                 return val

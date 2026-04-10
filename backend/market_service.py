@@ -272,14 +272,11 @@ class MarketService:
                     
                     # 1. Regime Analysis
                     instr = get_instrument(Config.ACTIVE_SYMBOL)
-                    cache_key = f"{instr.analysis_token}_FIVE_MINUTE_1"
-                    df = self.data_fetcher._read_disk_cache(cache_key)
-                    if df is None:
-                        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
-                    
-                    if df is None:
-                        logger.warning(f"MarketService: API BLOCKED. Falling back to 4h stale cache for {instr.name}... 🏺")
-                        df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
+                    # Use centralized fetch_latest_candles which handles:
+                    # 1. Disk Cache checking
+                    # 2. REST Fetching (on Master)
+                    # 3. Hybrid Merging with WebSocket forming candle (Live Data)
+                    df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", exchange=instr.exchange)
                     
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)

@@ -57,18 +57,18 @@ def is_trading_day(date=None):
 
 def get_next_weekly_expiry(target_weekday=1):
     """
-    Returns the next weekly expiry for a given weekday (0=Mon, 1=Tue, ..., 4=Fri) 
+    Returns the next weekly expiry for a given weekday (0=Mon, 1=Tue, ..., 4=Fri)
     as 'DDMMMYYYY' (e.g. '06JAN2026').
 
     Holiday handling: if the target day is an NSE holiday OR a weekend, walk
     backwards one day at a time until a valid trading day is found.
     """
     today = datetime.date.today()
-    
+
     # Calculate days until the next target_weekday
     days_ahead = (target_weekday - today.weekday()) % 7
-    
-    # If today is the target_weekday, check if we should look for next week 
+
+    # If today is the target_weekday, check if we should look for next week
     # (Typically if market is already closed, but here we just return today's expiry if valid)
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
@@ -77,3 +77,34 @@ def get_next_weekly_expiry(target_weekday=1):
         next_expiry -= datetime.timedelta(days=1)
 
     return _format_expiry(next_expiry)
+
+
+def get_next_monthly_expiry(expiry_day_of_month: int = 20) -> str:
+    """
+    Returns the next MCX-style monthly expiry as 'DDMMMYYYY'.
+
+    MCX CRUDEOIL and GOLD expire on the 20th of the delivery month
+    (or the previous business day if the 20th is a holiday/weekend).
+    If today is past the expiry day this month, the next month's expiry
+    is returned.
+
+    Args:
+        expiry_day_of_month: Day of month the contract expires (default 20 for MCX energy).
+    """
+    today = datetime.date.today()
+
+    # Try this month's expiry first
+    candidate = datetime.date(today.year, today.month, expiry_day_of_month)
+
+    # If we're already past this month's expiry, move to next month
+    if today > candidate:
+        if today.month == 12:
+            candidate = datetime.date(today.year + 1, 1, expiry_day_of_month)
+        else:
+            candidate = datetime.date(today.year, today.month + 1, expiry_day_of_month)
+
+    # Walk backwards if it falls on a weekend or holiday
+    while candidate.weekday() >= 5 or candidate in NSE_HOLIDAYS_2026:
+        candidate -= datetime.timedelta(days=1)
+
+    return _format_expiry(candidate)

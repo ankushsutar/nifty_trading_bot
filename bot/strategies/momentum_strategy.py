@@ -101,11 +101,18 @@ class MomentumStrategy(BaseStrategy):
                 "ema9": ema9, "ema21": ema21, "rsi": rsi, 
                 "htf_trend": htf_trend, "adx": adx,
                 "atr": atr, "regime": regime,
-                "bbw": bbw, # Use shared BBW return value
+                "bbw": bbw, 
                 "pcr": pcr, "sentiment": sentiment_bias
             }
             self.export_state()
-            logger.info(f"✅ Initial Pulse Complete. Regime: {regime}")
+            logger.info(f"✅ Initial Pulse Complete. Regime: {regime} | Trend: {trend} | Sentiment: {sentiment_bias}")
+            
+            # --- PHASE 5: ENHANCED RESPONSIVENESS ---
+            # Attempt entry on initial pulse if conditions are already met
+            if not self.active_position:
+                logger.info("📡 Checking for entry signals on initial pulse...")
+                self.check_for_signals(trend, htf_trend, rsi, bbw, sentiment_bias, expiry)
+                
         except Exception as e:
             logger.error(f"Initial Pulse Error: {e}")
 
@@ -153,7 +160,7 @@ class MomentumStrategy(BaseStrategy):
                         self.last_trailing_check = time.time()
 
                 now_time = datetime.datetime.now().time()
-                if not self.dry_run and now_time >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                     logger.info("Market Closed (15:15). Stopping Strategy.")
                     if self.active_position:
                         self.close_position("TIME_EXIT")
@@ -197,63 +204,7 @@ class MomentumStrategy(BaseStrategy):
                         self.data_failure_count = 0 
                     
                     if not self.active_position:
-                        # Phase 3: STRICT Multi-Timeframe Confluence
-                        # 5m signal MUST align with 15m EMA9/EMA21 direction —
-                        # "not opposite" is insufficient; we require explicit confirmation.
-                        _bbw = float(self.last_analysis.get('bbw', 0.0))
-                        _oi_bias = self.last_analysis.get('sentiment', 'NEUTRAL')
-
-                        # ADX RE-CHECK: DecisionEngine verified ADX at startup, but ADX can
-                        # decay mid-session. Re-gate here to avoid low-quality late entries.
-                        _adx_now = self.last_analysis.get('adx', 0)
-                        _tier_now = Config.get_tier(self.gatekeeper.get_current_capital())
-                        if _adx_now > 0 and _adx_now < _tier_now.min_adx_to_trade:
-                            logger.info(
-                                f"⏸️ ADX DECAY: ADX={_adx_now:.1f} dropped below "
-                                f"[{_tier_now.name}] threshold ({_tier_now.min_adx_to_trade}). "
-                                "Skipping entry — trend too weak."
-                            )
-                        elif trend == "BULLISH":
-                            if htf_trend != "BULLISH":
-                                logger.info(
-                                    f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} "
-                                    "(need 15m BULLISH for CE entry — strict MTF confluence)."
-                                )
-                            elif rsi >= 70:
-                                logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
-                            elif _bbw > 0 and _bbw < 0.008:
-                                logger.info(
-                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
-                                    "Waiting for band expansion before CE entry."
-                                )
-                            elif _oi_bias == "BEARISH":
-                                logger.info(
-                                    f"Signal Ignored: CE entry blocked — OI bias is BEARISH. "
-                                    "Waiting for options market alignment."
-                                )
-                            else:
-                                self.enter_position(expiry, "CE")
-
-                        elif trend == "BEARISH":
-                            if htf_trend != "BEARISH":
-                                logger.info(
-                                    f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} "
-                                    "(need 15m BEARISH for PE entry — strict MTF confluence)."
-                                )
-                            elif rsi <= 30:
-                                logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
-                            elif _bbw > 0 and _bbw < 0.008:
-                                logger.info(
-                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
-                                    "Waiting for band expansion before PE entry."
-                                )
-                            elif _oi_bias == "BULLISH":
-                                logger.info(
-                                    f"Signal Ignored: PE entry blocked — OI bias is BULLISH. "
-                                    "Waiting for options market alignment."
-                                )
-                            else:
-                                self.enter_position(expiry, "PE")
+                        self.check_for_signals(trend, htf_trend, rsi, bbw, sentiment_bias, expiry)
                     
                     else:
                         current_leg = self.active_position['leg']
@@ -619,7 +570,7 @@ class MomentumStrategy(BaseStrategy):
              today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
              if expiry == today_str:
                  now = datetime.datetime.now().time()
-                 if now >= datetime.time(13, 30):
+                 if not self.gatekeeper.is_market_open():
                      logger.warning("⛔ Expiry Day Safety: Blocking new entries after 1:30 PM.")
                      return
         except Exception as e:
@@ -672,7 +623,8 @@ class MomentumStrategy(BaseStrategy):
         try:
              from bot.utils.rate_limiter import rate_limiter
              rate_limiter.wait()
-             q_resp = self.api.ltpData("NFO", symbol, token)
+             instr = get_instrument(Config.ACTIVE_SYMBOL)
+             q_resp = self.api.ltpData(instr.exchange, symbol, token)
              if q_resp and q_resp.get('status'):
                  quote_ltp = float(q_resp['data']['ltp'])
         except Exception as e:
@@ -792,9 +744,10 @@ class MomentumStrategy(BaseStrategy):
                  
              oid = self.order_manager.place_smart_limit(
                 symbol, token, qty, limit_price, 
-                transaction_type="BUY", 
-                strategy_name="MOMENTUM"
-             )
+                transaction_type="BUY",
+                strategy_name="MOMENTUM",
+                exchange=instr.exchange
+            )
              
              if not oid:
                  logger.error("❌ Smart-Limit Order Placement Failed! (API returned None).")
@@ -837,7 +790,7 @@ class MomentumStrategy(BaseStrategy):
                  trade_repo.update_sl(trade_id, actual_sl)
              
              # Place Hard SL (Broker-Side)
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg, exchange=instr.exchange)
              if sl_oid:
                  self.active_position['sl_order_id'] = sl_oid
                  if trade_id:
@@ -865,7 +818,8 @@ class MomentumStrategy(BaseStrategy):
         try:
              from bot.utils.rate_limiter import rate_limiter
              rate_limiter.wait()
-             q_resp = self.api.ltpData("NFO", symbol, token)
+             instr = get_instrument(Config.ACTIVE_SYMBOL)
+             q_resp = self.api.ltpData(instr.exchange, symbol, token)
              if q_resp and q_resp.get('status'):
                  exit_price = float(q_resp['data']['ltp'])
         except: pass
@@ -878,9 +832,10 @@ class MomentumStrategy(BaseStrategy):
 
         if not self.dry_run:
             try:
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
                 orderparams = {
                     "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                    "transactiontype": "SELL", "exchange": instr.exchange, "ordertype": "MARKET",
                     "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
                 }
                 oid = self.order_manager.place_order(orderparams)
@@ -1022,7 +977,8 @@ class MomentumStrategy(BaseStrategy):
             try:
                 from bot.utils.rate_limiter import rate_limiter
                 rate_limiter.wait()
-                q_resp = self.api.ltpData("NFO", symbol, token)
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                q_resp = self.api.ltpData(instr.exchange, symbol, token)
                 if q_resp and q_resp.get('status'):
                     ltp = float(q_resp['data']['ltp'])
             except Exception as e:
@@ -1145,7 +1101,8 @@ class MomentumStrategy(BaseStrategy):
             token = self.active_position['token']
             symbol = self.active_position['symbol']
             qty = self.active_position['qty']
-            self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty, exchange=instr.exchange)
 
     def get_nifty_ltp(self):
         try:
@@ -1186,3 +1143,57 @@ class MomentumStrategy(BaseStrategy):
     def get_current_position(self):
         """Returns the active position details for UI."""
         return self.active_position
+
+    def check_for_signals(self, trend, htf_trend, rsi, bbw, sentiment_bias, expiry):
+        """Encapsulated entry signal logic."""
+        # Phase 3: STRICT Multi-Timeframe Confluence
+        # 5m signal MUST align with 15m EMA9/EMA21 direction
+        _bbw = float(bbw)
+        _oi_bias = sentiment_bias
+
+        # ADX RE-CHECK
+        _adx_now = self.last_analysis.get('adx', 0)
+        _tier_now = Config.get_tier(self.gatekeeper.get_current_capital())
+        
+        if _adx_now > 0 and _adx_now < _tier_now.min_adx_to_trade:
+            logger.info(
+                f"⏸️ ADX DECAY: ADX={_adx_now:.1f} dropped below "
+                f"[{_tier_now.name}] threshold ({_tier_now.min_adx_to_trade}). "
+                "Skipping entry — trend too weak."
+            )
+            return
+
+        if trend == "BULLISH":
+            if htf_trend != "BULLISH":
+                logger.info(f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} (need strict MTF confluence).")
+            elif rsi >= 70:
+                logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
+            elif _bbw > 0 and _bbw < 0.008:
+                logger.info(f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze.")
+            elif _oi_bias == "BEARISH":
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                if instr.asset_type == "COMMODITY":
+                    logger.info(f"⚠️ OI Bias Conflict ({_oi_bias}) — Proceeding with CE entry for {instr.name} (Commodity Priority).")
+                    self.enter_position(expiry, "CE")
+                else:
+                    logger.info("Signal Ignored: CE entry blocked — OI bias is BEARISH.")
+            else:
+                self.enter_position(expiry, "CE")
+
+        elif trend == "BEARISH":
+            if htf_trend != "BEARISH":
+                logger.info(f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} (need strict MTF confluence).")
+            elif rsi <= 30:
+                logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
+            elif _bbw > 0 and _bbw < 0.008:
+                logger.info(f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze.")
+            elif _oi_bias == "BULLISH":
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                if instr.asset_type == "COMMODITY":
+                    logger.info(f"⚠️ OI Bias Conflict ({_oi_bias}) — Proceeding with PE entry for {instr.name} (Commodity Priority).")
+                    self.enter_position(expiry, "PE")
+                else:
+                    logger.info("Signal Ignored: PE entry blocked — OI bias is BULLISH.")
+            else:
+                self.enter_position(expiry, "PE")
+

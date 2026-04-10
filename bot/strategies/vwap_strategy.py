@@ -15,8 +15,7 @@ from bot.strategies.base_strategy import BaseStrategy
 
 class VWAPStrategy(BaseStrategy):
     def __init__(self, api, token_loader, dry_run=False):
-        super().__init__(api, token_loader, 'VWAP_PRO_INSTITUTIONAL', dry_run)
-        self.running = False
+        super().__init__(api, token_loader, 'VWAP', dry_run)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -113,7 +112,12 @@ class VWAPStrategy(BaseStrategy):
             # Filter Logic
             if trend == "BULLISH":
                 if sentiment == "BEARISH":
-                    logger.info(">>> [AI Filter] REJECTED CE Trade. Price is Bullish but Big Players are Bearish. Trap Detected! 🛡️")
+                    if instr.asset_type == "COMMODITY":
+                        logger.info(f">>> [AI Check] OI Bias Conflict ({sentiment}) — Proceeding with CE entry for {instr.name} (Technicals prioritized).")
+                        self.place_pro_trade(expiry, "CE", ltp)
+                        break
+                    else:
+                        logger.info(">>> [AI Filter] REJECTED CE Trade. Price is Bullish but Big Players are Bearish. Trap Detected! 🛡️")
                 else:
                     logger.info(">>> [Trade] Institutional Buying Detected (Price + OI Confirmed) -> GO LONG (CE)")
                     self.place_pro_trade(expiry, "CE", ltp)
@@ -121,7 +125,12 @@ class VWAPStrategy(BaseStrategy):
                 
             elif trend == "BEARISH":
                 if sentiment == "BULLISH":
-                    logger.info(">>> [AI Filter] REJECTED PE Trade. Price is Bearish but Big Players are Bullish. Bear Trap! 🛡️")
+                    if instr.asset_type == "COMMODITY":
+                        logger.info(f">>> [AI Check] OI Bias Conflict ({sentiment}) — Proceeding with PE entry for {instr.name} (Technicals prioritized).")
+                        self.place_pro_trade(expiry, "PE", ltp)
+                        break
+                    else:
+                        logger.info(">>> [AI Filter] REJECTED PE Trade. Price is Bearish but Big Players are Bullish. Bear Trap! 🛡️")
                 else:
                     logger.info(">>> [Trade] Institutional Selling Detected (Price + OI Confirmed) -> GO SHORT (PE)")
                     self.place_pro_trade(expiry, "PE", ltp)
@@ -228,7 +237,8 @@ class VWAPStrategy(BaseStrategy):
         oid = self.order_manager.place_smart_limit(
             symbol, token, qty, limit_price, 
             transaction_type="BUY",
-            strategy_name="VWAP"
+            strategy_name="VWAP",
+            exchange=instr.exchange
         )
         if not oid: return
 
@@ -277,7 +287,7 @@ class VWAPStrategy(BaseStrategy):
                   trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type)
+             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, option_type, exchange=instr.exchange)
              
              self.monitor_position(symbol, token, qty, target_price, sl_price, fill_price, trade_id, sl_oid, option_type)
 
@@ -307,7 +317,7 @@ class VWAPStrategy(BaseStrategy):
                     if (leg_type == "CE" and ltp >= threshold) or (leg_type == "PE" and ltp <= threshold):
                         logger.info(f"VWAP: 🛡️ 1:1 RR reached (LTP: {ltp}). Moving SL to Breakeven (₹{entry_price})")
                         if sl_oid and not self.dry_run:
-                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty)
+                            self.order_manager.modify_sl_order(sl_oid, entry_price, symbol, token, qty, exchange=instr.exchange)
                         
                         sl = entry_price # Update local SL for monitoring
                         if trade_id: trade_repo.update_sl(trade_id, sl)
@@ -344,7 +354,7 @@ class VWAPStrategy(BaseStrategy):
                     break 
                     
                 # Time Exit
-                if datetime.datetime.now().time() >= datetime.time(15, 15):
+                if not self.gatekeeper.is_market_open():
                      logger.info("VWAP: ⏰ Time Exit.")
                      self.exit_at_market(token, symbol, qty, "TIME", trade_id, sl_oid)
                      break

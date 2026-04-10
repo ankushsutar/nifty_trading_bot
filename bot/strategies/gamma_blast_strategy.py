@@ -142,12 +142,15 @@ class GammaBlastStrategy(BaseStrategy):
                 oi_bias = oi_data.get('bias', 'NEUTRAL')
 
             if (leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH"):
-                logger.warning(
-                    f"Gamma Blast: ⚠️ OI Bias Conflict — Leg={leg} but institutions say {oi_bias}. "
-                    "Skipping entry to avoid trading against smart money."
-                )
-                time.sleep(30)
-                continue
+                if instr.asset_type == "COMMODITY":
+                    logger.info(f"Gamma Blast: ⚠️ OI Bias Conflict ({oi_bias}) — Proceeding with {leg} entry for {instr.name} (Technicals given priority for commodities).")
+                else:
+                    logger.warning(
+                        f"Gamma Blast: ⚠️ OI Bias Conflict — Leg={leg} but institutions say {oi_bias}. "
+                        "Skipping entry to avoid trading against smart money."
+                    )
+                    time.sleep(30)
+                    continue
 
             # --- CANDLE MOMENTUM FILTER ---
             try:
@@ -391,7 +394,7 @@ class GammaBlastStrategy(BaseStrategy):
                     trade_repo.update_sl(trade_id, sl)
                     trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
                     if sl_oid and not self.dry_run:
-                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
+                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty, exchange=instr.exchange)
 
                 # ── Stage 2: Book 50% at 2R ───────────────────────────────
                 if stage < 2 and ltp >= entry_price + 2 * risk:
@@ -409,9 +412,10 @@ class GammaBlastStrategy(BaseStrategy):
                         partial_confirmed = self.dry_run  # dry_run always confirms
                         if not self.dry_run:
                             partial_limit = round(ltp * 0.98, 1)
+                            instr = get_instrument(Config.ACTIVE_SYMBOL)
                             partial_params = {
                                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                                "transactiontype": "SELL", "exchange": "NFO",
+                                "transactiontype": "SELL", "exchange": instr.exchange,
                                 "ordertype": "LIMIT", "price": partial_limit,
                                 "producttype": "INTRADAY", "duration": "DAY", "quantity": half_qty,
                             }
@@ -445,7 +449,7 @@ class GammaBlastStrategy(BaseStrategy):
                     trade_repo.update_sl(trade_id, sl)
                     trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
                     if sl_oid and not self.dry_run:
-                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
+                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty, exchange=instr.exchange)
 
                 # ── Stage 3: Tighten trail at 3R ──────────────────────────
                 if stage < 3 and ltp >= entry_price + 3 * risk:
@@ -473,7 +477,7 @@ class GammaBlastStrategy(BaseStrategy):
                         sl = new_sl
                         trade_repo.update_sl(trade_id, sl)
                         if sl_oid and not self.dry_run:
-                            self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
+                            self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty, exchange=instr.exchange)
 
                 # ── SL hit → exit remaining ───────────────────────────────
                 if ltp <= sl:
@@ -489,9 +493,10 @@ class GammaBlastStrategy(BaseStrategy):
                     # Step 2: Send market exit and capture actual fill price
                     actual_exit_price = ltp  # fallback
                     if not self.dry_run:
+                        instr = get_instrument(Config.ACTIVE_SYMBOL)
                         exit_params = {
                             "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                            "transactiontype": "SELL", "exchange": "NFO",
+                            "transactiontype": "SELL", "exchange": instr.exchange,
                             "ordertype": "MARKET", "price": 0,
                             "producttype": "INTRADAY", "duration": "DAY", "quantity": remaining_qty,
                         }
@@ -506,8 +511,8 @@ class GammaBlastStrategy(BaseStrategy):
                     self._last_sl_hit_time = time.time()
                     break
 
-                # ── Time exit at 15:10 ────────────────────────────────────
-                if datetime.datetime.now().time() >= datetime.time(15, 10):
+                # ── Time exit based on instrument hours ──────────────────
+                if not self.gatekeeper.is_market_open():
                     if self.exit_market(token, symbol, remaining_qty, "TIME", trade_id, sl_oid):
                         sl_oid = None
                         self.active_position = None
@@ -529,9 +534,10 @@ class GammaBlastStrategy(BaseStrategy):
             # 10% was too wide and triggered AB1007 LPP. 2% is the exchange sweet spot.
             limit_price = round(ltp * 0.98, 1) if ltp > 0 else 0
             
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", 
+                "transactiontype": "SELL", "exchange": instr.exchange, 
                 "ordertype": "LIMIT" if limit_price > 0 else "MARKET",
                 "price": limit_price,
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty

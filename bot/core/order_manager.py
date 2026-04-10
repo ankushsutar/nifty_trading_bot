@@ -72,11 +72,14 @@ class OrderManager:
             logger.error(f"Order Placement Error: {e}")
             return None
 
-    def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY"):
+    def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY", exchange="NFO"):
         """
         Places a LIMIT order with optional price rounding.
         """
         try:
+            from bot.config.instruments import get_instrument
+            from bot.config.settings import Config
+            
             # Round to 0.05 tick size
             limit_price = round(price / 0.05) * 0.05
             
@@ -85,7 +88,7 @@ class OrderManager:
                 "tradingsymbol": symbol,
                 "symboltoken": token,
                 "transactiontype": transaction_type,
-                "exchange": "NFO",
+                "exchange": exchange,
                 "ordertype": "LIMIT",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
@@ -101,17 +104,17 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
-    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None):
+    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None, exchange="NFO"):
         """
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
         Reduces slippage dramatically compared to MARKET orders.
         """
         if self.dry_run or not self.live_trade_enabled:
-            return self.place_limit_order(symbol, token, qty, initial_price, transaction_type)
+            return self.place_limit_order(symbol, token, qty, initial_price, transaction_type, exchange=exchange)
 
         try:
             current_price = round(initial_price / 0.05) * 0.05
-            oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type)
+            oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type, exchange=exchange)
             if not oid: return None
 
             # --- Persistence Integration (Early Record) ---
@@ -151,7 +154,7 @@ class OrderManager:
                 logger.info(f"🚶 Walking Smart-Limit: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
                 
                 # Modify existing order
-                success = self.modify_order_price(oid, current_price, symbol, token, qty)
+                success = self.modify_order_price(oid, current_price, symbol, token, qty, exchange=exchange)
                 if not success:
                     logger.warning("⚠️ Walk failed: Modification error. Aborting walk.")
                     break
@@ -171,7 +174,7 @@ class OrderManager:
             logger.error(f"Smart-Limit Error: {e}")
             return None
 
-    def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL"):
+    def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL", exchange="NFO"):
         """Utility for Smart-Limit to change price of an open order."""
         try:
             price = round(new_price / 0.05) * 0.05
@@ -185,7 +188,7 @@ class OrderManager:
                 "quantity": qty,
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "exchange": "NFO",
+                "exchange": exchange,
                 "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:
@@ -196,7 +199,7 @@ class OrderManager:
             return response and response.get('status') == True
         except: return False
 
-    def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL"):
+    def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL", exchange="NFO"):
         """
         Places a STOPLOSS_MARKET order.
         transaction_type: "SELL" (for Long Exit) or "BUY" (for Short Exit)
@@ -221,7 +224,7 @@ class OrderManager:
                 "tradingsymbol": symbol,
                 "symboltoken": token,
                 "transactiontype": transaction_type,
-                "exchange": "NFO",
+                "exchange": exchange,
                 "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
@@ -267,7 +270,7 @@ class OrderManager:
             logger.error(f"Cancel Order Error: {e}")
             return False
 
-    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty):
+    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, variety="STOPLOSS", exchange="NFO"):
         """Modifies an existing SL Order."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Modification Rejected.")
@@ -284,7 +287,7 @@ class OrderManager:
             limit_price = round(price * 0.95, 2) if txn_type == "SELL" else round(price * 1.05, 2)
             
             orderparams = {
-                "variety": "STOPLOSS",
+                "variety": variety,
                 "orderid": order_id,
                 "ordertype": "STOPLOSS_LIMIT",
                 "producttype": "INTRADAY",
@@ -294,7 +297,7 @@ class OrderManager:
                 "triggerprice": trigger_price,
                 "tradingsymbol": symbol,
                 "symboltoken": token,
-                "exchange": "NFO",
+                "exchange": exchange,
                 "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:
