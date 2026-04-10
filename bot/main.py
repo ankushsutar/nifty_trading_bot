@@ -170,7 +170,7 @@ def run_bot():
 
     # 5. Setup Parameters
     logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
-    expiry = get_next_weekly_expiry()
+    expiry = get_next_weekly_expiry(target_weekday=active_instr.expiry_day)
     logger.info(f">>> [Setup] Target Expiry: {expiry}")
     
     # SAFEGUARD: Prevent using past expiry

@@ -134,7 +134,7 @@ class VWAPStrategy(BaseStrategy):
         Fetches candles and computes VWAP & EMA.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        df = self.fetch_market_data(instr.analysis_token)
+        df = self.fetch_market_data(instr.analysis_token, exchange=instr.exchange)
         
         if df is None or df.empty:
             return "NEUTRAL", "No Data", 0
@@ -165,10 +165,10 @@ class VWAPStrategy(BaseStrategy):
             
         return "NEUTRAL", "Price Trapped / Rangebound", price
 
-    def fetch_market_data(self, token):
+    def fetch_market_data(self, token, exchange="NSE"):
         try:
             # Use DataFetcher for candle data
-            df = self.data_fetcher.fetch_latest_candles(token, interval="FIVE_MINUTE")
+            df = self.data_fetcher.fetch_latest_candles(token, interval="FIVE_MINUTE", exchange=exchange)
             if df is not None and not df.empty:
                 return df
             
@@ -207,7 +207,7 @@ class VWAPStrategy(BaseStrategy):
             return
 
         # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 100.0
         
         # Apply Compounding (Exponential Scaling)
         margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
@@ -253,7 +253,7 @@ class VWAPStrategy(BaseStrategy):
              
              # Risk Management: ATR-Based Structural SL
              try:
-                 df_sl = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE")
+                 df_sl = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", exchange=instr.exchange)
                  if df_sl is not None and len(df_sl) >= 5:
                      tr = (df_sl['high'] - df_sl['low']).tail(5).mean()
                      atr_sl_points = round(tr * 0.5, 1)  # Delta-adjusted
@@ -293,7 +293,8 @@ class VWAPStrategy(BaseStrategy):
         while self.running:
             try:
                 time.sleep(0.5)
-                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
                 if not ltp: continue
                 
                 # Risk-Free Pivot (Breakeven) Logic
@@ -356,9 +357,10 @@ class VWAPStrategy(BaseStrategy):
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "transactiontype": "SELL", "exchange": instr.exchange, "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
             oid = self.order_manager.place_order(orderparams)

@@ -43,27 +43,27 @@ INSTRUMENTS: Dict[str, Instrument] = {
     ),
     "CRUDEOIL": Instrument(
         name="CRUDEOIL",
-        analysis_token="21000", # Example token, would need real one
+        analysis_token="486502", # CRUDEOIL20APR26FUT
         lot_size=100,
         strike_step=50,
         asset_type="COMMODITY",
-        instrument_type="OPTCOM",
+        instrument_type="OPTFUT",
         exchange="MCX",
         market_start="09:00",
         market_end="23:30",
-        expiry_day=4 # Friday (often used for weekly options, though Crude is monthly)
+        expiry_day=3 # Thursday 
     ),
     "GOLD": Instrument(
         name="GOLD",
-        analysis_token="22000", # Example token
+        analysis_token="459277", # GOLD05JUN26FUT
         lot_size=100,
         strike_step=100,
         asset_type="COMMODITY",
-        instrument_type="OPTCOM",
+        instrument_type="OPTFUT",
         exchange="MCX",
         market_start="09:00",
         market_end="23:30",
-        expiry_day=4
+        expiry_day=3
     )
 }
 

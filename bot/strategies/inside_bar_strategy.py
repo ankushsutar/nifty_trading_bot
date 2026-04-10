@@ -16,11 +16,11 @@ class InsideBarStrategy(BaseStrategy):
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        return self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval=interval)
+        return self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval=interval, exchange=instr.exchange)
 
     def get_index_ltp(self):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        return self.data_fetcher.get_ltp(instr.analysis_token)
+        return self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -120,7 +120,7 @@ class InsideBarStrategy(BaseStrategy):
              return
 
         # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 100.0
         
         # Apply Compounding (Exponential Scaling)
         margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
@@ -188,7 +188,8 @@ class InsideBarStrategy(BaseStrategy):
             try:
                 time.sleep(0.5) 
                 
-                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
                 if not ltp: continue
                 
                 # Risk-Free Pivot (Breakeven) Logic
@@ -239,9 +240,10 @@ class InsideBarStrategy(BaseStrategy):
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "transactiontype": "SELL", "exchange": instr.exchange, "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
             oid = self.order_manager.place_order(orderparams)

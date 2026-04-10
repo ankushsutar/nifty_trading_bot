@@ -16,26 +16,31 @@ class LevelsProvider:
     def get_levels(self):
         """
         Returns institutional levels (Camarilla + PDH/L/C) for the current session.
-        Caches results per date to avoid redundant API calls.
+        Caches results per symbol/date to avoid redundant API calls.
         """
+        from bot.config.settings import Config
+        symbol = Config.ACTIVE_SYMBOL
         today = datetime.datetime.now().date()
-        if today in self._levels_cache:
-            return self._levels_cache[today]
+        cache_key = f"{symbol}_{today}"
+        
+        if cache_key in self._levels_cache:
+            return self._levels_cache[cache_key]
 
-        logger.info(f">>> [Levels] 🏛️ Calculating Institutional Levels for {today}...")
-        levels = self._calculate_levels()
+        logger.info(f">>> [Levels] 🏛️ Calculating Institutional Levels for {symbol} on {today}...")
+        levels = self._calculate_levels(symbol)
         if levels:
-            self._levels_cache[today] = levels
+            self._levels_cache[cache_key] = levels
         return levels
 
-    def _calculate_levels(self):
+    def _calculate_levels(self, symbol):
         """
         Fetches previous session data and calculates Camarilla Pivots + PDH/L/C.
-        Target: Nifty 50 Index (99926000)
         """
+        from bot.config.instruments import get_instrument
+        instr = get_instrument(symbol)
         try:
             # Fetch 2 days of data to be sure we cross the previous session boundary
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=2)
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", days=2, exchange=instr.exchange)
             
             if df is None or df.empty:
                 logger.error("[Levels] Failed to fetch data for level calculation.")

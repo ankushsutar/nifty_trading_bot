@@ -72,7 +72,7 @@ class NiftyStraddle(BaseStrategy):
         
         # Estimate Premium ~ 1.5% of symbol LTP combined.
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        symbol_ltp = self.data_fetcher.get_ltp(instr.analysis_token) or 22000
+        symbol_ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange) or 22000
         est_combined_premium = symbol_ltp * 0.015
         est_risk_pts = est_combined_premium * 0.25
         

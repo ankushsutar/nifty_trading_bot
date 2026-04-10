@@ -313,7 +313,8 @@ class MomentumStrategy(BaseStrategy):
         if is_mock_api:
             df = self.get_mock_df()
         else:
-            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
             # Cache df for reuse within the same analysis cycle (e.g., BBW calculation)
             self._last_df = df
             
@@ -386,7 +387,8 @@ class MomentumStrategy(BaseStrategy):
             return "NEUTRAL"
 
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIFTEEN_MINUTE")
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIFTEEN_MINUTE", exchange=instr.exchange)
 
         if df is None or len(df) < 3:
             return "NEUTRAL"
@@ -539,7 +541,8 @@ class MomentumStrategy(BaseStrategy):
         # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
         _df_entry = None
         try:
-            _df_entry = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            _df_entry = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
             if _df_entry is not None and len(_df_entry) >= 3:
                 _last3 = _df_entry.tail(3)
                 _bull_count = (_last3['close'] > _last3['open']).sum()
@@ -1013,7 +1016,8 @@ class MomentumStrategy(BaseStrategy):
 
         if entry_price == 0: return False
 
-        ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
         if not ltp:
             try:
                 from bot.utils.rate_limiter import rate_limiter

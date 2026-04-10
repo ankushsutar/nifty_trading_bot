@@ -72,7 +72,7 @@ class ORBStrategy(BaseStrategy):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
         logger.info(f">>> [ORB] Establishing Real Opening Range for {instr.name} from 09:15 candle...")
         try:
-            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE")
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE", exchange=instr.exchange)
             if df is not None and not df.empty:
                 # Use the first candle of the day (09:15 candle)
                 first_candle = df.iloc[0]
@@ -82,7 +82,7 @@ class ORBStrategy(BaseStrategy):
                 logger.info(f">>> [ORB] Real Range Set from candle: High={self.range_high}, Low={self.range_low}")
             else:
                 # Fallback: use LTP with a 0.1% buffer if candle data unavailable
-                ltp = self.data_fetcher.get_ltp(instr.analysis_token)
+                ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange)
                 if ltp and ltp > 0:
                     buffer = round(ltp * 0.001, 2)  # 0.1% of index
                     self.range_high = round(ltp + buffer, 2)
@@ -109,7 +109,7 @@ class ORBStrategy(BaseStrategy):
             if self.gatekeeper.is_blackout_period(): break
                 
             instr = get_instrument(Config.ACTIVE_SYMBOL)
-            ltp = self.data_fetcher.get_ltp(instr.analysis_token)
+            ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange)
             if not ltp:
                 time.sleep(1)
                 continue
@@ -136,7 +136,7 @@ class ORBStrategy(BaseStrategy):
 
     def place_entry_order(self, expiry, option_type):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        current_ltp = self.data_fetcher.get_ltp(instr.analysis_token) or 0.0
+        current_ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange) or 0.0
         strike = round(current_ltp / instr.strike_step) * instr.strike_step
         
         token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
@@ -145,7 +145,7 @@ class ORBStrategy(BaseStrategy):
             return
 
         # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 100.0
         
         # Apply Compounding (Exponential Scaling)
         margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
@@ -230,7 +230,8 @@ class ORBStrategy(BaseStrategy):
         while self.running:
             try:
                 time.sleep(0.5)
-                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
                 # Risk-Free Pivot (Breakeven) Logic
                 # If Price moves 1:1 RR in our favor, move SL to Entry.
                 if not breakeven_hit:
@@ -279,9 +280,10 @@ class ORBStrategy(BaseStrategy):
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "transactiontype": "SELL", "exchange": instr.exchange, "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
             oid = self.order_manager.place_order(orderparams)

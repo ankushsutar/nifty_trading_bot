@@ -98,7 +98,7 @@ class OHLStrategy(BaseStrategy):
              return
 
         # Viability Check: Option Premium vs Brokerage
-        quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
+        quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 100.0
         
         # Apply Compounding (Exponential Scaling)
         margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
@@ -174,7 +174,8 @@ class OHLStrategy(BaseStrategy):
             try:
                 time.sleep(0.5) 
                 
-                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
                 if not ltp: continue
                 
                 # Risk-Free Pivot (Breakeven) Logic
@@ -230,9 +231,10 @@ class OHLStrategy(BaseStrategy):
                 self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
 
             # 2. Place Exit Order
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                "transactiontype": "SELL", "exchange": instr.exchange, "ordertype": "MARKET",
                 "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
             }
             
@@ -258,7 +260,7 @@ class OHLStrategy(BaseStrategy):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
         for attempt in range(4): # Total 4 attempts
             try:
-                 df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE")
+                 df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE", exchange=instr.exchange)
                  if df is not None and not df.empty:
                       # Look for 09:15 candle
                       mask = df['timestamp'].astype(str).str.contains("09:15")
@@ -279,5 +281,5 @@ class OHLStrategy(BaseStrategy):
 
     def get_index_ltp(self):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        return self.data_fetcher.get_ltp(instr.analysis_token)
+        return self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange)
 

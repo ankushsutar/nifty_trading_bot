@@ -85,7 +85,7 @@ class GammaBlastStrategy(BaseStrategy):
             if not analysis or analysis.get('regime') == 'UNKNOWN':
                 logger.error(f"Gamma Blast: Market analysis unavailable for {instr.name}. Fallback to safety check.")
                 # Final fallback to direct fetch only if market_service is failing
-                df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE")
+                df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", exchange=instr.exchange)
                 if df is None or len(df) < 20:
                     time.sleep(30)
                     continue
@@ -151,7 +151,7 @@ class GammaBlastStrategy(BaseStrategy):
 
             # --- CANDLE MOMENTUM FILTER ---
             try:
-                _df_gb = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
+                _df_gb = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
                 if _df_gb is not None and len(_df_gb) >= 3:
                     _l3 = _df_gb.tail(3)
                     _bull = (_l3['close'] > _l3['open']).sum()
@@ -255,7 +255,7 @@ class GammaBlastStrategy(BaseStrategy):
                 continue
 
             # Fetch Option LTP for early record and price estimate
-            quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
+            quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 50.0
 
             # 5. Position Sizing
             margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
@@ -316,7 +316,8 @@ class GammaBlastStrategy(BaseStrategy):
                         break
 
                 time.sleep(0.5)
-                ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange)
                 if not ltp:
                     continue
 
@@ -521,7 +522,9 @@ class GammaBlastStrategy(BaseStrategy):
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
-            ltp = self.data_fetcher.get_ltp(token) or 0
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            # Note: instr.exchange will be MCX for commodities, NFO for indices
+            ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 0
             # Set limit 2% below LTP to act as market but with a 'flash-crash' floor
             # 10% was too wide and triggered AB1007 LPP. 2% is the exchange sweet spot.
             limit_price = round(ltp * 0.98, 1) if ltp > 0 else 0

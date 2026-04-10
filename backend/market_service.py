@@ -275,7 +275,7 @@ class MarketService:
                     cache_key = f"{instr.analysis_token}_FIVE_MINUTE_1"
                     df = self.data_fetcher._read_disk_cache(cache_key)
                     if df is None:
-                        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
+                        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
                     
                     if df is None:
                         logger.warning(f"MarketService: API BLOCKED. Falling back to 4h stale cache for {instr.name}... 🏺")
@@ -288,7 +288,7 @@ class MarketService:
                         ltp = df.iloc[-1]['close']
                         strike = int(round(ltp / instr.strike_step) * instr.strike_step)
                         from bot.utils.expiry_calculator import get_next_weekly_expiry
-                        expiry = get_next_weekly_expiry()
+                        expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day)
                         
                         # Fetch VIX for shared state
                         vix_ltp = 0.0

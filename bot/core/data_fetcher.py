@@ -45,7 +45,7 @@ class DataFetcher:
         remainder = dt.minute % interval_mins
         return dt.replace(minute=dt.minute - remainder, second=0, microsecond=0)
 
-    def get_ltp(self, token, exchange="NSE"):
+    def get_ltp(self, token, exchange=None):
         """
         Fetches LTP using WebSocket (Hot Path) or API (Cold Path).
         """
@@ -77,7 +77,7 @@ class DataFetcher:
         
         return 0.0
 
-    def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange="NSE"):
+    def fetch_latest_candles(self, symbol_token, interval="FIVE_MINUTE", days=1, exchange=None):
         """
         Fetches historic candle data and returns a DataFrame.
         Priority: WebSocket ring-buffer (ONE_MINUTE) → In-Memory Cache → Disk Cache → REST.
