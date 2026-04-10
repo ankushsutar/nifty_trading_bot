@@ -6,7 +6,7 @@ import time
 import os
 from bot.core.angel_connect import get_angel_session
 from bot.utils.token_lookup import TokenLookup
-from bot.strategies.nifty_straddle import NiftyStrategy
+from bot.strategies.nifty_straddle import NiftyStraddle
 from bot.core.mock_connect import MockSmartConnect, MockTokenLookup
 from bot.utils.expiry_calculator import get_next_weekly_expiry
 from bot.strategies.orb_strategy import ORBStrategy
@@ -164,7 +164,7 @@ def run_bot():
         bot.risk_multiplier = risk_multiplier
     else:
         logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
-        bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
+        bot = NiftyStraddle(api, loader, dry_run=args.dry_run)
         
     bot_instance = bot 
 

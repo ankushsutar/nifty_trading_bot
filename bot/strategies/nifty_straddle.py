@@ -9,16 +9,11 @@ from bot.core.data_fetcher import DataFetcher
 from bot.utils.logger import logger
 from bot.config.instruments import get_instrument
 
-class NiftyStrategy:
+from bot.strategies.base_strategy import BaseStrategy
+
+class NiftyStraddle(BaseStrategy):
     def __init__(self, api, token_loader, dry_run=False):
-        self.api = api
-        self.token_loader = token_loader
-        self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
-        self.data_fetcher = DataFetcher(self.api)
-        self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
-        
+        super().__init__(api, token_loader, "STRADDLE", dry_run)
         self.sl_orders = {} # { 'CE': order_id, 'PE': order_id }
         self.entry_prices = {} # { 'CE': price, 'PE': price }
         self.legs_active = {'CE': False, 'PE': False}
@@ -344,42 +339,4 @@ class NiftyStrategy:
         except Exception as e:
             logger.warning(f"Straddle get_ltp error: {e}")
         return None
-
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        from bot.core.order_feed import order_feed
-        logger.info(f">>> [Straddle] Waiting for WebSocket Fill Event ({order_id})...")
-        
-        result = order_feed.wait_for_fill(order_id, timeout=10)
-        
-        if result['status'] == 'TIMEOUT':
-             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
-        
-        return result
-        
-    def resume(self):
-        mode = "PAPER" if self.dry_run else "LIVE"
-        open_trades = trade_repo.get_open_trades(mode=mode, strategy="STRADDLE")
-        if not open_trades: return False
-        
-        logger.info(f">>> [Resumption] Found {len(open_trades)} Open Straddle Legs.")
-        for trade in open_trades:
-            leg = trade['leg']
-            self.legs_active[leg] = True
-            self.entry_prices[leg] = trade['entry_price']
-            self.leg_metadata[leg] = {
-                'token': trade['token'], 'symbol': trade['symbol'], 
-                'qty': trade['qty'], 'id': trade['id']
-            }
-        return True
-
-    def stop(self):
-        logger.info(">>> [Strategy] Stop Signal. Squaring off...")
-        self.running = False
-        ce_qty = self.leg_metadata['CE']['qty'] if self.leg_metadata.get('CE') else 0
-        pe_qty = self.leg_metadata['PE']['qty'] if self.leg_metadata.get('PE') else 0
-        qty = max(ce_qty, pe_qty) # Approximate
-        if qty > 0: self.exit_all_market(qty, "MANUAL_STOP")
 

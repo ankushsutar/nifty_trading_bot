@@ -10,8 +10,9 @@ from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
 from bot.config.instruments import get_instrument
+from bot.strategies.base_strategy import BaseStrategy
 
-class GammaBlastStrategy:
+class GammaBlastStrategy(BaseStrategy):
     """
     Gamma Blast (OTM Momentum) Strategy.
     Designed for "Hero-to-Zero" exponential returns during parabolic trends.
@@ -19,98 +20,8 @@ class GammaBlastStrategy:
     Target: 3:1 or 5:1 Risk/Reward using high-leverage OTM options.
     """
     def __init__(self, api, token_loader, dry_run=False):
-        self.api = api
-        self.token_loader = token_loader
-        self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.data_fetcher = DataFetcher(self.api)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
-        self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
-        self.regime_classifier = RegimeClassifier()
-        self.running = True
-        self.active_position = None
-        self.last_sync_time = 0
-        self.risk_multiplier = 1.0        # Set by DecisionEngine before execute()
+        super().__init__(api, token_loader, "GAMMA_BLAST", dry_run)
         self.last_trend_fade_check = 0    # Throttle market_service calls in monitor
-        self._last_sl_hit_time = 0        # Timestamp of last SL hit — gates re-entry
-        self._last_status_log  = 0        # Throttle for periodic monitor heartbeat
-
-    def sync_state(self):
-        """
-        Synchronizes active position from Broker API.
-        Looks for the FIRST active NIFTY Intraday position that matches Gamma Blast style (OTM).
-        """
-        if self.dry_run:
-            if self.active_position is None:
-                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="GAMMA_BLAST")
-                if db_trade:
-                    self.active_position = {
-                        'id': db_trade['id'],
-                        'leg': db_trade['leg'],
-                        'symbol': db_trade['symbol'],
-                        'token': db_trade['token'],
-                        'qty': db_trade['qty'],
-                        'entry_price': db_trade['entry_price'],
-                        'sl_price': db_trade['sl_price'],
-                        'sl_order_id': None
-                    }
-                    logger.info(f"♻️ [Gamma Blast] PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
-            return
-
-        try:
-            from bot.utils.rate_limiter import rate_limiter
-            rate_limiter.wait()
-            pos_resp = self.order_manager.get_positions()
-            
-            # transients (DNS, timeout) return None or False status
-            if pos_resp is None or not pos_resp.get('status'):
-                logger.warning("⚠️ [Gamma Blast] Sync State: API failure. Skipping sync to preserve local state.")
-                return
-
-            # If we reach here, the API call was successful
-            found_active = None
-            pos_data = pos_resp.get('data') or []
-            instr = get_instrument(Config.ACTIVE_SYMBOL)
-            
-            for pos in pos_data:
-                # Look for active positions that match current symbol
-                if (pos.get('symbolname') == instr.name and 
-                    pos.get('producttype') == 'INTRADAY' and 
-                    int(pos.get('netqty', 0)) != 0):
-                    
-                    qty = int(pos['netqty'])
-                    
-                    found_active = {
-                        'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
-                        'symbol': pos['tradingsymbol'],
-                        'token': pos['symboltoken'],
-                        'qty': abs(qty),
-                        'entry_price': float(pos['avgnetprice']),
-                        # If no local sl_price, default to 20% stop
-                        'sl_price': float(pos['avgnetprice']) * 0.8
-                    }
-                    
-                    # Match with DB record to get correct sl_price if available
-                    db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
-                    if db_trade:
-                        found_active['id'] = db_trade['id']
-                        found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
-                        logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
-                    
-                    if self.active_position is None:
-                        logger.info(f"♻️ [Gamma Blast] RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
-                    
-                    break 
-            
-            if found_active:
-                self.active_position = found_active
-            elif self.active_position is not None:
-                logger.warning("⚠️ [Gamma Blast] SYNC: Active Position closed externally! Resetting State.")
-                trade_repo.close_trade(symbol=self.active_position['symbol'])
-                self.active_position = None
-                    
-        except Exception as e:
-            logger.error(f"[Gamma Blast] Sync State Error: {e}")
 
     def execute(self, expiry, action="BUY"):
         logger.info(f"🚀 --- GAMMA BLAST OTM STRATEGY ACTIVATED ({expiry}) ---")
@@ -373,114 +284,6 @@ class GammaBlastStrategy:
 
             # If we didn't enter or monitoring finished, loop again after sleep
             time.sleep(30) # Throttle loop
-
-    def place_entry(self, expiry, strike, leg, qty, quote_ltp):
-        instr = get_instrument(Config.ACTIVE_SYMBOL)
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
-        if not token:
-            logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
-            return
-
-        # Hard margin check before touching the broker API
-        estimated_cost = quote_ltp * qty
-        if not self.gatekeeper.check_trade_margin(estimated_cost):
-            logger.warning(f"Gamma Blast: ❌ Margin check failed. Need ₹{estimated_cost:,.0f}. Aborting entry.")
-            return
-
-        # Place Smart-Limit Order — slippage buffer from capital tier config.
-        # Smaller accounts (MICRO/SMALL) use a tighter buffer; avoids over-paying for OTM options.
-        from bot.config.settings import Config as _Cfg
-        _entry_tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
-        limit_price = round(quote_ltp * (1.0 + _entry_tier.entry_slippage_pct), 1)
-        
-        logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
-        
-        oid = self.order_manager.place_smart_limit(
-            symbol, token, qty, limit_price, 
-            transaction_type="BUY", 
-            strategy_name="GAMMA_BLAST"
-        )
-        if not oid: return
-
-        # 2. Wait for fill (WebSocket or REST fallback)
-        fill_result = self.wait_for_fill(oid)
-        
-        # FINAL REST FALLBACK IF TIMEOUT: The order might have filled right as timeout hit
-        if fill_result['status'] == 'TIMEOUT' and not self.dry_run:
-            logger.info(f"Gamma Blast: ⏳ Order {oid} timed out. Doing one final REST API check before aborting...")
-            try:
-                ob_res = self.api.orderBook()
-                if ob_res and ob_res.get('status'):
-                    for ord_info in ob_res.get('data', []):
-                        if ord_info.get('orderid') == oid:
-                            rest_status = ord_info.get('status', '').lower()
-                            if rest_status == 'complete':
-                                logger.info(f"Gamma Blast: ✅ Order {oid} actually FILLED on REST check!")
-                                try:
-                                    avg_price = float(ord_info.get('averageprice') or 0)
-                                except (ValueError, TypeError):
-                                    avg_price = 0.0
-                                fill_result = {'status': 'FILLED', 'price': avg_price}
-                            break
-            except Exception as e:
-                logger.error(f"Gamma Blast Final REST Check Error: {e}")
-
-        if fill_result['status'] != 'FILLED':
-            logger.warning(f"Gamma Blast: Entry failed or timed out permanently. Status: {fill_result['status']}")
-            
-            cancel_success = True
-            if fill_result['status'] == 'TIMEOUT':
-                cancel_success = self.order_manager.cancel_order(oid, variety="NORMAL")
-                
-            if cancel_success or fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                # CRITICAL FIX: Delete the zombie database record if entry failed and was cancelled
-                failed_trade = trade_repo.get_active_trade(strategy="GAMMA_BLAST", symbol=symbol)
-                if failed_trade:
-                    trade_repo.collection.delete_one({"id": failed_trade['id']})
-                    logger.info(f"Gamma Blast: Cleaned up failed entry record #{failed_trade['id']} from database.")
-                return
-            else:
-                logger.critical(f"Gamma Blast: 🚨 DANGER! Order {oid} timed out, but CANCEL FAILED! It might be filling! Transitioning to monitor mode just in case.")
-                fill_result = {'status': 'FILLED', 'price': limit_price} # Assume limit price fill to survive
-                
-        fill_price = fill_result['price']
-
-        # Guard: if fill_price is 0 (bad REST data), fall back to limit_price
-        if not fill_price or fill_price <= 0:
-            logger.warning(f"Gamma Blast: fill_price is 0 — using limit_price {limit_price} as fallback.")
-            fill_price = limit_price
-
-        # 3. Update Trade with Actual Fill & Mark OPEN — SL% from capital tier
-        from bot.config.settings import Config as _Cfg
-        _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
-        sl_price = round(fill_price * (1 - _tier.sl_pct), 1)
-
-        # Link and Update DB Record
-        trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
-        if trade_id:
-            trade_repo.update_sl(trade_id, sl_price)
-        else:
-            logger.warning("Gamma Blast: Could not link fill to DB record. Status might be out of sync.")
-
-        if not trade_id:
-            logger.critical(f"Gamma Blast: 🚨 trade_id is None after fill! Cannot track trade safely. Exiting position.")
-            exit_params = {
-                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                "transactiontype": "SELL", "exchange": "NFO",
-                "ordertype": "MARKET", "price": 0,
-                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-            }
-            self.order_manager.place_order(exit_params)
-            return
-
-        # Place Broker SL
-        sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)
-        
-        # PERSIST SL OID: Critical for recovery after restarts
-        if trade_id and sl_oid:
-            trade_repo.update_sl_order_id(trade_id, sl_oid)
-
-        self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
     def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg, stage=0, remaining_qty=None):
         """
@@ -768,20 +571,6 @@ class GammaBlastStrategy:
         except Exception as e:
             logger.error(f"Gamma Blast Exit Failed: {e}")
 
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 50.0}
-        
-        from bot.core.order_feed import order_feed
-        logger.info(f">>> [Gamma Blast] Waiting for WebSocket Fill Event ({order_id})...")
-        
-        result = order_feed.wait_for_fill(order_id, timeout=30)
-        
-        if result['status'] == 'TIMEOUT':
-             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
-        
-        return result
-
     def calculate_adx(self, df, period=14):
         # Local ADX calc or use analysis file
         try:
@@ -801,5 +590,3 @@ class GammaBlastStrategy:
             return df['dx'].ewm(alpha=1/period, adjust=False).mean()
         except: return pd.Series([0]*len(df))
 
-    def stop(self):
-        self.running = False

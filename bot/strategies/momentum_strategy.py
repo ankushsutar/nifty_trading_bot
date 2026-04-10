@@ -19,32 +19,18 @@ from bot.core.order_manager import OrderManager
 from bot.core.market_feed import market_feed
 from bot.utils.notifier import notifier
 from bot.config.instruments import get_instrument
+from bot.strategies.base_strategy import BaseStrategy
 
-class MomentumStrategy:
+class MomentumStrategy(BaseStrategy):
     def __init__(self, api, token_loader, dry_run=False):
-        self.api = api
-        self.token_loader = token_loader
-        self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.data_fetcher = DataFetcher(self.api)
-        self.regime_classifier = RegimeClassifier()
-        self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
-        
+        super().__init__(api, token_loader, 'MOMENTUM', dry_run)
         self.data_failure_count = 0
-        self.active_position = None
-        self.running = True  # Flag for graceful shutdown
-        self.last_sync_time = 0
-        self.last_analysis = {} # Stores EMA9, RSI, etc for logging
+        self.last_analysis = {}
         self.last_oi_scan = 0
-        self.last_trailing_check = 0 # Throttle Trailing Stop Checks
+        self.last_trailing_check = 0
         self.oi_data = {}
-        self._ltp_cache = {} # SafeLTP Cache
-        self.risk_multiplier = 1.0
-        self._last_status_log  = 0  # Throttle for periodic monitor heartbeat
-        self._last_sl_hit_time = 0  # Timestamp of last SL hit — gates re-entry
-        
-        self.sync_state() # Initial Sync with Broker
+        self._ltp_cache = {}
+        self.sync_state()
 
     def export_state(self):
         """Exports current strategy state to JSON for UI consumption."""
@@ -66,109 +52,14 @@ class MomentumStrategy:
         except Exception as e:
             logger.error(f"State Export Error: {e}")
 
-    def sync_state(self):
-        """
-        Synchronizes active position from Broker API.
-        Current Rule: Looks for the FIRST active NIFTY Intraday position.
-        """
-        if self.dry_run:
-            if self.active_position is None:
-                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="MOMENTUM")
-                if db_trade:
-                    self.active_position = {
-                        'id': db_trade['id'],
-                        'leg': db_trade['leg'],
-                        'symbol': db_trade['symbol'],
-                        'token': db_trade['token'],
-                        'qty': db_trade['qty'],
-                        'entry_price': db_trade['entry_price'],
-                        'sl_price': db_trade['sl_price'],
-                        'sl_order_id': db_trade.get('sl_order_id'),
-                        'atr': 0.0,
-                        'partially_booked': db_trade.get('partially_booked', False)
-                    }
-                    logger.info(f"♻️ PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
-            return
-        
-        try:
-             from bot.utils.rate_limiter import rate_limiter
-             wait_time = rate_limiter.check_circuit_breaker()
-             if wait_time > 0:
-                 logger.warning(f"⚠️ Sync Skipped due to Circuit Breaker (Wait {wait_time:.1f}s)")
-                 return
-
-             pos_resp = self.order_manager.get_positions()
-             
-             # transients (DNS, timeout) return None or False status
-             if pos_resp is None or not pos_resp.get('status'):
-                 logger.warning("⚠️ Sync State: API failure. Skipping sync to preserve local state.")
-                 if pos_resp and ("Access denied" in str(pos_resp.get('message', '')) or "AB1004" in str(pos_resp.get('message', ''))):
-                     rate_limiter.trigger_circuit_breaker()
-                 return
-
-             # If we reach here, the API call was successful
-             found_active = None
-             pos_data = pos_resp.get('data') or []
-             instr = get_instrument(Config.ACTIVE_SYMBOL)
-             
-             for pos in pos_data:
-                 if (pos.get('symbolname') == instr.name and 
-                     pos.get('producttype') == 'INTRADAY' and 
-                     int(pos.get('netqty', 0)) != 0):
-                     
-                     qty = int(pos['netqty'])
-                     
-                     found_active = {
-                         'leg': "CE" if "CE" in pos.get('tradingsymbol', '') else "PE", 
-                         'symbol': pos['tradingsymbol'],
-                         'token': pos['symboltoken'],
-                         'qty': abs(qty),
-                         'entry_price': float(pos['avgnetprice']),
-                         'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
-                     }
-                     if self.active_position is None:
-                         logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
-                     
-                     break 
-             
-             if found_active:
-                 self.active_position = found_active
-             elif self.active_position is not None:
-                 logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
-                 trade_repo.close_trade(symbol=self.active_position['symbol'])
-                 self.active_position = None
-             
-             if self.active_position and 'id' not in self.active_position:
-                 db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
-                 if db_trade and db_trade['symbol'] == self.active_position['symbol']:
-                     self.active_position['id'] = db_trade['id']
-                     self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
-                     self.active_position['sl_order_id'] = db_trade.get('sl_order_id')
-                     logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} | SL-OID: {self.active_position['sl_order_id']} | Partial: {self.active_position['partially_booked']}")
-                     
-        except Exception as e:
-            logger.error(f"Sync State Error: {e}")
-            if "Access denied" in str(e) or "AB1004" in str(e):
-                from bot.utils.rate_limiter import rate_limiter
-                rate_limiter.trigger_circuit_breaker()
-
-    def stop(self):
-        """Signals the loop to stop and closes open positions."""
-        self.running = False
-        logger.info("[Control] Stop Requested from API.")
-        
-        if self.active_position:
-            logger.warning("[Control] 🛑 Force Closing Open Position due to Stop Signal.")
-            self.close_position("USER_STOPPED")
-
     def execute(self, expiry, action="BUY"):
         """
         Momentum Logic (EMA Crossover + RSI)
         """
         logger.info(f"--- EMA CROSSOVER + RSI STRATEGY ({expiry}) ---")
         
-        # 0. Sync and Recover
-        self.sync_state()
+        # 0. Sync and Recover (from BaseStrategy)
+        super().sync_state()
 
         # 0. Global Safety Guards (Strict Enforcement)
         if not self.gatekeeper.is_market_open():
@@ -394,7 +285,10 @@ class MomentumStrategy:
                 break
             except Exception as e:
                 logger.error(f"Loop Error: {e}")
-                time.sleep(1)
+                time.sleep(10)
+
+    def close_position(self, reason, override_qty=None):
+        pass
 
     def analyze_market_trend(self):
         from backend.market_service import market_service
@@ -952,20 +846,6 @@ class MomentumStrategy:
                  
         except Exception as e:
              logger.error(f"Enter Order Failure: {e}")
-
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        from bot.core.order_feed import order_feed
-        logger.info(f">>> [Momentum] Waiting for WebSocket Fill Event ({order_id})...")
-        
-        result = order_feed.wait_for_fill(order_id, timeout=10)
-        
-        if result['status'] == 'TIMEOUT':
-             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
-        
-        return result
 
     def close_position(self, reason, override_qty=None):
         if not self.active_position: return

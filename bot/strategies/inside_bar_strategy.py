@@ -8,16 +8,11 @@ from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
 from bot.config.instruments import get_instrument
+from bot.strategies.base_strategy import BaseStrategy
 
-class InsideBarStrategy:
+class InsideBarStrategy(BaseStrategy):
     def __init__(self, api, token_loader, dry_run=False):
-        self.api = api
-        self.token_loader = token_loader
-        self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.data_fetcher = DataFetcher(self.api)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
-        self.running = True
+        super().__init__(api, token_loader, "INSIDE", dry_run)
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
         instr = get_instrument(Config.ACTIVE_SYMBOL)
@@ -257,20 +252,3 @@ class InsideBarStrategy:
         except Exception as e:
             logger.error(f"InsideBar Exit Failed: {e}")
 
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        from bot.core.order_feed import order_feed
-        logger.info(f">>> [InsideBar] Waiting for WebSocket Fill Event ({order_id})...")
-        
-        result = order_feed.wait_for_fill(order_id, timeout=10)
-        
-        if result['status'] == 'TIMEOUT':
-             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
-        
-        return result
-
-    def stop(self):
-        logger.info("InsideBar: Stop Signal.")
-        self.running = False

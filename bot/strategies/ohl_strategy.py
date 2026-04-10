@@ -8,16 +8,11 @@ from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
 from bot.config.instruments import get_instrument
 
-class OHLStrategy:
-    def __init__(self, api, token_loader, dry_run=False):
-        self.api = api
-        self.token_loader = token_loader
-        self.dry_run = dry_run
-        self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
-        self.data_fetcher = DataFetcher(self.api)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
-        self.running = True
+from bot.strategies.base_strategy import BaseStrategy
 
+class OHLStrategy(BaseStrategy):
+    def __init__(self, api, token_loader, dry_run=False):
+        super().__init__(api, token_loader, "OHL", dry_run)
     def execute(self, expiry, action="BUY"):
         """
         Executes Open High Low (OHL) Scalp.
@@ -286,19 +281,3 @@ class OHLStrategy:
         instr = get_instrument(Config.ACTIVE_SYMBOL)
         return self.data_fetcher.get_ltp(instr.analysis_token)
 
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 100.0}
-        
-        from bot.core.order_feed import order_feed
-        logger.info(f">>> [OHL] Waiting for WebSocket Fill Event ({order_id})...")
-        
-        result = order_feed.wait_for_fill(order_id, timeout=10)
-        
-        if result['status'] == 'TIMEOUT':
-             logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket.")
-        
-        return result
-
-    def stop(self):
-        self.running = False
