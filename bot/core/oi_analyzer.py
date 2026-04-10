@@ -32,15 +32,19 @@ class OIAnalyzer:
         with open(self.snapshot_file, "w") as f:
             json.dump(data, f)
 
-    def get_market_sentiment(self, expiry, atm_strike):
+    def get_market_sentiment(self, expiry, atm_strike, symbol="NIFTY"):
         """
         Analyzes OI sentiment using Batch Quote API.
         This replaces 10 historical fetches with 1 Quote fetch.
         """
         try:
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(symbol)
+            
             # 1. Determine Strikes (5 above, 5 below)
-            base_strike = round(atm_strike / 50) * 50
-            strikes = [base_strike + (i * 50) for i in range(-5, 6)]
+            base_strike = round(atm_strike / instr.strike_step) * instr.strike_step
+            strikes = [base_strike + (i * instr.strike_step) for i in range(-5, 6)]
             
             # 2. Map Strikes to Tokens
             tokens_to_fetch = []
@@ -48,16 +52,16 @@ class OIAnalyzer:
             
             for strike in strikes:
                 for opt_type in ['CE', 'PE']:
-                    token, symbol = self.token_lookup.get_token("NIFTY", expiry, strike, opt_type)
+                    token, s = self.token_lookup.get_token(instr.name, expiry, strike, opt_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
                     if token:
                         tokens_to_fetch.append(token)
-                        token_map[token] = {"strike": strike, "type": opt_type, "symbol": symbol}
+                        token_map[token] = {"strike": strike, "type": opt_type, "symbol": s}
 
             if not tokens_to_fetch:
                 return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
 
             # 3. Batch Fetch Current Quotes (OI + LTP)
-            batch_params = {"NFO": tokens_to_fetch}
+            batch_params = {instr.exchange: tokens_to_fetch}
             
             rate_limiter.wait()
             response = self.api.getMarketData("FULL", batch_params)

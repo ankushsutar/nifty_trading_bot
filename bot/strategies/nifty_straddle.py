@@ -7,6 +7,7 @@ from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.order_manager import OrderManager
 from bot.core.data_fetcher import DataFetcher
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class NiftyStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -70,27 +71,26 @@ class NiftyStrategy:
             return
 
         # 3. Dynamic Position Sizing (1% Risk / Max Cap)
-        # Straddle Risk is usually undefined (Unlimited), but we assume SL of 25%.
-        # Risk = Premium * 0.25 * Qty.
-        
         capital = self.gatekeeper.get_current_capital()
         risk_per_trade = capital * Config.RISK_PER_TRADE_PERCENT
         if risk_per_trade < 1000: risk_per_trade = 1000
         
-        # Estimate Premium ~ 150 * 2 = 300. Risk 25% = 75 pts.
-        est_combined_premium = 300.0 
+        # Estimate Premium ~ 1.5% of symbol LTP combined.
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        symbol_ltp = self.data_fetcher.get_ltp(instr.analysis_token) or 22000
+        est_combined_premium = symbol_ltp * 0.015
         est_risk_pts = est_combined_premium * 0.25
         
         calc_qty = int(risk_per_trade / est_risk_pts)
-        lot_size = Config.NIFTY_LOT_SIZE
+        lot_size = instr.lot_size
         lots = max(1, int(calc_qty / lot_size))
         quantity = lots * lot_size
         
         logger.info(f">>> [Sizing] Capital: {capital:.0f} | Calc Qty: {quantity} ({lots} lots)")
 
         # 4. Get Tokens
-        ce_token, ce_symbol = self.token_loader.get_token("NIFTY", expiry, atm_strike, "CE")
-        pe_token, pe_symbol = self.token_loader.get_token("NIFTY", expiry, atm_strike, "PE")
+        ce_token, ce_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "CE", instrument_type=instr.instrument_type, exchange=instr.exchange)
+        pe_token, pe_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "PE", instrument_type=instr.instrument_type, exchange=instr.exchange)
         
         if not ce_token or not pe_token:
             logger.error(">>> [Error] Tokens not found.")
@@ -317,9 +317,10 @@ class NiftyStrategy:
     # --- Helpers ---
     def get_atm_strike(self):
         try:
-            ltp = self.data_fetcher.get_ltp("99926000")
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            ltp = self.data_fetcher.get_ltp(instr.analysis_token)
             if ltp and ltp > 0: 
-                return int(round(ltp / 50) * 50)
+                return int(round(ltp / instr.strike_step) * instr.strike_step)
         except Exception as e:
             logger.warning(f"Straddle get_atm_strike error: {e}")
         return None

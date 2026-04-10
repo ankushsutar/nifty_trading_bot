@@ -6,6 +6,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class OHLStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -14,7 +15,7 @@ class OHLStrategy:
         self.dry_run = dry_run
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         self.data_fetcher = DataFetcher(self.api)
-        self.order_manager = OrderManager(self.api, dry_run=self.dry_run) # 1. Inject OrderManager
+        self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.running = True
 
     def execute(self, expiry, action="BUY"):
@@ -75,24 +76,28 @@ class OHLStrategy:
 
         # 2. Logic Check
         signal = None
+        leg_type = None
         index_sl_level = 0.0
         buffer = 1.0 
         
         if abs(c_open - c_low) <= buffer:
             logger.info(">>> [Signal] OPEN ~= LOW (Strong Buying) 🐂")
             signal = "BUY_CE"
+            leg_type = "CE"
             index_sl_level = c_low 
             
         elif abs(c_open - c_high) <= buffer:
             logger.info(">>> [Signal] OPEN ~= HIGH (Strong Selling) 🐻")
             signal = "BUY_PE"
+            leg_type = "PE"
             index_sl_level = c_high 
         else:
             logger.info(">>> [Signal] No clear OHL Pattern.")
             return
 
-        strike = round(c_close / 50) * 50
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type if "leg_type" in locals() else ("CE" if signal == "BUY_CE" else "PE"))
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        strike = round(c_close / instr.strike_step) * instr.strike_step
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token: 
              logger.error(">>> [Error] Token Not Found")
              return
@@ -101,9 +106,9 @@ class OHLStrategy:
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         
         # Apply Compounding (Exponential Scaling)
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
-        qty = lots * Config.NIFTY_LOT_SIZE
+        qty = lots * instr.lot_size
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
@@ -255,9 +260,10 @@ class OHLStrategy:
     # --- Helpers ---
     def get_first_minute_candle(self):
         """Fetches the 09:15-09:16 candle. Retries up to 3 times for data stability."""
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         for attempt in range(4): # Total 4 attempts
             try:
-                 df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+                 df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE")
                  if df is not None and not df.empty:
                       # Look for 09:15 candle
                       mask = df['timestamp'].astype(str).str.contains("09:15")
@@ -276,8 +282,9 @@ class OHLStrategy:
             return {'open': 22000, 'low': 22000, 'high': 22050, 'close': 22040}
         return None
 
-    def get_nifty_ltp(self):
-        return self.data_fetcher.get_ltp("99926000")
+    def get_index_ltp(self):
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        return self.data_fetcher.get_ltp(instr.analysis_token)
 
     def wait_for_fill(self, order_id):
         """Uses WebSocket Order Feed for sub-second fill detection."""
@@ -295,4 +302,3 @@ class OHLStrategy:
 
     def stop(self):
         self.running = False
-

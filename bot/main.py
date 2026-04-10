@@ -18,6 +18,8 @@ from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.core.decision_engine import DecisionEngine
 from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
+from bot.config.settings import Config
+from bot.config.instruments import get_instrument
 
 # Global variable for graceful shutdown
 bot_instance = None
@@ -62,7 +64,12 @@ def run_bot():
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
     parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR", "GAMMA_BLAST"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
+    parser.add_argument("--symbol", type=str, default="NIFTY", help="Target Symbol (e.g., NIFTY, BANKNIFTY, CRUDEOIL)")
     args = parser.parse_args()
+
+    # Update global config with active symbol
+    Config.ACTIVE_SYMBOL = args.symbol.upper()
+    active_instr = get_instrument(Config.ACTIVE_SYMBOL)
 
     if args.test:
         logger.info("\n>>> [System] STARTING IN MOCK MODE 🟢")
@@ -162,7 +169,7 @@ def run_bot():
     bot_instance = bot 
 
     # 5. Setup Parameters
-    logger.info("\n--- NIFTY OPTION TRADER ---")
+    logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
     expiry = get_next_weekly_expiry()
     logger.info(f">>> [Setup] Target Expiry: {expiry}")
     

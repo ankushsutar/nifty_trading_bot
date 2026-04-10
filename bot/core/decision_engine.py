@@ -1,8 +1,11 @@
-from bot.core.safety_checks import SafetyGatekeeper
-from backend.market_service import market_service
 import datetime
+import json
+import os
 from bot.utils.logger import logger
 from bot.utils.expiry_calculator import get_next_weekly_expiry
+from bot.config.instruments import get_instrument
+from bot.config.settings import Config
+from backend.market_service import market_service
 
 
 # Minimum strategy confidence score (0-100) to allow trade entry.
@@ -18,6 +21,7 @@ class DecisionEngine:
         self.api = api
         self.dry_run = dry_run
         self.loader = token_loader
+        from bot.core.safety_checks import SafetyGatekeeper
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
         # MAX_TRADES_PER_DAY is now tier-driven — fetched live in analyze_and_select()
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
@@ -230,7 +234,8 @@ class DecisionEngine:
 
         # 6. Strategy selection
         today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
-        expiry_calc = get_next_weekly_expiry()
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        expiry_calc = get_next_weekly_expiry(target_weekday=instr.expiry_day)
         is_expiry_day = (expiry_calc == today_str)
         is_afternoon = (now >= datetime.time(13, 0))
 
@@ -240,24 +245,25 @@ class DecisionEngine:
 
         if regime == "TRENDING":
             # --- PROXIMITY FILTER (THE WALL CHECK) ---
-            levels    = market_data.get('levels', {})
-            nifty_ltp = market_data.get('nifty', 0)
+            levels        = market_data.get('levels', {})
+            instr         = get_instrument(Config.ACTIVE_SYMBOL)
+            symbol_ltp    = market_data.get(instr.name.lower(), 0)
 
-            if levels and nifty_ltp > 0:
-                proximity_threshold = nifty_ltp * 0.0015
+            if levels and symbol_ltp > 0:
+                proximity_threshold = symbol_ltp * 0.0015
                 if trend == "BULLISH":
                     resistances = [levels.get('pdh'), levels.get('cam_h3'), levels.get('cam_h4')]
-                    resistances = [r for r in resistances if r and r > nifty_ltp]
+                    resistances = [r for r in resistances if r and r > symbol_ltp]
                     for r in resistances:
-                        if (r - nifty_ltp) < proximity_threshold:
-                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Resistance ₹{r:.0f}. Deferred.")
+                        if (r - symbol_ltp) < proximity_threshold:
+                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: {instr.name} too close to Resistance ₹{r:.0f}. Deferred.")
                             return None, 1.0
                 elif trend == "BEARISH":
                     supports = [levels.get('pdl'), levels.get('cam_l3'), levels.get('cam_l4')]
-                    supports = [s for s in supports if s and s < nifty_ltp]
+                    supports = [s for s in supports if s and s < symbol_ltp]
                     for s in supports:
-                        if (nifty_ltp - s) < proximity_threshold:
-                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Support ₹{s:.0f}. Deferred.")
+                        if (symbol_ltp - s) < proximity_threshold:
+                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: {instr.name} too close to Support ₹{s:.0f}. Deferred.")
                             return None, 1.0
 
             # --- STRATEGY SELECTION ---
@@ -400,8 +406,11 @@ class DecisionEngine:
         try:
             from bot.core.market_feed import market_feed
             from bot.core.regime_classifier import RegimeClassifier
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
 
-            df = market_feed.get_1min_candles("99926000")  # NIFTY spot token
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            df = market_feed.get_1min_candles(instr.analysis_token)
             if df is None or len(df) < 10:
                 return {"regime": "UNKNOWN", "trend": "NEUTRAL"}
 

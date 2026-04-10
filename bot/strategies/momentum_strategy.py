@@ -18,6 +18,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.order_manager import OrderManager
 from bot.core.market_feed import market_feed
 from bot.utils.notifier import notifier
+from bot.config.instruments import get_instrument
 
 class MomentumStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -108,9 +109,10 @@ class MomentumStrategy:
              # If we reach here, the API call was successful
              found_active = None
              pos_data = pos_resp.get('data') or []
+             instr = get_instrument(Config.ACTIVE_SYMBOL)
              
              for pos in pos_data:
-                 if (pos.get('symbolname') == 'NIFTY' and 
+                 if (pos.get('symbolname') == instr.name and 
                      pos.get('producttype') == 'INTRADAY' and 
                      int(pos.get('netqty', 0)) != 0):
                      
@@ -398,6 +400,7 @@ class MomentumStrategy:
         from backend.market_service import market_service
         market_data = market_service.get_market_data()
         analysis = market_data.get('analysis', {})
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         
         if analysis and analysis.get('regime') != 'UNKNOWN':
             return (
@@ -416,7 +419,7 @@ class MomentumStrategy:
         if is_mock_api:
             df = self.get_mock_df()
         else:
-            df = self.data_fetcher.fetch_latest_candles("99926000")
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
             # Cache df for reuse within the same analysis cycle (e.g., BBW calculation)
             self._last_df = df
             
@@ -433,9 +436,9 @@ class MomentumStrategy:
                     self.last_oi_scan = now
                 else:
                     ltp = df.iloc[-1]['close']
-                    strike = int(round(ltp / 50) * 50)
-                    expiry = get_next_weekly_expiry()
-                    self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike)
+                    strike = int(round(ltp / instr.strike_step) * instr.strike_step)
+                    expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day)
+                    self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike, symbol=instr.name)
                     self.last_oi_scan = now
             except Exception as e:
                 logger.error(f"Periodic OI Scan Error: {e}")
@@ -488,7 +491,8 @@ class MomentumStrategy:
             logger.warning("[HTF] Circuit breaker active — returning NEUTRAL")
             return "NEUTRAL"
 
-        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIFTEEN_MINUTE")
 
         if df is None or len(df) < 3:
             return "NEUTRAL"
@@ -583,9 +587,10 @@ class MomentumStrategy:
             return
 
         # 1. RISK CALCULATION
-        nifty_ltp = self.get_nifty_ltp()
-        if not nifty_ltp:
-            logger.error("Could not fetch Nifty LTP for Entry.")
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        symbol_ltp = market_feed.get_ltp(instr.analysis_token)
+        if not symbol_ltp:
+            logger.error(f"Could not fetch {instr.name} LTP for Entry.")
             return
 
         atr = self.last_analysis.get('atr', 20.0)
@@ -611,12 +616,10 @@ class MomentumStrategy:
 
         # ── FRESH OI ALIGNMENT GATE ────────────────────────────────────────────
         # Force-fetch current OI at every entry — never rely on the 5-min cache.
-        # Root cause of 2026-04-09 bad trade: stale OI showed BEARISH while market
-        # had already reversed to BULLISH after the first SL hit.
         _fresh_bias = 'NEUTRAL'
         try:
-            _fresh_atm = round(nifty_ltp / 50) * 50
-            _fresh_oi = self.oi_analyzer.get_market_sentiment(expiry, _fresh_atm)
+            _fresh_atm = round(symbol_ltp / instr.strike_step) * instr.strike_step
+            _fresh_oi = self.oi_analyzer.get_market_sentiment(expiry, _fresh_atm, symbol=instr.name)
             _fresh_bias = _fresh_oi.get('bias', 'NEUTRAL')
             logger.info(
                 f"🔍 Fresh OI at entry: bias={_fresh_bias} | "
@@ -640,12 +643,9 @@ class MomentumStrategy:
             return
 
         # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
-        # Require at least 2 of the last 3 completed 5-min candles to close in
-        # the trade direction. Prevents entering on a single spike/bounce candle
-        # that flips the EMAs without real sustained momentum behind it.
         _df_entry = None
         try:
-            _df_entry = self.data_fetcher.fetch_latest_candles("99926000")
+            _df_entry = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
             if _df_entry is not None and len(_df_entry) >= 3:
                 _last3 = _df_entry.tail(3)
                 _bull_count = (_last3['close'] > _last3['open']).sum()
@@ -678,16 +678,16 @@ class MomentumStrategy:
                 if _vol.sum() > 0:
                     _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
                     _vwap = (_typical * _vol).sum() / _vol.sum()
-                    logger.info(f"📏 VWAP={_vwap:.1f} | NIFTY={nifty_ltp:.1f} | Leg={leg}")
-                    if leg == "CE" and nifty_ltp < _vwap:
+                    logger.info(f"📏 VWAP={_vwap:.1f} | {instr.name}={symbol_ltp:.1f} | Leg={leg}")
+                    if leg == "CE" and symbol_ltp < _vwap:
                         logger.warning(
-                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} < VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} < VWAP {_vwap:.0f} — "
                             "CE blocked. Price trading below institutional anchor."
                         )
                         return
-                    if leg == "PE" and nifty_ltp > _vwap:
+                    if leg == "PE" and symbol_ltp > _vwap:
                         logger.warning(
-                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} > VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} > VWAP {_vwap:.0f} — "
                             "PE blocked. Price trading above institutional anchor."
                         )
                         return
@@ -729,15 +729,13 @@ class MomentumStrategy:
              logger.error(f"Expiry Guard Check Error: {e}")
 
         # Phase 3: Volatility-Adjusted Strike Selection
-        # High ATR → go deeper OTM for more leverage (accepts lower delta).
-        # Low ATR  → stay near ATM for higher fill probability and delta.
-        atm_strike = round(nifty_ltp / 50) * 50
+        atm_strike = round(symbol_ltp / instr.strike_step) * instr.strike_step
         if atr < 15:
             otm_offset = 0      # ATM — tight market, maximise delta
         elif atr < 30:
-            otm_offset = 1      # 1 strike OTM (~50 pts)
+            otm_offset = 1      # 1 strike OTM
         else:
-            otm_offset = 2      # 2 strikes OTM (~100 pts) — high vol, wide swings expected
+            otm_offset = 2      # 2 strikes OTM
 
         # --- IV RANK: OTM DEPTH REDUCTION ---
         # When options are expensive (high IV Rank), going OTM means paying a fat premium
@@ -762,13 +760,13 @@ class MomentumStrategy:
             otm_offset = 1
 
         strike_direction = 1 if leg == "CE" else -1
-        strike = atm_strike + strike_direction * otm_offset * 50
+        strike = atm_strike + strike_direction * otm_offset * instr.strike_step
         logger.info(
             f"⚡ Vol-Adjusted Strike: ATR={atr:.1f} → "
             f"{'ATM' if otm_offset == 0 else f'{otm_offset} OTM'} | "
             f"Strike={strike}"
         )
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token: 
             logger.error(f"Token not found for {strike} {leg}")
             return

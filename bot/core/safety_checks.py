@@ -3,6 +3,8 @@ import time
 import os
 import json
 from bot.utils.logger import logger
+from bot.config.settings import Config
+from bot.config.instruments import get_instrument
 
 class SafetyGatekeeper:
     # Class-level VIX cache — shared across all instances (all strategies same process)
@@ -19,15 +21,20 @@ class SafetyGatekeeper:
 
     def is_market_open(self):
         """
-        Hard rule: 09:15 to 15:29 IST
+        Dynamically checks if market is open based on the active instrument.
         """
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         now = datetime.datetime.now().time()
-        start = datetime.time(9, 15)
-        end = datetime.time(15, 29)
+        
+        start_h, start_m = map(int, instr.market_start.split(":"))
+        end_h, end_m = map(int, instr.market_end.split(":"))
+        
+        start = datetime.time(start_h, start_m)
+        end = datetime.time(end_h, end_m)
         
         if start <= now <= end:
             return True
-        logger.warning(f">>> [Gatekeeper] Market Closed. Current Time: {now}")
+        logger.warning(f">>> [Gatekeeper] Market Closed for {instr.name}. Current Time: {now} (Window: {instr.market_start}-{instr.market_end})")
         return False
 
     def check_data_freshness(self, tick_timestamp):
@@ -206,8 +213,12 @@ class SafetyGatekeeper:
 
     def is_blackout_period(self):
         """
-        Rule: No new trades between 11:30 AM - 01:00 PM.
+        Rule: No new trades between 11:30 AM - 01:00 PM (Indices only).
         """
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        if instr.asset_type != "INDEX":
+            return False
+
         now = datetime.datetime.now().time()
         start = datetime.time(11, 30)
         end = datetime.time(13, 0)

@@ -6,6 +6,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class ORBStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -73,9 +74,10 @@ class ORBStrategy:
         Fetches the actual 09:15 1-minute candle to establish the real opening range.
         High = Range High, Low = Range Low.
         """
-        logger.info(">>> [ORB] Establishing Real Opening Range from 09:15 candle...")
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        logger.info(f">>> [ORB] Establishing Real Opening Range for {instr.name} from 09:15 candle...")
         try:
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="ONE_MINUTE")
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="ONE_MINUTE")
             if df is not None and not df.empty:
                 # Use the first candle of the day (09:15 candle)
                 first_candle = df.iloc[0]
@@ -85,7 +87,7 @@ class ORBStrategy:
                 logger.info(f">>> [ORB] Real Range Set from candle: High={self.range_high}, Low={self.range_low}")
             else:
                 # Fallback: use LTP with a 0.1% buffer if candle data unavailable
-                ltp = self.data_fetcher.get_ltp("99926000")
+                ltp = self.data_fetcher.get_ltp(instr.analysis_token)
                 if ltp and ltp > 0:
                     buffer = round(ltp * 0.001, 2)  # 0.1% of index
                     self.range_high = round(ltp + buffer, 2)
@@ -111,7 +113,8 @@ class ORBStrategy:
             if not self.gatekeeper.check_funds(required_margin_per_lot=7000): break
             if self.gatekeeper.is_blackout_period(): break
                 
-            ltp = self.data_fetcher.get_ltp("99926000")
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            ltp = self.data_fetcher.get_ltp(instr.analysis_token)
             if not ltp:
                 time.sleep(1)
                 continue
@@ -137,10 +140,11 @@ class ORBStrategy:
                 break
 
     def place_entry_order(self, expiry, option_type):
-        current_ltp = self.data_fetcher.get_ltp("99926000") or 0.0
-        strike = round(current_ltp / 50) * 50
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        current_ltp = self.data_fetcher.get_ltp(instr.analysis_token) or 0.0
+        strike = round(current_ltp / instr.strike_step) * instr.strike_step
         
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, option_type)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token:
             logger.error(">>> [Error] Token not found.")
             return
@@ -149,9 +153,9 @@ class ORBStrategy:
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         
         # Apply Compounding (Exponential Scaling)
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
-        qty = lots * Config.NIFTY_LOT_SIZE
+        qty = lots * instr.lot_size
         
         logger.info(f">>> [Sizing] Qty: {qty} ({lots} lots)")
 

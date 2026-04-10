@@ -9,6 +9,7 @@ from bot.core.order_manager import OrderManager
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class GammaBlastStrategy:
     """
@@ -69,10 +70,11 @@ class GammaBlastStrategy:
             # If we reach here, the API call was successful
             found_active = None
             pos_data = pos_resp.get('data') or []
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             
             for pos in pos_data:
-                # Look for NIFTY Intraday options with non-zero quantity
-                if (pos.get('symbolname') == 'NIFTY' and 
+                # Look for active positions that match current symbol
+                if (pos.get('symbolname') == instr.name and 
                     pos.get('producttype') == 'INTRADAY' and 
                     int(pos.get('netqty', 0)) != 0):
                     
@@ -163,16 +165,16 @@ class GammaBlastStrategy:
                 )
                 break # Monitoring finished or trade closed
 
-            # 2. Market analysis & Final Confirmation
             # (Though DecisionEngine already checked, we double check local indicators)
             from backend.market_service import market_service
             market_data = market_service.get_market_data()
             analysis = market_data.get('analysis', {})
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
 
             if not analysis or analysis.get('regime') == 'UNKNOWN':
-                logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
+                logger.error(f"Gamma Blast: Market analysis unavailable for {instr.name}. Fallback to safety check.")
                 # Final fallback to direct fetch only if market_service is failing
-                df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE")
                 if df is None or len(df) < 20:
                     time.sleep(30)
                     continue
@@ -181,7 +183,7 @@ class GammaBlastStrategy:
                 ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
                 ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
             else:
-                ltp = market_data.get('nifty', 0)
+                ltp = market_data.get(instr.name.lower(), 0)
                 adx = analysis.get('adx', 0)
                 ema9 = analysis.get('ema9', 0)
                 ema21 = analysis.get('ema21', 0)
@@ -213,13 +215,11 @@ class GammaBlastStrategy:
             leg = "CE" if ema9 > ema21 else "PE"
 
             # --- OI BIAS CONFIRMATION (fresh fetch, not market_service cache) ---
-            # Force-fetch current OI at entry — market_service oi_data can be up to
-            # 300s old. On volatile days, institutions can flip in minutes.
             from bot.utils.expiry_calculator import get_next_weekly_expiry as _get_expiry
-            _expiry_now = expiry if expiry else _get_expiry()
-            _atm_now = round(ltp / 50) * 50
+            _expiry_now = expiry if expiry else _get_expiry(target_weekday=instr.expiry_day)
+            _atm_now = round(ltp / instr.strike_step) * instr.strike_step
             try:
-                _fresh_oi = self.oi_analyzer.get_market_sentiment(_expiry_now, _atm_now)
+                _fresh_oi = self.oi_analyzer.get_market_sentiment(_expiry_now, _atm_now, symbol=instr.name)
                 oi_bias = _fresh_oi.get('bias', 'NEUTRAL')
                 logger.info(
                     f"Gamma Blast: 🔍 Fresh OI: bias={oi_bias} | "
@@ -239,11 +239,8 @@ class GammaBlastStrategy:
                 continue
 
             # --- CANDLE MOMENTUM FILTER ---
-            # At least 2 of the last 3 completed 5-min candles must close in the
-            # trade direction. Prevents entering on an EMA crossover from a single
-            # spike or post-SL bounce candle.
             try:
-                _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
+                _df_gb = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
                 if _df_gb is not None and len(_df_gb) >= 3:
                     _l3 = _df_gb.tail(3)
                     _bull = (_l3['close'] > _l3['open']).sum()
@@ -276,18 +273,18 @@ class GammaBlastStrategy:
                         _typical_gb = (_df_gb['high'] + _df_gb['low'] + _df_gb['close']) / 3
                         _vwap_gb = (_typical_gb * _vol_gb).sum() / _vol_gb.sum()
                         logger.info(
-                            f"Gamma Blast: 📏 VWAP={_vwap_gb:.1f} | NIFTY={ltp:.1f} | Leg={leg}"
+                            f"Gamma Blast: 📏 VWAP={_vwap_gb:.1f} | {instr.name}={ltp:.1f} | Leg={leg}"
                         )
                         if leg == "CE" and ltp < _vwap_gb:
                             logger.warning(
-                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} < VWAP {_vwap_gb:.0f} — "
+                                f"Gamma Blast: 🛑 VWAP Filter: {instr.name} {ltp:.0f} < VWAP {_vwap_gb:.0f} — "
                                 "CE blocked. Price below institutional anchor."
                             )
                             time.sleep(30)
                             continue
                         if leg == "PE" and ltp > _vwap_gb:
                             logger.warning(
-                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} > VWAP {_vwap_gb:.0f} — "
+                                f"Gamma Blast: 🛑 VWAP Filter: {instr.name} {ltp:.0f} > VWAP {_vwap_gb:.0f} — "
                                 "PE blocked. Price above institutional anchor."
                             )
                             time.sleep(30)
@@ -313,11 +310,7 @@ class GammaBlastStrategy:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
             # 4. Strike Selection — OTM depth scales with ADX strength.
-            # Stronger trend = deeper OTM = exponentially higher leverage.
-            #   ADX 35–50 → 1 OTM (delta ~0.35, moderate leverage, safer)
-            #   ADX 50–55 → 2 OTM (delta ~0.20, high leverage)
-            #   ADX > 55  → 3 OTM (delta ~0.10, maximum leverage, parabolic days only)
-            atm_strike = round(ltp / 50) * 50
+            atm_strike = round(ltp / instr.strike_step) * instr.strike_step
             if adx < 50:
                 otm_depth = 1
             elif adx < 55:
@@ -337,14 +330,14 @@ class GammaBlastStrategy:
                     f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
                 )
 
-            strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
+            strike = atm_strike + (otm_depth * instr.strike_step * (1 if leg == "CE" else -1))
 
             logger.info(
                 f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | "
                 f"OTM depth={otm_depth} strikes | Strike={strike}"
             )
 
-            token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+            token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
             if not token:
                 logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
                 time.sleep(30)
@@ -353,9 +346,8 @@ class GammaBlastStrategy:
             # Fetch Option LTP for early record and price estimate
             quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
 
-            # 5. Position Sizing — lot fraction from capital tier (MICRO=50%, SMALL=60%, etc.)
-            # Reuse _tier already resolved above — no extra API call needed.
-            margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
+            # 5. Position Sizing
+            margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
             # Lots are scaled by the Brain's risk multiplier AND the strategy's specific lot fraction
             lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier) * _tier.gamma_blast_lot_pct)
             if lots < 1:
@@ -367,7 +359,7 @@ class GammaBlastStrategy:
                     logger.warning(f"Gamma Blast: ❌ Insufficient capital for 1 lot (₹{estimated_cost:,.0f} required). Skipping.")
                     time.sleep(60)
                     continue
-            qty = lots * Config.NIFTY_LOT_SIZE
+            qty = lots * instr.lot_size
 
             # --- TRADE VIABILITY CHECK ---
             # Ensure brokerage (₹60 round-trip) doesn't exceed 15% of trade value.
@@ -383,7 +375,8 @@ class GammaBlastStrategy:
             time.sleep(30) # Throttle loop
 
     def place_entry(self, expiry, strike, leg, qty, quote_ltp):
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token:
             logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
             return

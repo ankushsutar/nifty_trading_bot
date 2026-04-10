@@ -192,20 +192,23 @@ class Config:
     # ── Master mode control ────────────────────────────────────────────────
     LIVE_TRADE_ENABLED = os.getenv("LIVE_TRADE_ENABLED", "FALSE").upper() == "TRUE"
 
-    # ── NIFTY constants ────────────────────────────────────────────────────
-    NIFTY_LOT_SIZE = 65                   # Updated for 2026
-    SCRIP_MASTER_URL = (
-        "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
-    )
-
     # ── Simulation capital ─────────────────────────────────────────────────
     # Used in dry_run mode. Set this to match your real account balance so
     # the simulation uses the same tier and sizing as the live bot.
-    SIMULATION_CAPITAL = float(os.getenv("SIMULATION_CAPITAL", "11000"))
+    SIMULATION_CAPITAL = float(os.getenv("SIMULATION_CAPITAL", "11_000"))
+
+    # ── Active Symbol ──────────────────────────────────────────────────────
+    ACTIVE_SYMBOL = os.getenv("ACTIVE_SYMBOL", "NIFTY").upper()
 
     # ── Persistence ────────────────────────────────────────────────────────
     MONGO_URI        = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-    MONGO_DB         = os.getenv("MONGO_DB", "nifty_bot")
+    
+    @classmethod
+    @property
+    def MONGO_DB(cls):
+        """Dynamic DB name based on active symbol."""
+        return f"bot_{cls.ACTIVE_SYMBOL.lower()}"
+
     MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "trades")
 
     # ── Notifications ──────────────────────────────────────────────────────

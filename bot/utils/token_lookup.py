@@ -84,12 +84,15 @@ class TokenLookup:
         # Angel One 'strike' is in paise (e.g. 2300000.00 = ₹23,000)
         self.df['strike'] = pd.to_numeric(self.df['strike'], errors='coerce')
 
-    def get_token(self, symbol_name, expiry_date, strike, option_type):
+    def get_token(self, symbol_name, expiry_date, strike, option_type, instrument_type="OPTIDX", exchange="NFO"):
         """
-        Finds the Angel One token for a NIFTY option.
+        Finds the Angel One token for an option instrument.
+        symbol_name: 'NIFTY', 'BANKNIFTY', 'CRUDEOIL', etc.
         expiry_date: '29JAN2026'
         strike: 23000 (in rupees)
         option_type: 'CE' or 'PE'
+        instrument_type: 'OPTIDX', 'OPTCOM', etc.
+        exchange: 'NFO', 'MCX', etc.
         """
         if self.df is None:
             self.load_scrip_master()
@@ -102,24 +105,24 @@ class TokenLookup:
         strike_paise = float(strike) * 100.0
 
         row = self.df[
-            (self.df['name'] == 'NIFTY') &
-            (self.df['instrumenttype'] == 'OPTIDX') &
+            (self.df['name'] == symbol_name) &
+            (self.df['instrumenttype'] == instrument_type) &
             (self.df['strike'] == strike_paise) &
             (self.df['symbol'].str.endswith(option_type)) &
-            (self.df['expiry'] == expiry_date)
+            (self.df['expiry'] == expiry_date) &
+            (self.df['exch_seg'] == exchange)
         ]
 
         if not row.empty:
             return row.iloc[0]['token'], row.iloc[0]['symbol']
 
-        logger.warning(f">>> [Warning] Token NOT FOUND: NIFTY {expiry_date} {strike} {option_type}")
+        logger.warning(f">>> [Warning] Token NOT FOUND: {symbol_name} {expiry_date} {strike} {option_type} ({instrument_type})")
         return None, None
 
-    def get_option_bucket(self, expiry_date, atm_strike, range_points=500):
+    def get_option_bucket(self, symbol_name, expiry_date, atm_strike, range_points=500, instrument_type="OPTIDX", exchange="NFO"):
         """
-        Returns a dict of relevant option tokens around the ATM strike.
+        Returns a dict of relevant option tokens around the ATM strike for a given symbol.
         Range: ATM +/- range_points
-        Returns: {'22000_CE': {'token': ..., 'symbol': ..., 'strike': ..., 'type': ...}, ...}
         """
         if self.df is None:
             self.load_scrip_master()
@@ -131,11 +134,12 @@ class TokenLookup:
         max_strike = (atm_strike + range_points) * 100.0
 
         mask = (
-            (self.df['name'] == 'NIFTY') &
-            (self.df['instrumenttype'] == 'OPTIDX') &
+            (self.df['name'] == symbol_name) &
+            (self.df['instrumenttype'] == instrument_type) &
             (self.df['expiry'] == expiry_date) &
             (self.df['strike'] >= min_strike) &
-            (self.df['strike'] <= max_strike)
+            (self.df['strike'] <= max_strike) &
+            (self.df['exch_seg'] == exchange)
         )
 
         subset = self.df[mask].copy()

@@ -7,6 +7,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class InsideBarStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -19,12 +20,12 @@ class InsideBarStrategy:
         self.running = True
 
     def fetch_candles(self, interval="FIFTEEN_MINUTE"):
-        # Nifty 50 Token
-        token = "99926000"
-        return self.data_fetcher.fetch_latest_candles(token, interval=interval)
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        return self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval=interval)
 
-    def get_nifty_ltp(self):
-        return self.data_fetcher.get_ltp("99926000")
+    def get_index_ltp(self):
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        return self.data_fetcher.get_ltp(instr.analysis_token)
 
     def execute(self, expiry, action="BUY"):
         """
@@ -44,7 +45,6 @@ class InsideBarStrategy:
             # Recalculate Target/SL from DB or defaults
             fill = active_trade['entry_price']
             sl = active_trade['sl_price']
-            # Re-derive Index Level SL approx if needed, or just use stored SL price.
             # Target 1:2
             risk = abs(fill - sl)
             target = round(fill + (risk * 2), 1)
@@ -96,26 +96,30 @@ class InsideBarStrategy:
         logger.info(">>> [Signal] 🔥 INSIDE BAR DETECTED!")
         
         # 3. Check Breakout (Current Market Price vs Mother Range)
-        ltp = self.get_nifty_ltp()
+        ltp = self.get_index_ltp()
         logger.info(f">>> [Market] Current Price: {ltp}")
         
         signal = None
+        leg_type = None
         index_sl_level = 0.0
         
         if ltp > mother['high']:
             logger.info(">>> [Breakout] Price broke Mother HIGH -> BUY CE")
             signal = "BUY_CE"
+            leg_type = "CE"
             index_sl_level = mother['low'] # SL is opposite end
         elif ltp < mother['low']:
             logger.info(">>> [Breakout] Price broke Mother LOW -> BUY PE")
             signal = "BUY_PE"
+            leg_type = "PE"
             index_sl_level = mother['high']
         else:
             logger.info(">>> [Wait] Pattern formed but NO BREAKOUT yet.")
             return
 
-        strike = round(ltp / 50) * 50
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type if "leg_type" in locals() else ("CE" if signal == "BUY_CE" else "PE"))
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        strike = round(ltp / instr.strike_step) * instr.strike_step
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token: 
              logger.error(">>> [Error] Token Not Found")
              return
@@ -124,9 +128,9 @@ class InsideBarStrategy:
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         
         # Apply Compounding (Exponential Scaling)
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
-        qty = lots * Config.NIFTY_LOT_SIZE
+        qty = lots * instr.lot_size
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
@@ -152,14 +156,12 @@ class InsideBarStrategy:
              
              if fill_result['status'] in ['REJECTED', 'CANCELLED']:
                   logger.error(f"❌ Order {oid} failed: {fill_result.get('message')}")
-                  # If trade was recorded, mark it as failed or remove it
-                  if trade_id: trade_repo.close_trade(trade_id=trade_id, exit_reason="ORDER_FAILED")
                   return
 
              fill_price = fill_result['price'] or quote_ltp
              
              # Calculate Option SL (Structural with 5pt Buffer)
-             curr_index = self.get_nifty_ltp() or 22000.0
+             curr_index = self.get_index_ltp() or 22000.0
              points_risk = abs(curr_index - index_sl_level) + 5.0 # Added 5pt buffer for noise
              option_risk = points_risk * 0.5
              
@@ -171,7 +173,7 @@ class InsideBarStrategy:
              # 3. Update Trade Record (with Slippage Tracking)
              trade_id = self.order_manager.update_trade_fill(symbol, "INSIDE_BAR", fill_price, expected_price=quote_ltp)
              if trade_id:
-                 trade_repo.update_sl(trade_id, sl_price)
+                  trade_repo.update_sl(trade_id, sl_price)
 
              # Place Broker SL
              sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg_type)
@@ -250,7 +252,6 @@ class InsideBarStrategy:
             oid = self.order_manager.place_order(orderparams)
             
             if oid and trade_id:
-                 # Ideally wait for fill logic
                  trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
                  
         except Exception as e:

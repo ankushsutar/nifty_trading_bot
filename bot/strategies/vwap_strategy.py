@@ -9,6 +9,7 @@ from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class VWAPStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -105,14 +106,14 @@ class VWAPStrategy:
                 time.sleep(30) # Institutional analysis takes time
                 continue
 
-            logger.info(f">>> [Result] High Probability Setup Detected: {trend} ({signal})")
-            
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
             # 3. "X-Ray" Vision Check (OI Analysis) 🧠
             # Calculate ATM for OI Check
-            atm = int(round(ltp / 50) * 50)
+            atm = int(round(ltp / instr.strike_step) * instr.strike_step)
             try:
-                pcr = self.oi_analyzer.get_pcr(expiry, atm)
-                sentiment = self.oi_analyzer.analyze_sentiment(pcr)
+                sentiment_data = self.oi_analyzer.get_market_sentiment(expiry, atm, symbol=instr.name)
+                pcr = sentiment_data.get("pcr", 1.0)
+                sentiment = sentiment_data.get("bias", "NEUTRAL")
                 logger.info(f">>> [AI Check] PCR: {pcr:.2f} | Sentiment: {sentiment}")
             except Exception as e:
                 logger.error(f"OI Check Failed: {e}")
@@ -141,9 +142,8 @@ class VWAPStrategy:
         """
         Fetches candles and computes VWAP & EMA.
         """
-        # logger.info(">>> [Analysis] calculating VWAP & Market Structure...")
-        
-        df = self.fetch_nifty_data()
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        df = self.fetch_market_data(instr.analysis_token)
         
         if df is None or df.empty:
             return "NEUTRAL", "No Data", 0
@@ -174,10 +174,10 @@ class VWAPStrategy:
             
         return "NEUTRAL", "Price Trapped / Rangebound", price
 
-    def fetch_nifty_data(self):
+    def fetch_market_data(self, token):
         try:
             # Use DataFetcher for candle data
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+            df = self.data_fetcher.fetch_latest_candles(token, interval="FIVE_MINUTE")
             if df is not None and not df.empty:
                 return df
             
@@ -202,15 +202,15 @@ class VWAPStrategy:
         return pd.DataFrame(data)
 
     def place_pro_trade(self, expiry, option_type, ltp):
-        
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         # 1. Select Strike (Slightly ITM for higher delta/probability)
-        strike = round(ltp / 50) * 50
-        if option_type == "CE": strike -= 50 # 1 Strike ITM
-        if option_type == "PE": strike += 50
+        strike = round(ltp / instr.strike_step) * instr.strike_step
+        if option_type == "CE": strike -= instr.strike_step # 1 Strike ITM
+        if option_type == "PE": strike += instr.strike_step
         
         logger.info(f">>> [Pro Tip] Selecting In-The-Money (ITM) Strike {strike} for better Delta.")
         
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, option_type)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
         if not token: 
             logger.error(">>> [Error] Token not found")
             return
@@ -219,9 +219,9 @@ class VWAPStrategy:
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         
         # Apply Compounding (Exponential Scaling)
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else 5000.0
+        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else 5000.0
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot)
-        qty = lots * Config.NIFTY_LOT_SIZE
+        qty = lots * instr.lot_size
         
         logger.info(f">>> [Sizing] Method=Exponential Compounding | Qty: {qty} ({lots} lots)")
 
@@ -262,7 +262,7 @@ class VWAPStrategy:
              
              # Risk Management: ATR-Based Structural SL
              try:
-                 df_sl = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                 df_sl = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE")
                  if df_sl is not None and len(df_sl) >= 5:
                      tr = (df_sl['high'] - df_sl['low']).tail(5).mean()
                      atr_sl_points = round(tr * 0.5, 1)  # Delta-adjusted

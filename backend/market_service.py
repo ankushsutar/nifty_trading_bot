@@ -11,6 +11,8 @@ from bot.core.levels_provider import levels_provider
 from bot.utils.logger import logger
 import json
 import os
+from bot.config.instruments import get_instrument
+from bot.config.settings import Config
 
 class MarketService:
     _instance = None
@@ -112,8 +114,8 @@ class MarketService:
 
     def get_market_data(self):
         """
-        Fetches Nifty 50 Spot and India VIX.
-        Returns dict: { nifty: float, vix: float, pnl: float }
+        Fetches LTP for active symbol and India VIX.
+        Returns dict: { symbol: float, vix: float, pnl: float }
         """
         # Cache Check (Quick Read)
         # Increased cache to 20s to further reduce load (Combined with DataFetcher 15s cache)
@@ -178,8 +180,8 @@ class MarketService:
 
         try:
             # 2. Fetch LTPs using centralized DataFetcher (with 5s Cache)
-            # This prevents 1 req/sec polling from UI saturating the API
-            nifty_ltp = self.get_ltp("NSE", "Nifty 50", "99926000")
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            symbol_ltp = self.get_ltp(instr.exchange, instr.name, instr.analysis_token)
             
             vix_ltp = 0.0
             try:
@@ -187,7 +189,8 @@ class MarketService:
             except: pass
 
             data = {
-                "nifty": nifty_ltp,
+                Config.ACTIVE_SYMBOL.lower(): symbol_ltp,
+                "nifty": symbol_ltp if Config.ACTIVE_SYMBOL == "NIFTY" else self.get_ltp("NSE", "Nifty 50", "99926000"),
                 "vix": vix_ltp,
                 "pnl": 0.0,
                 "analysis": self.analysis_data,
@@ -204,7 +207,7 @@ class MarketService:
 
         except Exception as e:
             logger.error(f"Market Data Fetch Error: {e}")
-            return {"nifty": 0, "vix": 0, "pnl": 0, "error": str(e)}
+            return {Config.ACTIVE_SYMBOL.lower(): 0, "nifty": 0, "vix": 0, "pnl": 0, "error": str(e)}
 
     def get_ltp(self, exchange, symbol, token):
         """
@@ -268,27 +271,22 @@ class MarketService:
                     self.levels_data = levels_provider.get_levels() or {}
                     
                     # 1. Regime Analysis
-                    # SMARTER CHECK: If we already have fresh enough candle data in cache, 
-                    # skip firing a REST call to preserve API quota.
-                    cache_key = "99926000_FIVE_MINUTE_1"
+                    instr = get_instrument(Config.ACTIVE_SYMBOL)
+                    cache_key = f"{instr.analysis_token}_FIVE_MINUTE_1"
                     df = self.data_fetcher._read_disk_cache(cache_key)
                     if df is None:
-                        # Only fetch from REST if cache is missing or stale
-                        df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+                        df = self.data_fetcher.fetch_latest_candles(instr.analysis_token)
                     
                     if df is None:
-                        # EMERGENCY FALLBACK: If API is blocked (AB1004), use ANY cache for up to 4h
-                        logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
+                        logger.warning(f"MarketService: API BLOCKED. Falling back to 4h stale cache for {instr.name}... 🏺")
                         df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
-                    else:
-                        logger.info("MarketService: Using Shared Candle Cache for Regime Analysis. 💡")
                     
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)
                         
                         # 2. OI Sentiment Analysis
                         ltp = df.iloc[-1]['close']
-                        strike = int(round(ltp / 50) * 50)
+                        strike = int(round(ltp / instr.strike_step) * instr.strike_step)
                         from bot.utils.expiry_calculator import get_next_weekly_expiry
                         expiry = get_next_weekly_expiry()
                         
@@ -299,27 +297,23 @@ class MarketService:
                         except: pass
 
                         if ltp > 0:
-                            analysis = self.oi_engine.get_market_sentiment(expiry, ltp)
-                            self.oi_data = analysis # Update oi_data with the full analysis dict
+                            # OI is tricky for non-index; default to neutral if unsupported
+                            try:
+                                analysis = self.oi_engine.get_market_sentiment(expiry, ltp, symbol=instr.name)
+                            except:
+                                analysis = {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+                            
+                            self.oi_data = analysis 
                             
                             # 3. Save Shared Intelligence for Child Processes
                             state = {
                                 "timestamp": datetime.datetime.now().isoformat(),
-                                "nifty_ltp": ltp,
+                                "active_symbol": instr.name,
+                                "ltp": ltp,
                                 "vix": vix_ltp,
                                 "analysis": self.analysis_data,
-                                "oi_data": {
-                                    "bias": analysis.get("bias", "NEUTRAL"),
-                                    "pcr": analysis.get("pcr", 1.0),
-                                    "delta_ratio": analysis.get("delta_ratio", 1.0),
-                                    "total_ce_oi": analysis.get("total_ce_oi", 0),
-                                    "total_pe_oi": analysis.get("total_pe_oi", 0),
-                                },
-                                "levels": self.levels_data,
-                                # Keep legacy flat keys for any other consumers
-                                "sentiment": analysis.get("bias", "NEUTRAL"),
-                                "pcr": analysis.get("pcr", 1.0),
-                                "oi_delta_ratio": analysis.get("delta_ratio", 1.0)
+                                "oi_data": analysis,
+                                "levels": self.levels_data
                             }
                             if not os.path.exists("data"): os.makedirs("data")
                             with open("data/market_analysis.json", "w") as f:
