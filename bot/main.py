@@ -15,6 +15,7 @@ from bot.strategies.vwap_strategy import VWAPStrategy
 from bot.strategies.ohl_strategy import OHLStrategy
 from bot.strategies.inside_bar_strategy import InsideBarStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
+from bot.strategies.futures_strategy import FuturesStrategy
 from bot.core.decision_engine import DecisionEngine
 from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
@@ -141,7 +142,12 @@ def run_bot():
                 time.sleep(60)
 
     # 4. Initialize Strategy
-    if args.strategy == "ORB":
+    # COMMODITY instruments (MCX FUTCOM) always use FuturesStrategy regardless of
+    # what the DecisionEngine returned — CE/PE options logic does not apply to futures.
+    if active_instr.asset_type == "COMMODITY":
+        logger.info(f"\n>>> [Strategy] {active_instr.name} is a COMMODITY (FUTCOM). Using FuturesStrategy.")
+        bot = FuturesStrategy(api, loader, dry_run=args.dry_run)
+    elif args.strategy == "ORB":
         logger.info(f"\n>>> [Strategy] Selected: Open Range Breakout (ORB)")
         bot = ORBStrategy(api, loader, dry_run=args.dry_run)
     elif args.strategy == "MOMENTUM":
@@ -187,7 +193,10 @@ def run_bot():
         logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
     # 6. Execute Strategy
-    if args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
+    if active_instr.asset_type == "COMMODITY":
+        # Futures strategies handle direction internally from regime analysis
+        bot.execute(expiry=expiry)
+    elif args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
         bot.execute(expiry=expiry, action="BUY")
     elif args.strategy in ["MOMENTUM", "GAMMA_BLAST"]:
         bot.execute(expiry=expiry)

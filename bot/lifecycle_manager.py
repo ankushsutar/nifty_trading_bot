@@ -177,9 +177,11 @@ class LifecycleManager:
                     # Heartbeat?
                     pass
 
-                # B. MARKET OPEN (09:16 - 09:20) -> OHL SCALP
+                # B. MARKET OPEN (09:16 - 09:20) -> OHL SCALP (INDEX only)
+                # OHL scalp is an NSE-specific open-range pattern. MCX commodities
+                # trade from 09:00 and have no equivalent opening-range setup.
                 elif datetime.time(9, 16) <= now < datetime.time(9, 20):
-                    if not self.ohl_attempted and not self.current_process:
+                    if not self.ohl_attempted and not self.current_process and instr.asset_type == "INDEX":
                         self.log("⏰ Time 09:16 Noticed. Attempting OHL Scalp...")
                         self.current_process = self.run_strategy(strategy_name="OHL")
                         self.ohl_attempted = True

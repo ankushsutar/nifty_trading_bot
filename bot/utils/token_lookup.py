@@ -119,6 +119,33 @@ class TokenLookup:
         logger.warning(f">>> [Warning] Token NOT FOUND: {symbol_name} {expiry_date} {strike} {option_type} ({instrument_type})")
         return None, None
 
+    def get_futures_token(self, symbol_name, expiry_date, instrument_type="FUTCOM", exchange="MCX"):
+        """
+        Finds the Angel One token for a futures contract (no strike / option_type).
+        symbol_name:     'CRUDEOIL', 'GOLD'
+        expiry_date:     '20APR2026'
+        instrument_type: 'FUTCOM' (MCX commodity futures)
+        exchange:        'MCX'
+        """
+        if self.df is None:
+            self.load_scrip_master()
+        if self.df is None:
+            logger.error(">>> [Error] Scrip Master not available. Cannot resolve futures token.")
+            return None, None
+
+        row = self.df[
+            (self.df['name'] == symbol_name) &
+            (self.df['instrumenttype'] == instrument_type) &
+            (self.df['expiry'] == expiry_date) &
+            (self.df['exch_seg'] == exchange)
+        ]
+
+        if not row.empty:
+            return row.iloc[0]['token'], row.iloc[0]['symbol']
+
+        logger.warning(f">>> [Warning] Futures Token NOT FOUND: {symbol_name} {expiry_date} ({instrument_type}/{exchange})")
+        return None, None
+
     def get_option_bucket(self, symbol_name, expiry_date, atm_strike, range_points=500, instrument_type="OPTIDX", exchange="NFO"):
         """
         Returns a dict of relevant option tokens around the ATM strike for a given symbol.

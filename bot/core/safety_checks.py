@@ -246,7 +246,15 @@ class SafetyGatekeeper:
         Rule: If India VIX > 25, reduce quantity by 50%.
         Reads VIX from shared market_analysis.json (written by backend every 3 min).
         Falls back to ltpData only if shared file is missing/stale. Result cached 60s.
+
+        Note: India VIX is NIFTY-specific. For MCX commodity instruments we skip this
+        adjustment entirely (return 1.0) to avoid incorrectly downsizing commodity
+        positions based on equity-market volatility.
         """
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        if instr.asset_type == "COMMODITY":
+            return 1.0  # India VIX not applicable to MCX futures
+
         # 1. Return cached multiplier if still fresh (60s)
         if time.time() - SafetyGatekeeper._vix_cache_time < 60:
             return SafetyGatekeeper._vix_multiplier
