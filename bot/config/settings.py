@@ -218,6 +218,14 @@ class Config:
     # ── Infrastructure ─────────────────────────────────────────────────────
     STATIC_IP = os.getenv("STATIC_IP")
 
+    # ── Angel One scrip master (instrument universe) ───────────────────────
+    # Public URL — no auth required. Angel One updates it daily.
+    # Override via SCRIP_MASTER_URL env var if the URL ever changes.
+    SCRIP_MASTER_URL = os.getenv(
+        "SCRIP_MASTER_URL",
+        "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
+    )
+
     # ── Entry slippage (used in both live and simulation) ──────────────────
     # Kept here as a per-execution constant; tier overrides this for sizing math.
     ENTRY_SLIPPAGE_BUFFER_PERCENT = 0.01  # Fallback only — strategies use tier value

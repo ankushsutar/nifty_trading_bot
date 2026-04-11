@@ -1,4 +1,5 @@
 import random
+import time
 import uuid
 
 class MockSmartConnect:
@@ -91,12 +92,16 @@ class MockSmartConnect:
 class MockTokenLookup:
     def load_scrip_master(self):
         print(">>> [Mock] Skipping Scrip Master download.")
-    
-    def get_token(self, symbol_name, expiry_date, strike, option_type):
-        # Return dummy values
-        # Construct a dummy symbol, e.g., NIFTY29JAN202623000CE
+
+    def get_token(self, symbol_name, expiry_date, strike, option_type, instrument_type="OPTIDX", exchange="NFO"):
         fake_symbol = f"{symbol_name}{expiry_date}{strike}{option_type}"
-        fake_token = "99999" # Dummy token ID
-        print(f">>> [Mock] Generated dummy token '{fake_token}' for {fake_symbol}")
+        fake_token = "99999"
+        print(f">>> [Mock] Generated dummy option token '{fake_token}' for {fake_symbol}")
+        return fake_token, fake_symbol
+
+    def get_futures_token(self, symbol_name, expiry_date, instrument_type="FUTCOM", exchange="MCX"):
+        fake_symbol = f"{symbol_name}{expiry_date}FUT"
+        fake_token = "88888"
+        print(f">>> [Mock] Generated dummy futures token '{fake_token}' for {fake_symbol}")
         return fake_token, fake_symbol
 
