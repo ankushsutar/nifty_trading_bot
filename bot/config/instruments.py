@@ -45,10 +45,27 @@ INSTRUMENTS: Dict[str, Instrument] = {
     ),
     "CRUDEOIL": Instrument(
         name="CRUDEOIL",
-        # NOTE: MCX futures tokens are contract-specific. Update this token
-        # each month after the front-month contract rolls (typically ~20th).
-        # Token format: MCX CRUDEOIL <DD><MON><YY>FUT — fetch fresh from scrip master.
-        analysis_token="486502", # CRUDEOIL20APR26FUT — update monthly
+        # ── MONTHLY UPDATE REQUIRED ────────────────────────────────────────────
+        # MCX futures tokens are contract-specific and expire each month.
+        # After the front-month contract expires, update BOTH fields below:
+        #   analysis_token  → token from scrip master for the new front-month
+        #   expiry_day_of_month → actual expiry day of the new contract
+        #
+        # MCX CRUDEOIL does NOT have a fixed expiry day (it is typically the
+        # 20th of the delivery month adjusted for holidays, but can vary).
+        # Always verify the actual expiry from the scrip master:
+        #   python -c "
+        #   from bot.utils.token_lookup import TokenLookup; tl = TokenLookup()
+        #   tl.load_scrip_master()
+        #   import pandas as pd
+        #   df = tl.df
+        #   print(df[(df['name']=='CRUDEOIL') & (df['instrumenttype']=='FUTCOM')][['token','symbol','expiry']])
+        #   "
+        #
+        # Current front-month: CRUDEOIL18MAY26FUT — expires 18MAY2026
+        # Next roll due: ~18MAY2026
+        # ──────────────────────────────────────────────────────────────────────
+        analysis_token="488290", # CRUDEOIL18MAY26FUT
         lot_size=100,
         strike_step=50,
         asset_type="COMMODITY",
@@ -57,7 +74,7 @@ INSTRUMENTS: Dict[str, Instrument] = {
         market_start="09:00",
         market_end="23:00",  # Stop before illiquid late-night session
         expiry_type="MONTHLY",
-        expiry_day_of_month=20,  # MCX CRUDEOIL expires on 20th of delivery month
+        expiry_day_of_month=18,  # Actual expiry day for CRUDEOIL18MAY26FUT — update monthly
     ),
     "GOLD": Instrument(
         name="GOLD",

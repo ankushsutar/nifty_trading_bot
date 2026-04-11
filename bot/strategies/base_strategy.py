@@ -73,7 +73,7 @@ class BaseStrategy:
             found_active = None
             pos_data = pos_resp.get('data') or []
             instr = get_instrument(Config.ACTIVE_SYMBOL)
-            
+
             # MCX commodity positions use 'CARRYFORWARD' producttype while
             # equity/index intraday positions use 'INTRADAY'.  Accept both so
             # crash recovery works across all instrument types.
@@ -82,15 +82,28 @@ class BaseStrategy:
                 if (pos.get('symbolname') == instr.name and
                     pos.get('producttype', '').upper() in _valid_products and
                     int(pos.get('netqty', 0)) != 0):
-                    
+
                     qty = int(pos['netqty'])
+                    entry_price = float(pos['avgnetprice'])
+
+                    # For futures (COMMODITY), leg represents trade direction.
+                    # For options (INDEX/EQUITY), leg is CE or PE from the symbol name.
+                    if instr.asset_type == "COMMODITY":
+                        leg = "BUY" if qty > 0 else "SELL"
+                    else:
+                        leg = "CE" if "CE" in pos['tradingsymbol'] else "PE"
+
+                    # SL fallback: use the tier's sl_pct rather than a hardcoded 20%.
+                    _tier = Config.get_tier(Config.SIMULATION_CAPITAL)
+                    sl_fallback = round(entry_price * (1 - _tier.sl_pct), 1)
+
                     found_active = {
-                        'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
+                        'leg': leg,
                         'symbol': pos['tradingsymbol'],
                         'token': pos['symboltoken'],
                         'qty': abs(qty),
-                        'entry_price': float(pos['avgnetprice']),
-                        'sl_price': float(pos['avgnetprice']) * 0.8 # Default fallback
+                        'entry_price': entry_price,
+                        'sl_price': sl_fallback,
                     }
                     
                     db_trade = trade_repo.get_active_trade(mode="LIVE", strategy=self.strategy_name, symbol=found_active['symbol'])
@@ -200,9 +213,12 @@ class BaseStrategy:
 
         return oid, symbol, fill_price
 
-    def wait_for_fill(self, order_id):
-        """Uses WebSocket Order Feed for sub-second fill detection if available, else polls."""
-        if self.dry_run: return {'status': 'FILLED', 'price': 50.0}
+    def wait_for_fill(self, order_id, fallback_price=50.0):
+        """Uses WebSocket Order Feed for sub-second fill detection if available, else polls.
+        fallback_price: simulated fill price returned in dry-run mode. Callers should pass
+        the current LTP so dry-run SL/target calculations are realistic.
+        """
+        if self.dry_run: return {'status': 'FILLED', 'price': fallback_price}
         
         try:
             from bot.core.order_feed import order_feed

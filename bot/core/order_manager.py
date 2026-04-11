@@ -72,17 +72,15 @@ class OrderManager:
             logger.error(f"Order Placement Error: {e}")
             return None
 
-    def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY", exchange="NFO"):
+    def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY", exchange="NFO", producttype="INTRADAY"):
         """
         Places a LIMIT order with optional price rounding.
+        producttype: "INTRADAY" for NSE options, "CARRYFORWARD" for MCX futures.
         """
         try:
-            from bot.config.instruments import get_instrument
-            from bot.config.settings import Config
-            
             # Round to 0.05 tick size
             limit_price = round(price / 0.05) * 0.05
-            
+
             orderparams = {
                 "variety": "NORMAL",
                 "tradingsymbol": symbol,
@@ -90,7 +88,7 @@ class OrderManager:
                 "transactiontype": transaction_type,
                 "exchange": exchange,
                 "ordertype": "LIMIT",
-                "producttype": "INTRADAY",
+                "producttype": producttype,
                 "duration": "DAY",
                 "quantity": qty,
                 "price": limit_price,
@@ -104,17 +102,18 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
-    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None, exchange="NFO"):
+    def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None, exchange="NFO", producttype="INTRADAY"):
         """
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
         Reduces slippage dramatically compared to MARKET orders.
+        producttype: "INTRADAY" for NSE options, "CARRYFORWARD" for MCX futures.
         """
         if self.dry_run or not self.live_trade_enabled:
-            return self.place_limit_order(symbol, token, qty, initial_price, transaction_type, exchange=exchange)
+            return self.place_limit_order(symbol, token, qty, initial_price, transaction_type, exchange=exchange, producttype=producttype)
 
         try:
             current_price = round(initial_price / 0.05) * 0.05
-            oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type, exchange=exchange)
+            oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type, exchange=exchange, producttype=producttype)
             if not oid: return None
 
             # --- Persistence Integration (Early Record) ---
@@ -131,15 +130,15 @@ class OrderManager:
                 )
 
             from bot.core.order_feed import order_feed
-            
+
             for attempt in range(max_walk_ticks):
                 # Wait for fill with shorter timeout per walk
                 result = order_feed.wait_for_fill(oid, timeout=3)
-                
+
                 if result['status'] == 'FILLED':
                     logger.info(f"✨ Smart-Limit Filled: {symbol} @ {result['price']} (Attempt {attempt+1})")
                     return oid
-                
+
                 if result['status'] in ['REJECTED', 'CANCELLED']:
                     logger.error(f"❌ Smart-Limit Failed: Order {result['status']}")
                     return None
@@ -147,14 +146,14 @@ class OrderManager:
                 # If TIMEOUT, walk the price one tick
                 tick_size = 0.05
                 if transaction_type == "BUY":
-                    current_price += tick_size 
+                    current_price += tick_size
                 else:
                     current_price -= tick_size
-                
+
                 logger.info(f"🚶 Walking Smart-Limit: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
-                
-                # Modify existing order
-                success = self.modify_order_price(oid, current_price, symbol, token, qty, exchange=exchange)
+
+                # Modify existing order — producttype must match original
+                success = self.modify_order_price(oid, current_price, symbol, token, qty, exchange=exchange, producttype=producttype)
                 if not success:
                     logger.warning("⚠️ Walk failed: Modification error. Aborting walk.")
                     break
@@ -174,15 +173,17 @@ class OrderManager:
             logger.error(f"Smart-Limit Error: {e}")
             return None
 
-    def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL", exchange="NFO"):
-        """Utility for Smart-Limit to change price of an open order."""
+    def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL", exchange="NFO", producttype="INTRADAY"):
+        """Utility for Smart-Limit to change price of an open order.
+        producttype must match the original order (INTRADAY or CARRYFORWARD).
+        """
         try:
             price = round(new_price / 0.05) * 0.05
             orderparams = {
                 "variety": variety,
                 "orderid": order_id,
                 "ordertype": "LIMIT",
-                "producttype": "INTRADAY",
+                "producttype": producttype,
                 "duration": "DAY",
                 "price": price,
                 "quantity": qty,
@@ -199,10 +200,12 @@ class OrderManager:
             return response and response.get('status') == True
         except: return False
 
-    def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL", exchange="NFO"):
+    def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL", exchange="NFO", producttype="INTRADAY"):
         """
-        Places a STOPLOSS_MARKET order.
-        transaction_type: "SELL" (for Long Exit) or "BUY" (for Short Exit)
+        Places a STOPLOSS_LIMIT order.
+        transaction_type: "SELL" (long exit) or "BUY" (short exit).
+        producttype: "INTRADAY" for NSE options, "CARRYFORWARD" for MCX futures.
+        leg: option type label (CE/PE/BUY/SELL) — used for logging only.
         """
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. SL Order Rejected.")
@@ -211,14 +214,13 @@ class OrderManager:
         try:
             # Round SL to 0.05 tick size
             price = round(sl_price / 0.05) * 0.05
-            trigger_price = price 
-            
-            # Institutional Grade: Use STOPLOSS_LIMIT to prevent broker rejections and flash-crash slippage.
-            # We set 'price' slightly below 'trigger_price' for SELL SL to ensure fill within a corridor.
-            # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
             trigger_price = price
+
+            # Corridor keeps the limit within exchange LPP (Limit Price Protection) rules.
+            # SELL SL (long exit): limit slightly below trigger so it fills on the way down.
+            # BUY  SL (short exit): limit slightly above trigger so it fills on the way up.
             limit_price = round(price * 0.95, 2) if transaction_type == "SELL" else round(price * 1.05, 2)
-            
+
             orderparams = {
                 "variety": "STOPLOSS",
                 "tradingsymbol": symbol,
@@ -226,15 +228,15 @@ class OrderManager:
                 "transactiontype": transaction_type,
                 "exchange": exchange,
                 "ordertype": "STOPLOSS_LIMIT",
-                "producttype": "INTRADAY",
+                "producttype": producttype,
                 "duration": "DAY",
                 "quantity": qty,
                 "triggerprice": trigger_price,
                 "price": limit_price,
                 "disclosedquantity": 0
             }
-            
-            logger.info(f"🛡️ Placing Broker-Side SL (SL-M) for {symbol} @ {trigger_price}")
+
+            logger.info(f"🛡️ Placing Broker-Side SL [{leg}] for {symbol} @ {trigger_price}")
             return self.place_order(orderparams)
             
         except Exception as e:
@@ -270,8 +272,10 @@ class OrderManager:
             logger.error(f"Cancel Order Error: {e}")
             return False
 
-    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, variety="STOPLOSS", exchange="NFO"):
-        """Modifies an existing SL Order."""
+    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, variety="STOPLOSS", exchange="NFO", transaction_type="SELL"):
+        """Modifies an existing SL Order.
+        transaction_type: "SELL" for long-position SL, "BUY" for short-position SL.
+        """
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Modification Rejected.")
             return False
@@ -280,11 +284,11 @@ class OrderManager:
             # Round SL to 0.05 tick size
             price = round(new_trigger_price / 0.05) * 0.05
             trigger_price = price
-            
-            # Using same corridor logic as placement to maintain institutional quality
-            # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
-            txn_type = "SELL" 
-            limit_price = round(price * 0.95, 2) if txn_type == "SELL" else round(price * 1.05, 2)
+
+            # Corridor keeps the limit within exchange LPP (Limit Price Protection) rules.
+            # SELL SL (long exit): limit slightly below trigger so it fills on the way down.
+            # BUY  SL (short exit): limit slightly above trigger so it fills on the way up.
+            limit_price = round(price * 0.95, 2) if transaction_type == "SELL" else round(price * 1.05, 2)
             
             orderparams = {
                 "variety": variety,

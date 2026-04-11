@@ -24,7 +24,7 @@ class TradeRepository:
                 socketTimeoutMS=30000,
                 retryWrites=True
             )
-            self.db = self.client[Config.MONGO_DB]
+            self.db = self.client[Config.get_mongo_db()]
             self.collection = self.db[Config.MONGO_COLLECTION]
             self.counters = self.db["counters"]
             

@@ -204,8 +204,7 @@ class Config:
     MONGO_URI        = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     
     @classmethod
-    @property
-    def MONGO_DB(cls):
+    def get_mongo_db(cls) -> str:
         """Dynamic DB name based on active symbol."""
         return f"bot_{cls.ACTIVE_SYMBOL.lower()}"
 

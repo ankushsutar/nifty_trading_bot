@@ -175,8 +175,8 @@ class FuturesStrategy(BaseStrategy):
                 time.sleep(60)
                 continue
 
-            # Wait for fill
-            fill_result = self.wait_for_fill(oid)
+            # Wait for fill — pass ltp so dry-run mode uses a realistic price
+            fill_result = self.wait_for_fill(oid, fallback_price=ltp)
             if fill_result['status'] != 'FILLED':
                 logger.warning(f"Futures: Entry not filled ({fill_result['status']}). Cancelling.")
                 if fill_result['status'] == 'TIMEOUT':
@@ -380,7 +380,7 @@ class FuturesStrategy(BaseStrategy):
             if resp and resp.get('status'):
                 oid = resp['data']['orderid']
                 logger.info(f"✅ Futures Exit Order: {oid}")
-                fill = self.wait_for_fill(oid)
+                fill = self.wait_for_fill(oid, fallback_price=0.0)
                 exit_price = fill.get('price', 0.0)
                 if trade_id:
                     trade_repo.close_trade(
