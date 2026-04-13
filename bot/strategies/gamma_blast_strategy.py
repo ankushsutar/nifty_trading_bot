@@ -251,7 +251,7 @@ class GammaBlastStrategy(BaseStrategy):
                 f"OTM depth={otm_depth} strikes | Strike={strike}"
             )
 
-            token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
+            token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.trading_type, exchange=instr.exchange)
             if not token:
                 logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
                 time.sleep(30)

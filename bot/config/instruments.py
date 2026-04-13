@@ -1,3 +1,4 @@
+# Instrument Configuration for Nifty Trading Bot
 from dataclasses import dataclass
 from typing import Dict
 
@@ -8,8 +9,10 @@ class Instrument:
     lot_size: int          # Standard lot size
     strike_step: int       # Gap between strike prices
     asset_type: str        # INDEX, COMMODITY, EQUITY
-    instrument_type: str   # OPTIDX, FUTCOM, etc. (Angel One constant)
-    exchange: str          # NSE, MCX, etc.
+    instrument_type: str   # OPTIDX, FUTCOM, etc. (for Analysis)
+    trading_type: str      # OPTIDX, OPTFUT, etc. (for Options Trading)
+    exchange: str          # Exchange for Spot/Index analysis (NSE, MCX)
+    option_exchange: str   # Exchange for Options/Trading (NFO, MCX)
     market_start: str = "09:15"
     market_end: str = "15:30"
     expiry_day: int = 1    # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri (weekly only)
@@ -26,7 +29,9 @@ INSTRUMENTS: Dict[str, Instrument] = {
         strike_step=50,
         asset_type="INDEX",
         instrument_type="OPTIDX",
+        trading_type="OPTIDX",
         exchange="NSE",
+        option_exchange="NFO",
         market_start="09:15",
         market_end="15:30",
         expiry_day=1 # Tuesday
@@ -38,7 +43,9 @@ INSTRUMENTS: Dict[str, Instrument] = {
         strike_step=100,
         asset_type="INDEX",
         instrument_type="OPTIDX",
+        trading_type="OPTIDX",
         exchange="NSE",
+        option_exchange="NFO",
         market_start="09:15",
         market_end="15:30",
         expiry_day=2 # Wednesday
@@ -69,8 +76,10 @@ INSTRUMENTS: Dict[str, Instrument] = {
         lot_size=100,
         strike_step=50,
         asset_type="COMMODITY",
-        instrument_type="FUTCOM",  # Futures contract, not options
+        instrument_type="FUTCOM",
+        trading_type="OPTFUT",
         exchange="MCX",
+        option_exchange="MCX",
         market_start="09:00",
         market_end="23:00",  # Stop before illiquid late-night session
         expiry_type="MONTHLY",
@@ -83,8 +92,10 @@ INSTRUMENTS: Dict[str, Instrument] = {
         lot_size=100,
         strike_step=100,
         asset_type="COMMODITY",
-        instrument_type="FUTCOM",  # Futures contract, not options
+        instrument_type="FUTCOM",
+        trading_type="OPTFUT",
         exchange="MCX",
+        option_exchange="MCX",
         market_start="09:00",
         market_end="23:00",  # Stop before illiquid late-night session
         expiry_type="MONTHLY",

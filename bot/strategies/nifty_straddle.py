@@ -85,8 +85,8 @@ class NiftyStraddle(BaseStrategy):
         logger.info(f">>> [Sizing] Capital: {capital:.0f} | Calc Qty: {quantity} ({lots} lots)")
 
         # 4. Get Tokens
-        ce_token, ce_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "CE", instrument_type=instr.instrument_type, exchange=instr.exchange)
-        pe_token, pe_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "PE", instrument_type=instr.instrument_type, exchange=instr.exchange)
+        ce_token, ce_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "CE", instrument_type=instr.trading_type, exchange=instr.exchange)
+        pe_token, pe_symbol = self.token_loader.get_token(instr.name, expiry, atm_strike, "PE", instrument_type=instr.trading_type, exchange=instr.exchange)
         
         if not ce_token or not pe_token:
             logger.error(">>> [Error] Tokens not found.")

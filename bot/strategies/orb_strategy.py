@@ -139,7 +139,7 @@ class ORBStrategy(BaseStrategy):
         current_ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange) or 0.0
         strike = round(current_ltp / instr.strike_step) * instr.strike_step
         
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.trading_type, exchange=instr.exchange)
         if not token:
             logger.error(">>> [Error] Token not found.")
             return

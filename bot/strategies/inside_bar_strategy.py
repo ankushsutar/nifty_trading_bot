@@ -114,7 +114,7 @@ class InsideBarStrategy(BaseStrategy):
 
         instr = get_instrument(Config.ACTIVE_SYMBOL)
         strike = round(ltp / instr.strike_step) * instr.strike_step
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg_type, instrument_type=instr.trading_type, exchange=instr.exchange)
         if not token: 
              logger.error(">>> [Error] Token Not Found")
              return

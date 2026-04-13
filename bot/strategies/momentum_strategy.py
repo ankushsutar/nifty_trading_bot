@@ -614,7 +614,7 @@ class MomentumStrategy(BaseStrategy):
             f"{'ATM' if otm_offset == 0 else f'{otm_offset} OTM'} | "
             f"Strike={strike}"
         )
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.exchange)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.trading_type, exchange=instr.exchange)
         if not token: 
             logger.error(f"Token not found for {strike} {leg}")
             return
