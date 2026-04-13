@@ -241,3 +241,55 @@ class TokenLookup:
             }
 
         return bucket
+    def get_nearest_expiry_token(self, symbol_name, instrument_type, exchange):
+        """
+        Dynamically finds the front-month contract (nearest expiry >= today).
+        Useful for instruments where roll-over dates are frequent (Commodities).
+        """
+        if self.df is None:
+            self.load_scrip_master()
+        if self.df is None: return None
+
+        # Filter candidates
+        mask = (
+            (self.df['name'] == symbol_name) &
+            (self.df['exch_seg'] == exchange) &
+            (self.df['instrumenttype'] == instrument_type)
+        )
+        candidates = self.df[mask].copy()
+        if candidates.empty: return None
+
+        # Parse expiry dates for sorting
+        today = datetime.date.today()
+        
+        def _parse_exp(row):
+            try:
+                # Expected format "DDMMMYYYY" e.g. "20APR2026"
+                # Some Angel One dates might be missing or different, handle gracefully
+                exp_str = row['expiry']
+                if not exp_str or len(exp_str) < 7: return datetime.date(2000, 1, 1)
+                return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
+            except Exception:
+                return datetime.date(2000, 1, 1)
+
+        candidates['parsed_expiry'] = candidates.apply(_parse_exp, axis=1)
+        
+        # Only look at future expiries
+        valid = candidates[candidates['parsed_expiry'] >= today]
+        if valid.empty: 
+            # If no future expiries, it might be that scrip master labels are old.
+            # Return nearest in the past as fallback.
+            return {
+                "token": candidates.iloc[0]['token'],
+                "symbol": candidates.iloc[0]['symbol'],
+                "expiry": candidates.iloc[0]['expiry']
+            }
+        
+        # Sort by expiry and return nearest
+        nearest = valid.sort_values('parsed_expiry').iloc[0]
+        return {
+            "token": nearest['token'],
+            "symbol": nearest['symbol'],
+            "expiry": nearest['expiry'],
+            "date": nearest.get('parsed_expiry')
+        }

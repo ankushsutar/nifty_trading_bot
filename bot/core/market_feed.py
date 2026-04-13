@@ -127,39 +127,48 @@ class MarketFeedService:
         self.is_connected = True
         self.subscribed_tokens.clear()
         
-        # 1. Subscribe to Nifty 50 Spot (Token 99926000)
+        # 1. Subscribe to Active Symbol Analysis Token (from settings)
+        from bot.config.instruments import get_instrument
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        
         try:
-            token_list = [{"exchangeType": 1, "tokens": ["99926000"]}]
-            self.sws.subscribe("cor_id_nifty_spot", 3, token_list)
-            logger.info(">>> [MarketFeed] Subscribed to Nifty 50 Spot")
+            # ExchangeType: NSE=1, MCX=5
+            exch_type = 5 if instr.exchange == "MCX" else 1
+            token_list = [{"exchangeType": exch_type, "tokens": [instr.analysis_token]}]
             
-            # 2. Trigger Dynamic Subscription (in separate thread to not block on_open)
-            threading.Thread(target=self._manage_dynamic_subscriptions, daemon=True).start()
+            self.sws.subscribe(f"cor_id_{instr.name}_spot", 3, token_list)
+            logger.info(f">>> [MarketFeed] Subscribed to {instr.name} Spot ({instr.analysis_token})")
+            
+            # 2. Trigger Dynamic Subscription for Options (if Index)
+            if instr.asset_type == "INDEX":
+                threading.Thread(target=self._manage_dynamic_subscriptions, daemon=True).start()
             
         except Exception as e:
             logger.error(f"Subscription Error: {e}")
 
     def _manage_dynamic_subscriptions(self):
         """
-        Periodically checks Nifty Spot Price and configures Option Subscriptions.
+        Periodically checks Active Symbol Price and configures Option Subscriptions.
         """
+        from bot.config.instruments import get_instrument
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+
         while self.is_connected and self.running:
             try:
-                # 1. Get Nifty Spot Price
-                spot_price = self.get_ltp("99926000")
+                # 1. Get Spot/Analysis LTP
+                spot_price = self.get_ltp(instr.analysis_token)
                 if not spot_price:
-                    # Wait for data
                     time.sleep(2)
                     continue
                     
                 # 2. Calculate ATM
-                strike_diff = 50
+                strike_diff = instr.strike_step
                 atm = round(spot_price / strike_diff) * strike_diff
                 
                 # 3. Check if ATM changed or forced refresh (every 60s)
                 if atm != self.current_atm or time.time() - self.last_subscription_time > 60:
-                    logger.info(f">>> [MarketFeed] Updating Subscriptions. Nifty: {spot_price}, ATM: {atm}")
-                    self._update_subscriptions(atm)
+                    logger.info(f">>> [MarketFeed] Updating Subscriptions. {instr.name}: {spot_price}, ATM: {atm}")
+                    self._update_subscriptions(instr, atm)
                     self.current_atm = atm
                     self.last_subscription_time = time.time()
                     
@@ -168,28 +177,41 @@ class MarketFeedService:
             
             time.sleep(5) # Check every 5s
 
-    def _update_subscriptions(self, atm_strike):
-        expiry = get_next_weekly_expiry()
-        # logger.info(f"Fetching Options for Expiry: {expiry}")
+    def _update_subscriptions(self, instr, atm_strike):
+        # Handle Expiry Decoupling
+        opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
+        if instr.expiry_type == "MONTHLY":
+            from bot.utils.expiry_calculator import get_next_monthly_expiry
+            expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
+        else:
+            expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
         
-        # Get Bucket: ATM +/- 5 strikes (250 points)
-        bucket = self.token_lookup.get_option_bucket(expiry, atm_strike, range_points=250)
+        # Get Bucket: ATM +/- 5 strikes
+        range_pts = instr.strike_step * 5
+        bucket = self.token_lookup.get_option_bucket(
+            instr.name, expiry, atm_strike, 
+            range_points=range_pts,
+            instrument_type=instr.trading_type,
+            exchange=instr.option_exchange
+        )
         
         if not bucket:
-            logger.warning("No Options found for subscription!")
+            logger.warning(f"No Options found for {instr.name} at strike {atm_strike}!")
             return
 
         new_tokens = set()
         for key, info in bucket.items():
             new_tokens.add(info['token'])
 
-        # Always keep Nifty Spot
-        new_tokens.add("99926000")
+        # Always keep Analysis Spot/Index
+        new_tokens.add(instr.analysis_token)
 
         # Unsubscribe tokens that have drifted out of range
-        to_unsubscribe = self.subscribed_tokens - new_tokens - {"99926000"}
+        to_unsubscribe = self.subscribed_tokens - new_tokens - {instr.analysis_token}
         if to_unsubscribe:
-            unsub_list = [{"exchangeType": 2, "tokens": list(to_unsubscribe)}]
+            # ExchangeType: NFO=2, MCX=5
+            unsub_exch = 5 if instr.option_exchange == "MCX" else 2
+            unsub_list = [{"exchangeType": unsub_exch, "tokens": list(to_unsubscribe)}]
             try:
                 self.sws.unsubscribe("cor_id_options", 3, unsub_list)
                 self.subscribed_tokens -= to_unsubscribe
@@ -200,9 +222,10 @@ class MarketFeedService:
         # Subscribe new tokens
         to_subscribe = new_tokens - self.subscribed_tokens
         if to_subscribe:
-            token_list = [{"exchangeType": 2, "tokens": list(to_subscribe)}]  # Exchange 2 = NFO
+            sub_exch = 5 if instr.option_exchange == "MCX" else 2
+            token_list = [{"exchangeType": sub_exch, "tokens": list(to_subscribe)}]
             self.sws.subscribe("cor_id_options", 3, token_list)
-            logger.info(f">>> [MarketFeed] Subscribed to {len(to_subscribe)} new Options.")
+            logger.info(f">>> [MarketFeed] Subscribed to {len(to_subscribe)} new {instr.name} Options.")
             self.subscribed_tokens.update(to_subscribe)
 
     def _on_data(self, ws, message):
@@ -239,7 +262,11 @@ class MarketFeedService:
                 
                 # --- Candle Construction (1-Minute) ---
                 try:
-                    ts = float(tick.get('exchange_timestamp', time.time())) # Prefer Exchange TS
+                    ts = float(tick.get('exchange_timestamp', time.time()))
+                    
+                    # Normalize timestamp: if > 10^12, it is in milliseconds or microseconds
+                    if ts > 10**12: ts /= 1000.0  # Handle ms
+                    if ts > 10**12: ts /= 1000.0  # Handle us (just in case)
                     
                     # Memoization: ISO string formatting is expensive. Cache it per-minute.
                     minute_ts = int(ts // 60) * 60

@@ -12,7 +12,7 @@ from bot.core.data_fetcher import DataFetcher
 from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.utils.logger import logger
-from bot.utils.expiry_calculator import get_next_weekly_expiry
+from bot.utils.expiry_calculator import get_next_weekly_expiry, get_next_monthly_expiry
 from bot.utils.trade_journal import TradeJournal
 from bot.core.trade_repo import trade_repo
 from bot.core.order_manager import OrderManager
@@ -31,6 +31,15 @@ class MomentumStrategy(BaseStrategy):
         self.oi_data = {}
         self._ltp_cache = {}
         self.sync_state()
+
+    def _calculate_bbw(self, df):
+        """Calculates Bollinger Band Width."""
+        if len(df) < 20: return pd.Series([0] * len(df))
+        sma = df['close'].rolling(window=20).mean()
+        std = df['close'].rolling(window=20).std()
+        upper = sma + (std * 2)
+        lower = sma - (std * 2)
+        return (upper - lower) / sma
 
     def export_state(self):
         """Exports current strategy state to JSON for UI consumption."""
@@ -283,7 +292,14 @@ class MomentumStrategy(BaseStrategy):
                 else:
                     ltp = df.iloc[-1]['close']
                     strike = int(round(ltp / instr.strike_step) * instr.strike_step)
-                    expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
+
+                    # Decouple Option Expiry from Futures Expiry (e.g. for MCX CRUDE)
+                    opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
+                    if instr.expiry_type == "MONTHLY":
+                        expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
+                    else:
+                        expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
+
                     self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike, symbol=instr.name)
                     self.last_oi_scan = now
             except Exception as e:
@@ -294,7 +310,7 @@ class MomentumStrategy(BaseStrategy):
             signal = regime_meta['trend']
         
         # Calculate BBW locally as fallback
-        bbw = self.calculate_bbw(df).iloc[-1]
+        bbw = self._calculate_bbw(df).iloc[-1]
         
         return (
             signal, 
@@ -367,7 +383,8 @@ class MomentumStrategy(BaseStrategy):
 
         # 1. RISK CALCULATION
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        symbol_ltp = market_feed.get_ltp(instr.analysis_token)
+        # Use data_fetcher which handles WebSocket Hot-path + REST Cold-path fallback
+        symbol_ltp = self.data_fetcher.get_ltp(instr.analysis_token, exchange=instr.exchange, symbol=instr.name)
         if not symbol_ltp:
             logger.error(f"Could not fetch {instr.name} LTP for Entry.")
             return

@@ -18,6 +18,7 @@ class Instrument:
     expiry_day: int = 1    # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri (weekly only)
     expiry_type: str = "WEEKLY"   # "WEEKLY" or "MONTHLY"
     expiry_day_of_month: int = 20  # For MONTHLY: day of month (e.g. 20 for MCX)
+    option_expiry_day_of_month: int = None # Fallback to expiry_day_of_month if None
 
 # Registry for supported instruments
 # Expiry Days as of 2026: Nifty (Tue), BankNifty (Wed), Midcap (Mon), FinNifty (Tue)
@@ -72,7 +73,7 @@ INSTRUMENTS: Dict[str, Instrument] = {
         # Current front-month: CRUDEOIL18MAY26FUT — expires 18MAY2026
         # Next roll due: ~18MAY2026
         # ──────────────────────────────────────────────────────────────────────
-        analysis_token="488290", # CRUDEOIL18MAY26FUT
+        analysis_token="DYNAMIC", # Resolves to front-month FUTCOM in MarketService
         lot_size=100,
         strike_step=50,
         asset_type="COMMODITY",
@@ -83,7 +84,8 @@ INSTRUMENTS: Dict[str, Instrument] = {
         market_start="09:00",
         market_end="23:30",  # Capture the full US session volatility
         expiry_type="MONTHLY",
-        expiry_day_of_month=18,  # Actual expiry day for CRUDEOIL18MAY26FUT — update monthly
+        expiry_day_of_month=20,  # Actual expiry day for CRUDEOIL20APR26FUT
+        option_expiry_day_of_month=18, # Options expire earlier (resolves to 16APR26)
     ),
     "GOLD": Instrument(
         name="GOLD",

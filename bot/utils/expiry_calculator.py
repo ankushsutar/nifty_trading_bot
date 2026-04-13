@@ -45,19 +45,20 @@ def _format_expiry(date: datetime.date) -> str:
     return f"{date.day:02d}{_MONTH_ABBR[date.month]}{date.year}"
 
 
-def is_trading_day(date=None):
+def is_trading_day(date=None, exchange="NSE"):
     """
-    Returns True if the given date is a valid NSE trading day.
-    Excludes weekends (Sat/Sun) and NSE holidays.
-    Defaults to today if no date is provided.
+    Returns True if the given date is a valid trading day for the exchange.
+    Excludes weekends (Sat/Sun) and specific holidays.
+    Defaults to today and NSE if not provided.
     """
     if date is None:
         date = datetime.date.today()
     if date.weekday() >= 5:  # Saturday=5, Sunday=6
         return False
-    if date in NSE_HOLIDAYS_2026:
-        return False
-    return True
+    
+    if exchange == "MCX":
+        return date not in MCX_HOLIDAYS_2026
+    return date not in NSE_HOLIDAYS_2026
 
 
 def get_next_weekly_expiry(target_weekday=1, raw_date=False):

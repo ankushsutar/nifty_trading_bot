@@ -51,9 +51,11 @@ def signal_handler(sig, frame):
 def run_bot():
     global bot_instance
     
-    # 0. Start Order Feed (Real-Time Status)
+    # 0. Start Feeds (Real-Time Data & Status)
     from bot.core.order_feed import order_feed
+    from bot.core.market_feed import market_feed
     order_feed.start()
+    market_feed.start()
     
     # Register Signals
     signal.signal(signal.SIGINT, signal_handler)
@@ -142,11 +144,23 @@ def run_bot():
                 time.sleep(60)
 
     # 4. Initialize Strategy
-    # COMMODITY instruments (MCX FUTCOM) always use FuturesStrategy regardless of
-    # what the DecisionEngine returned — CE/PE options logic does not apply to futures.
+    # COMMODITY instruments (MCX FUTCOM) always use FuturesStrategy unless capital is low.
     if active_instr.asset_type == "COMMODITY":
-        logger.info(f"\n>>> [Strategy] {active_instr.name} is a COMMODITY (FUTCOM). Using FuturesStrategy.")
-        bot = FuturesStrategy(api, loader, dry_run=args.dry_run)
+        # Check margin availability for Futures
+        from bot.core.safety_checks import SafetyGatekeeper
+        gate = SafetyGatekeeper(api, dry_run=args.dry_run)
+        margin = gate.get_current_capital()
+        
+        # Typical MCX Futures margin is ~₹1L. If below this, switch to Options.
+        if margin < 100000:
+             logger.info(f"\n>>> [Strategy] {active_instr.name} margin requirement (~₹1L) not met (Available: ₹{margin:,.2f}).")
+             logger.info(">>> [Strategy] Switching to COMMODITY OPTIONS (OPTFUT) via MomentumStrategy.")
+             bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
+             bot.risk_multiplier = risk_multiplier
+        else:
+             logger.info(f"\n>>> [Strategy] {active_instr.name} is a COMMODITY (FUTCOM). Using FuturesStrategy.")
+             bot = FuturesStrategy(api, loader, dry_run=args.dry_run)
+
     elif args.strategy == "ORB":
         logger.info(f"\n>>> [Strategy] Selected: Open Range Breakout (ORB)")
         bot = ORBStrategy(api, loader, dry_run=args.dry_run)
@@ -176,17 +190,23 @@ def run_bot():
 
     # 5. Setup Parameters
     logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
-    # 5. Setup Parameters
-    logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
+    
+    # Decouple Option Expiry from Futures Expiry (important for MCX)
+    opt_day = active_instr.option_expiry_day_of_month or active_instr.expiry_day_of_month
+    
     if active_instr.expiry_type == "MONTHLY":
         from bot.utils.expiry_calculator import get_next_monthly_expiry
         expiry = get_next_monthly_expiry(expiry_day_of_month=active_instr.expiry_day_of_month, raw_date=True)
+        option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
     else:
         expiry = get_next_weekly_expiry(target_weekday=active_instr.expiry_day, raw_date=True)
+        option_expiry = expiry
     
     # Format for logging
     from bot.utils.expiry_calculator import _format_expiry
     logger.info(f">>> [Setup] Target Expiry: {_format_expiry(expiry)}")
+    if option_expiry != expiry:
+        logger.info(f">>> [Setup] Option Expiry: {_format_expiry(option_expiry)}")
     
     # SAFEGUARD: Prevent using past expiry
     if expiry < datetime.date.today():
@@ -194,15 +214,19 @@ def run_bot():
          return
 
     # 6. Execute Strategy
+    # For Commodities, if we switched to Momentum (Options), we must pass the option_expiry.
+    # FuturesStrategy always uses the main expiry.
+    target_expiry = option_expiry if (active_instr.asset_type == "COMMODITY" and bot.__class__.__name__ != 'FuturesStrategy') else expiry
+    
     if active_instr.asset_type == "COMMODITY":
-        # Futures strategies handle direction internally from regime analysis
-        bot.execute(expiry=expiry)
+        # Futures strategies handle direction internally
+        bot.execute(expiry=target_expiry)
     elif args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
-        bot.execute(expiry=expiry, action="BUY")
+        bot.execute(expiry=target_expiry, action="BUY")
     elif args.strategy in ["MOMENTUM", "GAMMA_BLAST"]:
-        bot.execute(expiry=expiry)
+        bot.execute(expiry=target_expiry)
     else:
-        bot.execute(expiry=expiry, action="SELL")
+        bot.execute(expiry=target_expiry, action="SELL")
 
     # 7. Record trade for daily limit tracking (only in auto mode)
     # This increments the DecisionEngine's daily counter so the 2-trade cap works.

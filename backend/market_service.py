@@ -25,6 +25,7 @@ class MarketService:
             cls._instance.cache_expiry = 2 # Seconds
             cls._instance.cached_data = None
             cls._instance._lock = threading.Lock()
+            cls._instance.active_symbol = Config.ACTIVE_SYMBOL
             
             # Intelligence Components
             cls._instance.token_lookup = TokenLookup()
@@ -52,6 +53,9 @@ class MarketService:
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
 
+            # Resolve dynamic tokens for EVERY process using this service
+            cls._instance._resolve_dynamic_tokens()
+
             # Start Background Analysis Thread only in MASTER process (Designated Backend)
             is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
             if is_master:
@@ -66,6 +70,19 @@ class MarketService:
             
         return cls._instance
 
+
+    def _resolve_dynamic_tokens(self):
+        """Resolves tokens for instruments marked as DYNAMIC."""
+        instr = get_instrument(self.active_symbol)
+        if instr.analysis_token == "DYNAMIC":
+            logger.info(f"MarketService: Resolving DYNAMIC token for {self.active_symbol}...")
+            # For Commodities, find the nearest FUTCOM expiry
+            res = self.token_lookup.get_nearest_expiry_token(self.active_symbol, instr.instrument_type, instr.exchange)
+            if res and res.get('token'):
+                instr.analysis_token = res['token']
+                logger.info(f"MarketService: Resolved {self.active_symbol} to {res['symbol']} (Token: {instr.analysis_token})")
+            else:
+                logger.error(f"MarketService: FAILED to resolve DYNAMIC token for {self.active_symbol}!")
 
     def _ensure_connection(self):
         # 1. Check for Forced Refresh Flag (from Rate Limiter)
@@ -146,24 +163,30 @@ class MarketService:
 
                 try:
                     if os.path.exists(state_file):
-                        # Only read if file is fresh (< 3 mins)
-                        if time.time() - os.path.getmtime(state_file) < 310:  # FIX: match 300s backend refresh cadence (+10s buffer)
+                        # Child Check: Is the shared state recent? (Increased to 600s for cold starts)
+                        if time.time() - os.path.getmtime(state_file) < 600:
                             with open(state_file, "r") as f:
                                 shared_state = json.load(f)
-                                self.analysis_data = shared_state.get('analysis', {})
-                                # Read oi_data dict (new format) or fall back to legacy flat keys
-                                if 'oi_data' in shared_state:
-                                    self.oi_data = shared_state['oi_data']
-                                if 'levels' in shared_state:
-                                    self.levels_data = shared_state['levels']
-                                else:
-                                    # Legacy format compatibility
-                                    self.oi_data = {
-                                        "bias": shared_state.get("sentiment", "NEUTRAL"),
-                                        "pcr": shared_state.get("pcr", 1.0),
-                                        "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
-                                    }
-                                logger.info("MarketService: Consumed Shared Intelligence 📡")
+                            # --- FIX: Symbol Verification ---
+                            file_symbol = shared_state.get('symbol', 'UNKNOWN')
+                            if file_symbol != self.active_symbol:
+                                logger.warning(f"MarketService: Shared intelligence is for {file_symbol}, but I need {self.active_symbol}. Waiting...")
+                                return self.cached_data # Fallback to empty/stale until backend catches up
+                            
+                            self.analysis_data = shared_state.get('analysis', {})
+                            # Read oi_data dict (new format) or fall back to legacy flat keys
+                            if 'oi_data' in shared_state:
+                                self.oi_data = shared_state['oi_data']
+                            if 'levels' in shared_state:
+                                self.levels_data = shared_state['levels']
+                            else:
+                                # Legacy format compatibility
+                                self.oi_data = {
+                                    "bias": shared_state.get("sentiment", "NEUTRAL"),
+                                    "pcr": shared_state.get("pcr", 1.0),
+                                    "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
+                                }
+                            logger.info("MarketService: Consumed Shared Intelligence 📡")
                 except Exception as e:
                     logger.warning(f"Intelligence Sharing Error: {e}")
 
@@ -247,90 +270,72 @@ class MarketService:
                 logger.error(f"MarketService Heartbeat Error: {e}")
                 time.sleep(60)
 
-
     def _analysis_loop(self):
         """Background loop to refresh Regime and OI analysis every 5 minutes."""
         import random
-        # 1. Startup De-sync Jitter: prevent master/child overlapping on startup
         time.sleep(random.uniform(5, 15)) 
         
         while True:
             try:
-                # 2. Strict Master Check: only designated BACKEND may fetch
                 is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
                 if not is_master:
                     logger.warning("MarketService Analysis Loop: [CHILD] Detected. Halting child loop.")
                     break
+
                 self._ensure_connection()
                 if self.api:
                     if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
-                    levels_provider.data_fetcher.api = self.api # Keep sync
-
-                    # 0. Levels Analysis (S&R)
+                    levels_provider.data_fetcher.api = self.api
+                    
+                    # 1. Levels Analysis (S&R)
                     self.levels_data = levels_provider.get_levels() or {}
                     
-                    # 1. Regime Analysis
-                    instr = get_instrument(Config.ACTIVE_SYMBOL)
-                    # Use centralized fetch_latest_candles which handles:
-                    # 1. Disk Cache checking
-                    # 2. REST Fetching (on Master)
-                    # 3. Hybrid Merging with WebSocket forming candle (Live Data)
-                    df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", exchange=instr.exchange)
+                    # 2. Regime Analysis
+                    instr = get_instrument(self.active_symbol)
+                    df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", days=1, exchange=instr.exchange)
                     
-                    if df is not None:
+                    if df is not None and len(df) >= 20:
                         self.analysis_data = self.regime_engine.classify(df)
-                        
-                        # 2. OI Sentiment Analysis
                         ltp = df.iloc[-1]['close']
-                        strike = int(round(ltp / instr.strike_step) * instr.strike_step)
+                        
+                        # 3. OI Analysis
+                        opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
                         if instr.expiry_type == "MONTHLY":
                             from bot.utils.expiry_calculator import get_next_monthly_expiry
-                            expiry = get_next_monthly_expiry(expiry_day_of_month=instr.expiry_day_of_month, raw_date=True)
+                            option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
                         else:
                             from bot.utils.expiry_calculator import get_next_weekly_expiry
-                            expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
-                        
-                        # Fetch VIX for shared state
-                        vix_ltp = 0.0
+                            option_expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
+
                         try:
-                            vix_ltp = self.get_ltp("NSE", "INDIA VIX", "99926017")
-                        except: pass
-
-                        if ltp > 0:
-                            # OI is tricky for non-index; default to neutral if unsupported
-                            try:
-                                analysis = self.oi_engine.get_market_sentiment(expiry, ltp, symbol=instr.name)
-                            except:
-                                analysis = {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
-                            
-                            self.oi_data = analysis 
-                            
-                            # 3. Save Shared Intelligence for Child Processes
-                            state = {
-                                "timestamp": datetime.datetime.now().isoformat(),
-                                "active_symbol": instr.name,
-                                "ltp": ltp,
-                                "vix": vix_ltp,
-                                "analysis": self.analysis_data,
-                                "oi_data": analysis,
-                                "levels": self.levels_data
-                            }
-                            if not os.path.exists("data"): os.makedirs("data")
-                            with open("data/market_analysis.json", "w") as f:
-                                json.dump(state, f, default=str)
-
-                            
-                            logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
-                        else:
-                            logger.warning("MarketService: Skipping OI analysis - Nifty LTP is zero.")
+                            self.oi_data = self.oi_engine.get_market_sentiment(option_expiry, ltp, symbol=instr.name)
+                        except Exception as e:
+                            logger.warning(f"OI Analysis Error: {e}")
+                            self.oi_data = {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+                        
+                        # 4. Save Shared Intelligence
+                        state = {
+                            'symbol': self.active_symbol,
+                            'last_updated': datetime.datetime.now().isoformat(),
+                            'analysis': self.analysis_data,
+                            'levels': self.levels_data,
+                            'oi_data': self.oi_data
+                        }
+                        if not os.path.exists("data"): os.makedirs("data")
+                        with open("data/market_analysis.json", "w") as f:
+                            json.dump(state, f, default=str)
+                        
+                        logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
                     else:
-                        logger.warning("MarketService: Skipping refresh - No candle data available.")
+                        logger.warning(f"MarketService: Insufficient data for refresh ({len(df) if df is not None else 0} candles). Retrying...")
+                        time.sleep(10)
+                        continue
                 
-                time.sleep(300) # Run every 5 minutes
+                time.sleep(300) 
 
             except Exception as e:
                 logger.error(f"MarketService Analysis Loop Error: {e}")
-                time.sleep(60) # Retry after 1 minute
+                time.sleep(60)
 
 market_service = MarketService()
