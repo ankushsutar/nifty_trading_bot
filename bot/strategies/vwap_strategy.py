@@ -210,7 +210,7 @@ class VWAPStrategy(BaseStrategy):
         
         logger.info(f">>> [Pro Tip] Selecting In-The-Money (ITM) Strike {strike} for better Delta.")
         
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.trading_type, exchange=instr.exchange)
         if not token: 
             logger.error(">>> [Error] Token not found")
             return

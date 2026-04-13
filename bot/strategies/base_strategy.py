@@ -132,7 +132,7 @@ class BaseStrategy:
         and placing smart-limit entry orders with robust timeout and DB cleanup.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, option_type, instrument_type=instr.trading_type, exchange=instr.exchange)
         if not token:
             logger.error(f"[{self.strategy_name}] Token not found for {strike} {option_type}")
             return None, None, None

@@ -52,7 +52,7 @@ class OIAnalyzer:
             
             for strike in strikes:
                 for opt_type in ['CE', 'PE']:
-                    token, s = self.token_lookup.get_token(instr.name, expiry, strike, opt_type, instrument_type=instr.instrument_type, exchange=instr.exchange)
+                    token, s = self.token_lookup.get_token(instr.name, expiry, strike, opt_type, instrument_type=instr.trading_type, exchange=instr.exchange)
                     if token:
                         tokens_to_fetch.append(token)
                         token_map[token] = {"strike": strike, "type": opt_type, "symbol": s}

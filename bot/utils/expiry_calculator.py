@@ -20,6 +20,11 @@ NSE_HOLIDAYS_2026 = {
     datetime.date(2026, 12, 25),  # Christmas
 }
 
+# MCX Holidays 2026 (May differ from NSE)
+MCX_HOLIDAYS_2026 = NSE_HOLIDAYS_2026.union({
+    datetime.date(2026, 4, 17), # Observed MCX closure (e.g. Good Friday/Easter window)
+})
+
 # Locale-safe month abbreviations (strftime %b is locale-dependent on Windows).
 # Angel One scrip master uses uppercase English abbreviations — always match this exactly.
 _MONTH_ABBR = {
@@ -104,7 +109,7 @@ def get_next_monthly_expiry(expiry_day_of_month: int = 20) -> str:
             candidate = datetime.date(today.year, today.month + 1, expiry_day_of_month)
 
     # Walk backwards if it falls on a weekend or holiday
-    while candidate.weekday() >= 5 or candidate in NSE_HOLIDAYS_2026:
+    while candidate.weekday() >= 5 or candidate in MCX_HOLIDAYS_2026:
         candidate -= datetime.timedelta(days=1)
 
     return _format_expiry(candidate)
