@@ -286,10 +286,10 @@ class MarketService:
                         strike = int(round(ltp / instr.strike_step) * instr.strike_step)
                         if instr.expiry_type == "MONTHLY":
                             from bot.utils.expiry_calculator import get_next_monthly_expiry
-                            expiry = get_next_monthly_expiry(expiry_day_of_month=instr.expiry_day_of_month)
+                            expiry = get_next_monthly_expiry(expiry_day_of_month=instr.expiry_day_of_month, raw_date=True)
                         else:
                             from bot.utils.expiry_calculator import get_next_weekly_expiry
-                            expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day)
+                            expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
                         
                         # Fetch VIX for shared state
                         vix_ltp = 0.0

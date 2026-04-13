@@ -176,21 +176,22 @@ def run_bot():
 
     # 5. Setup Parameters
     logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
+    # 5. Setup Parameters
+    logger.info(f"\n--- {active_instr.name} {active_instr.asset_type} TRADER ---")
     if active_instr.expiry_type == "MONTHLY":
         from bot.utils.expiry_calculator import get_next_monthly_expiry
-        expiry = get_next_monthly_expiry(expiry_day_of_month=active_instr.expiry_day_of_month)
+        expiry = get_next_monthly_expiry(expiry_day_of_month=active_instr.expiry_day_of_month, raw_date=True)
     else:
-        expiry = get_next_weekly_expiry(target_weekday=active_instr.expiry_day)
-    logger.info(f">>> [Setup] Target Expiry: {expiry}")
+        expiry = get_next_weekly_expiry(target_weekday=active_instr.expiry_day, raw_date=True)
+    
+    # Format for logging
+    from bot.utils.expiry_calculator import _format_expiry
+    logger.info(f">>> [Setup] Target Expiry: {_format_expiry(expiry)}")
     
     # SAFEGUARD: Prevent using past expiry
-    try:
-        exp_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
-        if exp_date < datetime.date.today():
-             logger.critical(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
-             return
-    except Exception as e:
-        logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
+    if expiry < datetime.date.today():
+         logger.critical(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
+         return
 
     # 6. Execute Strategy
     if active_instr.asset_type == "COMMODITY":

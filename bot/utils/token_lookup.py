@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 from bot.config.settings import Config
 from bot.utils.logger import logger
+from bot.utils.expiry_calculator import _MONTH_ABBR
 
 
 class TokenLookup:
@@ -84,15 +85,33 @@ class TokenLookup:
         # Angel One 'strike' is in paise (e.g. 2300000.00 = ₹23,000)
         self.df['strike'] = pd.to_numeric(self.df['strike'], errors='coerce')
 
+    def _format_date_for_exchange(self, date_val, exchange):
+        """
+        Inconsistent Angel One naming conventions:
+        NFO (Index Options) usually uses 'DDMMMYY' (e.g., 14APR26)
+        MCX (Commodities) usually uses 'DDMMMYYYY' (e.g., 20APR2026)
+        """
+        if isinstance(date_val, str):
+            # Legacy string support: If it was already formatted as YYYY, 
+            # we might need to truncate it for NFO.
+            if exchange == "NFO" and len(date_val) == 9: # e.g. 14APR2026
+                return date_val[:5] + date_val[7:] # -> 14APR26
+            return date_val
+            
+        if not isinstance(date_val, (datetime.date, datetime.datetime)):
+            return date_val
+
+        month = _MONTH_ABBR[date_val.month]
+        if exchange == "NFO":
+            year_suffix = str(date_val.year)[2:] # 2026 -> 26
+            return f"{date_val.day:02d}{month}{year_suffix}"
+        else:
+            return f"{date_val.day:02d}{month}{date_val.year}"
+
     def get_token(self, symbol_name, expiry_date, strike, option_type, instrument_type="OPTIDX", exchange="NFO"):
         """
         Finds the Angel One token for an option instrument.
-        symbol_name: 'NIFTY', 'BANKNIFTY', 'CRUDEOIL', etc.
-        expiry_date: '29JAN2026'
-        strike: 23000 (in rupees)
-        option_type: 'CE' or 'PE'
-        instrument_type: 'OPTIDX', 'OPTCOM', etc.
-        exchange: 'NFO', 'MCX', etc.
+        expiry_date can be a 'DDMMMYYYY' string or a datetime.date object.
         """
         if self.df is None:
             self.load_scrip_master()
@@ -101,31 +120,44 @@ class TokenLookup:
             logger.error(">>> [Error] Scrip Master not available. Cannot resolve token.")
             return None, None
 
-        # Input strike is in rupees — convert to paise for comparison
+        # 1. Format date for this specific exchange
+        formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
         strike_paise = float(strike) * 100.0
 
-        row = self.df[
-            (self.df['name'] == symbol_name) &
-            (self.df['instrumenttype'] == instrument_type) &
-            (self.df['strike'] == strike_paise) &
-            (self.df['symbol'].str.endswith(option_type)) &
-            (self.df['expiry'] == expiry_date) &
-            (self.df['exch_seg'] == exchange)
-        ]
+        def _search(exp):
+            mask = (
+                (self.df['name'] == symbol_name) &
+                (self.df['instrumenttype'] == instrument_type) &
+                (self.df['strike'] == strike_paise) &
+                (self.df['symbol'].str.endswith(option_type)) &
+                (self.df['expiry'] == exp) &
+                (self.df['exch_seg'] == exchange)
+            )
+            rows = self.df[mask]
+            if not rows.empty:
+                return rows.iloc[0]['token'], rows.iloc[0]['symbol']
+            return None, None
 
-        if not row.empty:
-            return row.iloc[0]['token'], row.iloc[0]['symbol']
+        # 2. Initial Search
+        token, symbol = _search(formatted_expiry)
+        if token: return token, symbol
 
-        logger.warning(f">>> [Warning] Token NOT FOUND: {symbol_name} {expiry_date} {strike} {option_type} ({instrument_type})")
+        # 3. Fallback: If original date was shifted by holiday logic (e.g. 13-APR),
+        # try the NEXT day (e.g. 14-APR) because Angel One often labels contracts
+        # with the original intended date.
+        if isinstance(expiry_date, (datetime.date, datetime.datetime)):
+            shifted_date = expiry_date + datetime.timedelta(days=1)
+            token, symbol = _search(self._format_date_for_exchange(shifted_date, exchange))
+            if token:
+                logger.debug(f">>> [Token] Found match via holiday fallback (using +1 day): {symbol}")
+                return token, symbol
+
+        logger.warning(f">>> [Warning] Token NOT FOUND: {symbol_name} {formatted_expiry} {strike} {option_type} ({instrument_type})")
         return None, None
 
     def get_futures_token(self, symbol_name, expiry_date, instrument_type="FUTCOM", exchange="MCX"):
         """
-        Finds the Angel One token for a futures contract (no strike / option_type).
-        symbol_name:     'CRUDEOIL', 'GOLD'
-        expiry_date:     '20APR2026'
-        instrument_type: 'FUTCOM' (MCX commodity futures)
-        exchange:        'MCX'
+        Finds the Angel One token for a futures contract.
         """
         if self.df is None:
             self.load_scrip_master()
@@ -133,17 +165,31 @@ class TokenLookup:
             logger.error(">>> [Error] Scrip Master not available. Cannot resolve futures token.")
             return None, None
 
-        row = self.df[
-            (self.df['name'] == symbol_name) &
-            (self.df['instrumenttype'] == instrument_type) &
-            (self.df['expiry'] == expiry_date) &
-            (self.df['exch_seg'] == exchange)
-        ]
+        formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
 
-        if not row.empty:
-            return row.iloc[0]['token'], row.iloc[0]['symbol']
+        def _search(exp):
+            mask = (
+                (self.df['name'] == symbol_name) &
+                (self.df['instrumenttype'] == instrument_type) &
+                (self.df['expiry'] == exp) &
+                (self.df['exch_seg'] == exchange)
+            )
+            rows = self.df[mask]
+            if not rows.empty:
+                return rows.iloc[0]['token'], rows.iloc[0]['symbol']
+            return None, None
 
-        logger.warning(f">>> [Warning] Futures Token NOT FOUND: {symbol_name} {expiry_date} ({instrument_type}/{exchange})")
+        # 1. Initial Search
+        token, symbol = _search(formatted_expiry)
+        if token: return token, symbol
+
+        # 2. Fallback
+        if isinstance(expiry_date, (datetime.date, datetime.datetime)):
+            shifted_date = expiry_date + datetime.timedelta(days=1)
+            token, symbol = _search(self._format_date_for_exchange(shifted_date, exchange))
+            if token: return token, symbol
+
+        logger.warning(f">>> [Warning] Futures Token NOT FOUND: {symbol_name} {formatted_expiry} ({instrument_type}/{exchange})")
         return None, None
 
     def get_option_bucket(self, symbol_name, expiry_date, atm_strike, range_points=500, instrument_type="OPTIDX", exchange="NFO"):
@@ -157,19 +203,30 @@ class TokenLookup:
         if self.df is None:
             return {}
 
+        # Format date for this exchange
+        formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
+
         min_strike = (atm_strike - range_points) * 100.0
         max_strike = (atm_strike + range_points) * 100.0
 
-        mask = (
-            (self.df['name'] == symbol_name) &
-            (self.df['instrumenttype'] == instrument_type) &
-            (self.df['expiry'] == expiry_date) &
-            (self.df['strike'] >= min_strike) &
-            (self.df['strike'] <= max_strike) &
-            (self.df['exch_seg'] == exchange)
-        )
+        def _get_mask(exp):
+            return (
+                (self.df['name'] == symbol_name) &
+                (self.df['instrumenttype'] == instrument_type) &
+                (self.df['expiry'] == exp) &
+                (self.df['strike'] >= min_strike) &
+                (self.df['strike'] <= max_strike) &
+                (self.df['exch_seg'] == exchange)
+            )
 
+        mask = _get_mask(formatted_expiry)
         subset = self.df[mask].copy()
+
+        # Fallback for buckets
+        if subset.empty and isinstance(expiry_date, (datetime.date, datetime.datetime)):
+            shifted_date = expiry_date + datetime.timedelta(days=1)
+            mask = _get_mask(self._format_date_for_exchange(shifted_date, exchange))
+            subset = self.df[mask].copy()
 
         bucket = {}
         for _, row in subset.iterrows():

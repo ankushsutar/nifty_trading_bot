@@ -60,13 +60,13 @@ def is_trading_day(date=None):
     return True
 
 
-def get_next_weekly_expiry(target_weekday=1):
+def get_next_weekly_expiry(target_weekday=1, raw_date=False):
     """
-    Returns the next weekly expiry for a given weekday (0=Mon, 1=Tue, ..., 4=Fri)
-    as 'DDMMMYYYY' (e.g. '06JAN2026').
-
-    Holiday handling: if the target day is an NSE holiday OR a weekend, walk
-    backwards one day at a time until a valid trading day is found.
+    Returns the next weekly expiry for a given weekday (0=Mon, 1=Tue, ..., 4=Fri).
+    
+    Args:
+        target_weekday: Weekday index.
+        raw_date: If True, returns a datetime.date object. If False, returns 'DDMMMYYYY' string.
     """
     today = datetime.date.today()
 
@@ -74,27 +74,24 @@ def get_next_weekly_expiry(target_weekday=1):
     days_ahead = (target_weekday - today.weekday()) % 7
 
     # If today is the target_weekday, check if we should look for next week
-    # (Typically if market is already closed, but here we just return today's expiry if valid)
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
     # Walk backwards until we land on a valid trading day.
     while not is_trading_day(next_expiry):
         next_expiry -= datetime.timedelta(days=1)
 
+    if raw_date:
+        return next_expiry
     return _format_expiry(next_expiry)
 
 
-def get_next_monthly_expiry(expiry_day_of_month: int = 20) -> str:
+def get_next_monthly_expiry(expiry_day_of_month: int = 20, raw_date=False) -> str:
     """
-    Returns the next MCX-style monthly expiry as 'DDMMMYYYY'.
-
-    MCX CRUDEOIL and GOLD expire on the 20th of the delivery month
-    (or the previous business day if the 20th is a holiday/weekend).
-    If today is past the expiry day this month, the next month's expiry
-    is returned.
+    Returns the next MCX-style monthly expiry.
 
     Args:
-        expiry_day_of_month: Day of month the contract expires (default 20 for MCX energy).
+        expiry_day_of_month: Day of month the contract expires.
+        raw_date: If True, returns a datetime.date object. If False, returns 'DDMMMYYYY' string.
     """
     today = datetime.date.today()
 
@@ -112,4 +109,6 @@ def get_next_monthly_expiry(expiry_day_of_month: int = 20) -> str:
     while candidate.weekday() >= 5 or candidate in MCX_HOLIDAYS_2026:
         candidate -= datetime.timedelta(days=1)
 
+    if raw_date:
+        return candidate
     return _format_expiry(candidate)

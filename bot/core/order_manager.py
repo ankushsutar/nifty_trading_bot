@@ -11,6 +11,30 @@ class OrderManager:
         self.dry_run = dry_run
         from bot.config.settings import Config
         self.live_trade_enabled = Config.LIVE_TRADE_ENABLED
+        self._slippage_adjustment = 0.0
+        self._last_slippage_check = 0
+
+    def _get_slippage_adjustment(self):
+        """Fetches recent slippage stats to adjust execution aggressiveness."""
+        now = time.time()
+        # Refresh every 30 minutes
+        if now - self._last_slippage_check < 1800:
+            return self._slippage_adjustment
+        
+        try:
+            stats = trade_repo.get_slippage_stats(days=3)
+            avg_pct = stats.get('avg_slippage_pct', 0.0)
+            # If slippage is > 1.5%, we increase the walk sensitivity
+            if avg_pct > 1.5:
+                self._slippage_adjustment = 0.5  # Boost factor
+                logger.info(f"⚡ [OrderManager] High Slippage detected ({avg_pct:.2f}%). Execution adjustment enabled.")
+            else:
+                self._slippage_adjustment = 0.0
+            self._last_slippage_check = now
+        except Exception:
+            self._slippage_adjustment = 0.0
+        
+        return self._slippage_adjustment
 
     def place_order(self, order_params, strategy_name=None, mode=None):
         """Places an order with rate limiting and error handling."""
@@ -131,7 +155,13 @@ class OrderManager:
 
             from bot.core.order_feed import order_feed
 
-            for attempt in range(max_walk_ticks):
+            # --- Execution Feedback Loop Adjustment ---
+            adj = self._get_slippage_adjustment()
+            walk_limit = max_walk_ticks + (2 if adj > 0 else 0)
+            if adj > 0:
+                logger.info(f"🚶 [Execution] Slippage Boost: Increasing max_walk_ticks to {walk_limit}")
+
+            for attempt in range(walk_limit):
                 # Wait for fill with shorter timeout per walk
                 result = order_feed.wait_for_fill(oid, timeout=3)
 

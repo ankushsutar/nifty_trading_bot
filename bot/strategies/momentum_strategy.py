@@ -283,7 +283,7 @@ class MomentumStrategy(BaseStrategy):
                 else:
                     ltp = df.iloc[-1]['close']
                     strike = int(round(ltp / instr.strike_step) * instr.strike_step)
-                    expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day)
+                    expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
                     self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike, symbol=instr.name)
                     self.last_oi_scan = now
             except Exception as e:
@@ -356,74 +356,6 @@ class MomentumStrategy(BaseStrategy):
         if ema9 > ema21: return "BULLISH"
         if ema9 < ema21: return "BEARISH"
         return "NEUTRAL"
-
-    def calculate_atr(self, df, period=14):
-        try:
-            df = df.copy()
-            df['tr1'] = df['high'] - df['low']
-            df['tr2'] = abs(df['high'] - df['close'].shift(1))
-            df['tr3'] = abs(df['low'] - df['close'].shift(1))
-            df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-            atr = df['tr'].ewm(alpha=1/period, adjust=False).mean()
-            return atr.fillna(0)
-        except Exception as e:
-            logger.error(f"ATR Calc Error: {e}")
-            return pd.Series([0]*len(df))
-
-    def calculate_bbw(self, df, period=20, std=2):
-        try:
-            sma = df['close'].rolling(window=period).mean()
-            std_dev = df['close'].rolling(window=period).std()
-            upper = sma + (std * std_dev)
-            lower = sma - (std * std_dev)
-            
-            bbw = (upper - lower) / sma
-            return bbw.fillna(0)
-        except Exception as e:
-            logger.error(f"BBW Calc Error: {e}")
-            return pd.Series([0]*len(df))
-
-    def calculate_adx(self, df, period=14):
-        try:
-            df = df.copy()
-            df['up_move'] = df['high'] - df['high'].shift(1)
-            df['down_move'] = df['low'].shift(1) - df['low']
-            
-            df['pdm'] = 0.0
-            df['ndm'] = 0.0
-            
-            df.loc[(df['up_move'] > df['down_move']) & (df['up_move'] > 0), 'pdm'] = df['up_move']
-            df.loc[(df['down_move'] > df['up_move']) & (df['down_move'] > 0), 'ndm'] = df['down_move']
-            
-            df['tr1'] = df['high'] - df['low']
-            df['tr2'] = abs(df['high'] - df['close'].shift(1))
-            df['tr3'] = abs(df['low'] - df['close'].shift(1))
-            df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
-            
-            df['atr'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
-            
-            df['pdm_s'] = df['pdm'].ewm(alpha=1/period, adjust=False).mean()
-            df['ndm_s'] = df['ndm'].ewm(alpha=1/period, adjust=False).mean()
-            
-            df['pdi'] = 100 * (df['pdm_s'] / df['atr'])
-            df['ndi'] = 100 * (df['ndm_s'] / df['atr'])
-            
-            df['dx'] = 100 * abs(df['pdi'] - df['ndi']) / (df['pdi'] + df['ndi'])
-            
-            return df['dx'].ewm(alpha=1/period, adjust=False).mean().fillna(0)
-            
-        except Exception as e:
-            logger.error(f"ADX Calc Error: {e}")
-            return pd.Series([0]*len(df))
-
-    def calculate_rsi(self, df, period=14):
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/period, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/period, adjust=False).mean()
-        
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        return rsi.fillna(50)
 
     def enter_position(self, expiry, leg):
         # Post-SL cooldown: 5 min after any SL hit, no re-entry (matches gamma blast gate).

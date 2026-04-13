@@ -117,11 +117,12 @@ class RegimeClassifier:
 
     def _calculate_atr(self, df, period=14):
         high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
+        high_close = np.abs(df['high'] - df['close'].shift()).fillna(0)
+        low_close = np.abs(df['low'] - df['close'].shift()).fillna(0)
         ranges = pd.concat([high_low, high_close, low_close], axis=1)
         true_range = np.max(ranges, axis=1)
-        return true_range.ewm(alpha=1/period, adjust=False).mean().fillna(0)
+        # Use EWM for smoothing (Standard ATR)
+        return true_range.ewm(alpha=1/period, adjust=False).mean().fillna(true_range)
 
     def _calculate_adx(self, df, period=14):
         # FIX Issue 1: Use .where() instead of in-place boolean masking (deprecated in pandas)

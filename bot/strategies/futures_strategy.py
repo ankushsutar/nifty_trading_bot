@@ -220,12 +220,28 @@ class FuturesStrategy(BaseStrategy):
                 strategy="FUTURES_MOMENTUM",
             )
 
+            # --- Professional Stop-Loss: Broker-Side SL Order ---
+            # Instead of just monitoring in software, we place a real STOPLOSS_LIMIT order
+            # on the exchange. This protects against system crashes.
+            sl_oid = None
+            if not self.dry_run:
+                sl_side = "SELL" if direction == "BUY" else "BUY"
+                sl_oid = self.order_manager.place_sl_order(
+                    symbol=symbol, token=token, qty=qty, 
+                    sl_price=sl_price, leg=direction, 
+                    transaction_type=sl_side, 
+                    exchange=instr.exchange, 
+                    producttype="CARRYFORWARD"
+                )
+                if sl_oid:
+                    trade_repo.update_sl_order_id(trade_id, sl_oid)
+            
             logger.info(
                 f">>> [Futures] Position Open | Fill=₹{fill_price} | "
-                f"SL=₹{sl_price} | Target=₹{target_price}"
+                f"SL=₹{sl_price} (Order: {sl_oid}) | Target=₹{target_price}"
             )
 
-            self._monitor(symbol, token, qty, fill_price, sl_price, target_price, direction, trade_id, instr)
+            self._monitor(symbol, token, qty, fill_price, sl_price, target_price, direction, trade_id, instr, sl_order_id=sl_oid)
             break
 
     # ------------------------------------------------------------------ #
@@ -233,7 +249,7 @@ class FuturesStrategy(BaseStrategy):
     # ------------------------------------------------------------------ #
 
     def _monitor(self, symbol, token, qty, entry_price, sl_price,
-                 target_price=None, direction="BUY", trade_id=None, instr=None):
+                 target_price=None, direction="BUY", trade_id=None, instr=None, sl_order_id=None):
         if instr is None:
             instr = get_instrument(Config.ACTIVE_SYMBOL)
         if target_price is None:
@@ -247,16 +263,34 @@ class FuturesStrategy(BaseStrategy):
         risk_pts = abs(entry_price - sl_price)
         _last_log = 0
 
+        # Register SL order for tracking if it exists
+        from bot.core.order_feed import order_feed
+        if sl_order_id:
+            order_feed.register_order(sl_order_id)
+
         while self.running:
             if not self.gatekeeper.is_market_open():
                 logger.warning("Futures Monitor: Market closed. Exiting position.")
+                if sl_order_id: self.order_manager.cancel_order(sl_order_id, variety="STOPLOSS")
                 self._close(symbol, token, qty, direction, trade_id, instr, reason="MARKET_CLOSE")
                 break
 
             if not self.gatekeeper.check_max_daily_loss(active_unrealized_pnl=0.0):
                 logger.critical("Futures Monitor: Daily loss limit. Exiting position.")
+                if sl_order_id: self.order_manager.cancel_order(sl_order_id, variety="STOPLOSS")
                 self._close(symbol, token, qty, direction, trade_id, instr, reason="DAILY_LOSS")
                 break
+
+            # --- Check Broker-Side SL Status ---
+            if sl_order_id:
+                base_status = order_feed.get_order_status(sl_order_id)
+                if base_status and base_status.get('status') == 'FILLED':
+                    logger.warning(f"Futures: 🛡️ Broker-Side SL Hit! Order {sl_order_id} filled.")
+                    if trade_id:
+                        trade_repo.close_trade(trade_id=trade_id, exit_price=base_status.get('price', sl_price), exit_reason="BROKER_SL")
+                    self.active_position = None
+                    self._last_sl_hit_time = time.time()
+                    break
 
             ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange, symbol=symbol)
             if not ltp or ltp <= 0:
@@ -265,11 +299,9 @@ class FuturesStrategy(BaseStrategy):
 
             if direction == "BUY":
                 pnl = (ltp - entry_price) * qty
-                sl_hit = ltp <= sl_price
                 target_hit = ltp >= target_price
             else:
                 pnl = (entry_price - ltp) * qty
-                sl_hit = ltp >= sl_price
                 target_hit = ltp <= target_price
 
             pnl_pct = pnl / (entry_price * qty) * 100
@@ -284,14 +316,9 @@ class FuturesStrategy(BaseStrategy):
                 )
                 _last_log = now
 
-            if sl_hit:
-                logger.warning(f"Futures: 🛑 SL HIT! LTP={ltp} | SL={sl_price}")
-                self._close(symbol, token, qty, direction, trade_id, instr, reason="SL")
-                self._last_sl_hit_time = time.time()
-                break
-
             if target_hit:
                 logger.info(f"Futures: 🎯 TARGET HIT! LTP={ltp} | Target={target_price}")
+                if sl_order_id: self.order_manager.cancel_order(sl_order_id, variety="STOPLOSS")
                 self._close(symbol, token, qty, direction, trade_id, instr, reason="TARGET")
                 break
 
@@ -303,6 +330,8 @@ class FuturesStrategy(BaseStrategy):
                     sl_price = new_sl
                     if trade_id:
                         trade_repo.update_sl(trade_id, sl_price)
+                    if sl_order_id:
+                        self.order_manager.modify_sl_order(sl_order_id, sl_price, symbol, token, qty, exchange=instr.exchange, transaction_type="SELL")
             elif direction == "SELL" and ltp < entry_price - risk_pts:
                 new_sl = round(ltp + risk_pts, 1)
                 if new_sl < sl_price:
@@ -310,6 +339,8 @@ class FuturesStrategy(BaseStrategy):
                     sl_price = new_sl
                     if trade_id:
                         trade_repo.update_sl(trade_id, sl_price)
+                    if sl_order_id:
+                        self.order_manager.modify_sl_order(sl_order_id, sl_price, symbol, token, qty, exchange=instr.exchange, transaction_type="BUY")
 
             time.sleep(1)
 
