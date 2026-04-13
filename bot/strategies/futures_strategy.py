@@ -152,7 +152,21 @@ class FuturesStrategy(BaseStrategy):
             # Position sizing: risk-amount ÷ (sl_points × lot_size)
             risk_amount = capital * tier.risk_per_trade_pct
             risk_per_lot = sl_points * instr.lot_size
-            lots = max(1, int(risk_amount / risk_per_lot))
+            base_lots = max(1, int(risk_amount / risk_per_lot))
+            
+            # Apply State-based scaling for Commodities
+            state = self.gatekeeper.get_market_state()
+            state_multiplier = 1.0
+            if state == "WARM_UP":
+                state_multiplier = 0.5
+                logger.info(f"Futures: 🕯️ WARM_UP Sizing: Scaling lots by {state_multiplier}x")
+            elif state == "AGGRESSIVE":
+                state_multiplier = 1.0 # Full sizing for Golden Window
+                logger.info(f"Futures: 🔥 AGGRESSIVE Sizing: Scaling lots by {state_multiplier}x")
+
+            lots = int(base_lots * state_multiplier)
+            if lots < 1 and base_lots >= 1: lots = 1 # Floor at 1
+
             if tier.max_lots > 0:
                 lots = min(lots, tier.max_lots)
             qty = lots * instr.lot_size

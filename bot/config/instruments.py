@@ -81,7 +81,7 @@ INSTRUMENTS: Dict[str, Instrument] = {
         exchange="MCX",
         option_exchange="MCX",
         market_start="09:00",
-        market_end="23:00",  # Stop before illiquid late-night session
+        market_end="23:30",  # Capture the full US session volatility
         expiry_type="MONTHLY",
         expiry_day_of_month=18,  # Actual expiry day for CRUDEOIL18MAY26FUT — update monthly
     ),
@@ -97,7 +97,7 @@ INSTRUMENTS: Dict[str, Instrument] = {
         exchange="MCX",
         option_exchange="MCX",
         market_start="09:00",
-        market_end="23:00",  # Stop before illiquid late-night session
+        market_end="23:30",  # Capture the full US session volatility
         expiry_type="MONTHLY",
         expiry_day_of_month=5,   # MCX GOLD expires around 5th of delivery month
     )

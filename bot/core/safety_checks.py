@@ -37,6 +37,25 @@ class SafetyGatekeeper:
         logger.warning(f">>> [Gatekeeper] Market Closed for {instr.name}. Current Time: {now} (Window: {instr.market_start}-{instr.market_end})")
         return False
 
+    def get_market_state(self):
+        """
+        Returns the current market state based on Time-of-Day (IST).
+        SLEEP: 09:00-13:00 (Range-bound/Low Volume)
+        WARM_UP: 13:00-17:00 (European Transition)
+        AGGRESSIVE: 17:00-22:30 (US Session/High Volatility - THE GOLDEN WINDOW)
+        COOL_DOWN: 22:30-Close (Exit Only/Low Liquidity)
+        """
+        now = datetime.datetime.now().time()
+        
+        if datetime.time(9, 0) <= now < datetime.time(13, 0):
+            return "SLEEP"
+        elif datetime.time(13, 0) <= now < datetime.time(17, 0):
+            return "WARM_UP"
+        elif datetime.time(17, 0) <= now < datetime.time(22, 30):
+            return "AGGRESSIVE"
+        else:
+            return "COOL_DOWN"
+
     def check_data_freshness(self, tick_timestamp):
         """
         Rule: Data must be < 2 seconds old.
@@ -217,27 +236,30 @@ class SafetyGatekeeper:
     def is_blackout_period(self):
         """
         Rule: No new trades during defined blackout windows.
-        - INDEX (NIFTY, BANKNIFTY): 11:30 – 13:00 (mid-day chop avoidance)
-        - COMMODITY: No mid-day blackout, but no new entries after the intraday
-          cutoff (17:00) to avoid illiquid MCX evening session.
+        Uses the Market State Machine to determine if trading is optimized.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        now = datetime.datetime.now().time()
+        state = self.get_market_state()
 
         if instr.asset_type == "INDEX":
+            now = datetime.datetime.now().time()
             start = datetime.time(11, 30)
             end = datetime.time(13, 0)
             if start <= now <= end:
                 logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
                 return True
 
-        # Commodity: block new entries after the intraday cutoff
-        if instr.asset_type == "COMMODITY" and now >= self.get_intraday_cutoff():
-            logger.info(
-                f">>> [Gatekeeper] ⏸️ MCX Intraday Cutoff ({self.get_intraday_cutoff()}). "
-                "No new entries in evening session."
-            )
-            return True
+        # Commodity: restrict entries to Warm-up and Aggressive sessions ONLY
+        if instr.asset_type == "COMMODITY":
+            if state == "SLEEP":
+                logger.info(">>> [Gatekeeper] 😴 MCX Morning SLEEP (9AM-1PM). No new entries.")
+                return True
+            if state == "COOL_DOWN":
+                logger.info(">>> [Gatekeeper] 🧊 MCX COOL_DOWN (Post-10:30 PM). No new entries.")
+                return True
+            if self.is_past_intraday_cutoff():
+                logger.info(f">>> [Gatekeeper] ⏸️ MCX Intraday Cutoff ({self.get_intraday_cutoff()}). No new entries.")
+                return True
 
         return False
 
@@ -384,8 +406,20 @@ class SafetyGatekeeper:
             # Base count based on bare affordability
             base_lots = int(capital / (margin_per_lot * (1 + tier.margin_buffer_pct)))
             
-            # Apply multiplier (Scaling up/down based on confidence)
-            lots = int(base_lots * multiplier)
+            # Apply state-based scaling for Commodities
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            state_multiplier = 1.0
+            if instr.asset_type == "COMMODITY":
+                current_state = self.get_market_state()
+                if current_state == "WARM_UP":
+                    state_multiplier = 0.5 # Play safe during transition
+                    logger.info(f">>> [Gatekeeper] 🕯️ WARM_UP Sizing: Scaling lots by {state_multiplier}x")
+                elif current_state == "AGGRESSIVE":
+                    state_multiplier = 1.0 # Full sizing for Golden Window
+                    logger.info(f">>> [Gatekeeper] 🔥 AGGRESSIVE Sizing: Scaling lots by {state_multiplier}x")
+
+            # Apply final multipliers (VIX/Confidence + Market State)
+            lots = int(base_lots * multiplier * state_multiplier)
 
             # Floor at 1 lot only if capital can actually cover bare margin
             if lots < 1:
@@ -427,12 +461,12 @@ class SafetyGatekeeper:
         Positions must be closed before this time regardless of market hours.
 
         - INDEX (NIFTY, BANKNIFTY): 15:15 — well before NSE close
-        - COMMODITY (CRUDEOIL, GOLD): 17:00 — captures the active liquid session
-          only; avoids the illiquid 17:00–23:00 MCX evening window entirely.
+        - COMMODITY (CRUDEOIL, GOLD): 23:15 — captures the Golden Window
+          and closes before the final pre-midnight illiquid tail.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
         if instr.asset_type == "COMMODITY":
-            return datetime.time(17, 0)
+            return datetime.time(23, 15)
         return datetime.time(15, 15)
 
     def is_past_intraday_cutoff(self) -> bool:
