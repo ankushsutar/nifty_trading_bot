@@ -81,7 +81,12 @@ class MomentumStrategy(BaseStrategy):
             logger.critical("Momentum: 🛑 Execution Blocked - Max Daily Loss reached.")
             return
 
-        if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
+        # 0.5 Margin Check (Enforcing 1.2x Buffer)
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        # Conservative Estimate: ₹15k for Crude, ₹3k for Nifty
+        est_margin = 15000 if instr.asset_type == "COMMODITY" else 5000
+        if not self.gatekeeper.check_funds(required_margin_per_lot=est_margin): 
+            return
 
         logger.info("Starting Smart Monitor Loop (Safety: 1s | Trend: 5m Sync)...")
         
@@ -155,10 +160,17 @@ class MomentumStrategy(BaseStrategy):
                                 metrics_exporter.push_unrealized(symbol, curr_unrealized_pnl)
                             except Exception:
                                 pass
-                            # Global Safety Check (Realized + This Unrealized)
+                            
+                            # A. Global Safety Check (Max Loss)
                             if not self.gatekeeper.check_max_daily_loss(curr_unrealized_pnl):
                                 logger.critical(f"🛑 EMERGENCY EXIT: Global Loss Limit Breached.")
                                 self.close_position("MAX_DAILY_LOSS")
+                                break
+                                
+                            # B. Commodity Delivery Guard (Force Flatten)
+                            if self.gatekeeper.is_in_delivery_period():
+                                logger.critical(f"🛑 DELIVERY PROTECTION: Contract entering T-2 delivery window. Force flattening.")
+                                self.close_position("DELIVERY_PROTECTION")
                                 break
                     except Exception as e:
                         logger.error(f"Global Safety Check Error: {e}")

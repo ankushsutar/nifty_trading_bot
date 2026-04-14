@@ -111,22 +111,21 @@ class SafetyGatekeeper:
 
     def check_funds(self, required_margin_per_lot=150000, silent=False):
         """
-        Rule: Available Cash > Required Margin * (1 + tier.margin_buffer_pct)
-        Buffer scales with capital tier — tighter for small accounts, looser for large.
+        Rule: Available Cash > Required Margin * 1.2 (Margin Buffer)
+        The 1.2x multiplier protects against MTM fluctuations causing auto-square-offs.
         """
         try:
-            from bot.config.settings import Config
             available_cash = self.get_current_capital()
-            tier = Config.get_tier(available_cash)
-            required_total = required_margin_per_lot * (1 + tier.margin_buffer_pct)
+            # Enforce 1.2x buffer across all commodity/high-risk trades
+            required_total = required_margin_per_lot * 1.2
 
             if available_cash >= required_total:
                 return True
             else:
                 if not silent:
                     logger.warning(
-                        f">>> [Gatekeeper] ❌ LOW FUNDS [{tier.name}]. "
-                        f"Available: ₹{available_cash:,.2f}, Required: ₹{required_total:,.2f}"
+                        f">>> [Gatekeeper] ❌ INSUFFICIENT FUNDS. "
+                        f"Available: ₹{available_cash:,.2f}, Required (1.2x Buffer): ₹{required_total:,.2f}"
                     )
                 return False
 
@@ -251,6 +250,9 @@ class SafetyGatekeeper:
 
         # Commodity: restrict entries to Warm-up and Aggressive sessions ONLY
         if instr.asset_type == "COMMODITY":
+            if self.is_in_delivery_period():
+                logger.critical(">>> [Gatekeeper] 🛑 COMMODITY DELIVERY GUARD: Entry Blocked (T-2 to Expiry).")
+                return True
             if state == "SLEEP":
                 logger.info(">>> [Gatekeeper] 😴 MCX Morning SLEEP (9AM-1PM). No new entries.")
                 return True
@@ -491,3 +493,33 @@ class SafetyGatekeeper:
 
         return True
 
+    def is_in_delivery_period(self) -> bool:
+        """
+        Rule: For Commodity Options/Futures, block entries 2 days before expiry.
+        This avoids the 'Devolve' into physical delivery and the associated margin spikes.
+        """
+        try:
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            if instr.asset_type != "COMMODITY": return False
+            
+            # Use Option Expiry (MCX options expire ~2 days before Futures)
+            target_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
+            
+            # Calculate next expiry date
+            if instr.expiry_type == "MONTHLY":
+                from bot.utils.expiry_calculator import get_next_monthly_expiry
+                expiry_dt = get_next_monthly_expiry(expiry_day_of_month=target_day, raw_date=True)
+            else:
+                from bot.utils.expiry_calculator import get_next_weekly_expiry
+                expiry_dt = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
+                
+            today = datetime.date.today()
+            days_to_expiry = (expiry_dt - today).days
+            
+            # T-2 Safety Window
+            if days_to_expiry <= 2:
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Delivery Guard Error: {e}")
+            return False
