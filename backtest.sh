@@ -1,0 +1,41 @@
+#!/bin/bash
+
+# Backtest Automation Script for NIFTY Trading Bot
+# Usage: ./backtest.sh [days]
+# Example: ./backtest.sh 60
+
+DAYS=${1:-30}
+VENV_PATH="./venv/bin/python3"
+
+echo "--------------------------------------------------"
+echo "🚀 NIFTY BOT BACKTEST AUTOMATION (Days: $DAYS)"
+echo "--------------------------------------------------"
+
+# 1. Fetch Data
+echo "📥 Step 1: Fetching $DAYS days of historical data..."
+$VENV_PATH scripts/fetch_backtest_data.py $DAYS
+
+if [ $? -ne 0 ]; then
+    echo "❌ Error: Data fetch failed. Aborting."
+    exit 1
+fi
+
+# 2. Run Ranked Backtest
+echo ""
+echo "📊 Step 2: Running Ranked Strategy Backtest..."
+$VENV_PATH scripts/run_backtest.py
+
+if [ $? -ne 0 ]; then
+    echo "❌ Error: Backtest execution failed."
+    exit 1
+fi
+
+# 3. Run Hero Analysis
+echo ""
+echo "🎯 Step 3: Running Expiry & Hero Analysis..."
+$VENV_PATH scripts/analyze_expiry_hero.py
+
+echo ""
+echo "--------------------------------------------------"
+echo "✅ Backtest Suite Complete!"
+echo "--------------------------------------------------"
