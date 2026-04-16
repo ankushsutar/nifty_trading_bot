@@ -232,6 +232,9 @@ class BacktestEngine:
             atr_val = df5.loc[ts, "atr"]
             rows.append({"timestamp": ts, "direction": "PE", "atr": atr_val})
 
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
+            
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
     # ---- VWAP (Price vs VWAP + EMA20) ---- #
@@ -260,6 +263,10 @@ class BacktestEngine:
             rows.append({"timestamp": ts, "direction": "CE", "atr": df5.loc[ts, "atr"]})
         for ts in bearish[bearish].index:
             rows.append({"timestamp": ts, "direction": "PE", "atr": df5.loc[ts, "atr"]})
+            
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
+            
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
     # ---- ORB (Opening Range Breakout 09:15-09:45) ---- #
@@ -365,6 +372,10 @@ class BacktestEngine:
             rows.append({"timestamp": ts, "direction": "CE", "atr": df5.loc[ts, "atr"]})
         for ts in bearish[bearish].index:
             rows.append({"timestamp": ts, "direction": "PE", "atr": df5.loc[ts, "atr"]})
+            
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
+            
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
     # ------------------------------------------------------------------ #
