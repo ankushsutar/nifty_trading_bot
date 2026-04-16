@@ -78,7 +78,33 @@ def run_ranked_backtest(initial_capital=None):
     for row in comparison_data:
         print(f"{row['Strategy']:<12} | {row['Net P&L (₹)']:>12} | {row['CAGR (%)']:>10} | {row['Max DD (%)']:>10} | {row['Sharpe']:>8} | {row['Win Rate (%)']:>8} | {row['Trades']:>6}")
     
-    print("="*95 + "\n")
+    print("="*95)
+
+    # 6. Hero Trade Callouts (>100% P&L)
+    hero_trades = []
+    for name, m in results.items():
+        if "trades" in m:
+            for t in m["trades"]:
+                roi = (t["exit"] - t["entry"]) / t["entry"] * 100
+                if roi >= 100:
+                    hero_trades.append({
+                        "Strategy": name,
+                        "Date": t["date"],
+                        "Entry": t["entry"],
+                        "Exit": t["exit"],
+                        "ROI (%)": f"{roi:,.1f}%",
+                        "Reason": t["exit_reason"]
+                    })
+    
+    if hero_trades:
+        print("\n" + "🚀 " + "!"*20 + " HERO TRADES (>100% ROI) detected! " + "!"*20)
+        hero_trades.sort(key=lambda x: float(x["ROI (%)"].replace("%", "").replace(",", "")), reverse=True)
+        h_header = f"{'Strategy':<12} | {'Date':<12} | {'Entry':>8} | {'Exit':>8} | {'ROI (%)':>10} | {'Reason':<15}"
+        print(h_header)
+        print("-" * len(h_header))
+        for h in hero_trades[:5]: # Show top 5
+            print(f"{h['Strategy']:<12} | {h['Date']:<12} | {h['Entry']:>8.1f} | {h['Exit']:>8.1f} | {h['ROI (%)']:>10} | {h['Reason']:<15}")
+        print("!"*75 + "\n")
 
     # Final recommendation
     top_strategy = comparison_data[0]["Strategy"]

@@ -462,9 +462,12 @@ class BacktestEngine:
             if future_day.empty:
                 continue
 
+            # Enable progressive trail for GAMMA_BLAST and MOMENTUM
+            use_progressive = (strategy_name in ["GAMMA_BLAST", "MOMENTUM"])
+
             exit_price, exit_reason = self._find_exit(
                 future_day, direction, entry_premium, sl_price, target_price,
-                atr, delta
+                atr, delta, use_progressive_trail=use_progressive
             )
 
             pnl = (exit_price - entry_premium) * qty - brokerage
@@ -501,41 +504,80 @@ class BacktestEngine:
         return trades, equity_curve
 
     def _find_exit(
-        self, future_bars, direction, entry_price, sl_price, target_price, atr, delta
+        self, future_bars, direction, entry_price, sl_price, target_price, atr, delta,
+        use_progressive_trail=False
     ):
         """
-        Walk through 1m bars after entry to find the first exit:
-        SL hit, Target hit, or time exit (15:15).
-
-        For a long CE: price goes up when index goes up.
-        For a long PE: price goes up when index goes down.
-
-        We simulate option price movement using: Δoption = Δindex * delta
-        using entry_price as the base.
+        Walk through 1m bars after entry to find the first exit.
+        
+        Optional: use_progressive_trail (Stage 0 -> 1 -> 2 -> 3)
+        Stage 0: Original SL
+        Stage 1: (+1R index move) -> Move SL to Breakeven
+        Stage 2: (+2R index move) -> Book 50% (simulated) & Lock +0.5R
+        Stage 3: (+3R index move) -> Tighten trail to 0.5R distance
         """
-        entry_index = future_bars["close"].iloc[0]  # NIFTY level at entry
+        entry_index = future_bars["close"].iloc[0]
+        current_sl = sl_price
+        initial_risk = abs(entry_price - sl_price)
+        stage = 0
+        
+        # Gamma Effect: Delta increases as index moves in favor
+        # 0.005 increase per 1pt index move is a common OTM gamma proxy
+        gamma_factor = 0.005 
+        current_delta = delta
 
         for ts, row in future_bars.iterrows():
-            index_move = row["close"] - entry_index
-
-            if direction == "CE":
-                option_price = entry_price + index_move * delta
-            else:  # PE
-                option_price = entry_price - index_move * delta
-
+            index_move = (row["close"] - entry_index) if direction == "CE" else (entry_index - row["close"])
+            
+            # Non-linear price simulation (Gamma proxy)
+            # Delta increases for profit, caps at 1.0 (Deep ITM)
+            # Delta decreases for loss, floors at 0.05 (Deep OTM)
+            adj_delta = max(0.05, min(1.0, current_delta + (index_move * gamma_factor)))
+            # Option price using average delta over the move
+            avg_delta = (current_delta + adj_delta) / 2
+            option_price = entry_price + (index_move * avg_delta)
             option_price = max(0.05, option_price)
 
-            # Time exit
+            if use_progressive_trail:
+                # Progress stages based on Index risk (R)
+                # 1.0R move in index = move to breakeven
+                if stage < 1 and index_move * current_delta >= initial_risk:
+                    current_sl = entry_price
+                    stage = 1
+                
+                # 2.0R move in index
+                if stage < 2 and index_move * current_delta >= 2 * initial_risk:
+                    current_sl = entry_price + (0.5 * initial_risk)
+                    stage = 2
+                
+                # 3.0R move in index -> Tight Hero Trail
+                if stage < 3 and index_move * current_delta >= 3 * initial_risk:
+                    stage = 3
+                
+                # Update Trail SL
+                if stage >= 1:
+                    # Trail based on Stage (Distance shrinks: 1R -> 0.75R -> 0.5R)
+                    dist_mult = 1.0 if stage == 1 else 0.75 if stage == 2 else 0.5
+                    trail_dist = max(3.0, initial_risk * dist_mult)
+                    new_sl = option_price - trail_dist
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+
+            # Exits
             if ts.time() >= dtime(15, 15):
                 return option_price, "TIME_EXIT"
 
-            # SL
-            if option_price <= sl_price:
-                return sl_price, "STOPLOSS"
+            if option_price <= current_sl:
+                reason = "STOPLOSS" if stage == 0 else f"TRAIL_HIT_S{stage}"
+                return current_sl, reason
 
-            # Target
-            if option_price >= target_price:
+            # Fixed Target Exit (only if progressive trail is OFF)
+            if not use_progressive_trail and option_price >= target_price:
                 return target_price, "TARGET"
+            
+            # Dream Target (10:1) for Progressive strategies
+            if use_progressive_trail and option_price >= entry_price + (10 * initial_risk):
+                return option_price, "DREAM_TARGET"
 
         # End of data = time exit at last price
         last_idx  = future_bars["close"].iloc[-1]
