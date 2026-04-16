@@ -305,63 +305,73 @@ class MomentumStrategy:
                         self.data_failure_count = 0 
                     
                     if not self.active_position:
-                        # Phase 3: STRICT Multi-Timeframe Confluence
-                        # 5m signal MUST align with 15m EMA9/EMA21 direction —
-                        # "not opposite" is insufficient; we require explicit confirmation.
+                        _tier_now = Config.get_tier(self.gatekeeper.get_current_capital())
                         _bbw = float(self.last_analysis.get('bbw', 0.0))
                         _oi_bias = self.last_analysis.get('sentiment', 'NEUTRAL')
-
-                        # ADX RE-CHECK: DecisionEngine verified ADX at startup, but ADX can
-                        # decay mid-session. Re-gate here to avoid low-quality late entries.
                         _adx_now = self.last_analysis.get('adx', 0)
-                        _tier_now = Config.get_tier(self.gatekeeper.get_current_capital())
-                        if _adx_now > 0 and _adx_now < _tier_now.min_adx_to_trade:
-                            logger.info(
-                                f"⏸️ ADX DECAY: ADX={_adx_now:.1f} dropped below "
-                                f"[{_tier_now.name}] threshold ({_tier_now.min_adx_to_trade}). "
-                                "Skipping entry — trend too weak."
-                            )
-                        elif trend == "BULLISH":
-                            if htf_trend != "BULLISH":
-                                logger.info(
-                                    f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} "
-                                    "(need 15m BULLISH for CE entry — strict MTF confluence)."
-                                )
-                            elif rsi >= 70:
-                                logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
-                            elif _bbw > 0 and _bbw < 0.008:
-                                logger.info(
-                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
-                                    "Waiting for band expansion before CE entry."
-                                )
-                            elif _oi_bias == "BEARISH":
-                                logger.info(
-                                    f"Signal Ignored: CE entry blocked — OI bias is BEARISH. "
-                                    "Waiting for options market alignment."
-                                )
-                            else:
-                                self.enter_position(expiry, "CE")
+                        
+                        # Phase 3: STRICT Multi-Timeframe Confluence Tracking
+                        checks = []
+                        
+                        # 1. ADX Strength
+                        if _adx_now >= _tier_now.min_adx_to_trade:
+                            checks.append(("ADX Strength", True, f"{_adx_now:.1f}"))
+                        else:
+                            checks.append(("ADX Strength", False, f"{_adx_now:.1f} < {_tier_now.min_adx_to_trade}"))
 
-                        elif trend == "BEARISH":
-                            if htf_trend != "BEARISH":
-                                logger.info(
-                                    f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} "
-                                    "(need 15m BEARISH for PE entry — strict MTF confluence)."
-                                )
-                            elif rsi <= 30:
-                                logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
-                            elif _bbw > 0 and _bbw < 0.008:
-                                logger.info(
-                                    f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze. "
-                                    "Waiting for band expansion before PE entry."
-                                )
-                            elif _oi_bias == "BULLISH":
-                                logger.info(
-                                    f"Signal Ignored: PE entry blocked — OI bias is BULLISH. "
-                                    "Waiting for options market alignment."
-                                )
+                        # 2. Trend Presence
+                        if trend in ("BULLISH", "BEARISH"):
+                            checks.append(("Signal Presence", True, trend))
+                        else:
+                            checks.append(("Signal Presence", False, "NEUTRAL"))
+
+                        if trend != "NEUTRAL":
+                            # 3. MTF Confluence
+                            if trend == htf_trend:
+                                checks.append(("MTF Alignment", True, htf_trend))
                             else:
+                                checks.append(("MTF Alignment", False, f"5m:{trend} vs 15m:{htf_trend}"))
+
+                            # 4. Squeeze Filter
+                            _bbw_threshold = _tier_now.min_bbw_to_trade
+                            if _bbw >= _bbw_threshold:
+                                checks.append(("Squeeze Filter", True, f"{_bbw:.4f}"))
+                            else:
+                                checks.append(("Squeeze Filter", False, f"BBW={_bbw:.4f} (Too Tight, need >{_bbw_threshold})"))
+
+                            # 5. Sentiment Filter
+                            sentiment_ok = (trend == "BULLISH" and _oi_bias != "BEARISH") or \
+                                          (trend == "BEARISH" and _oi_bias != "BULLISH")
+                            if sentiment_ok:
+                                checks.append(("Sentiment Bias", True, _oi_bias))
+                            else:
+                                checks.append(("Sentiment Bias", False, f"Opposite (Trend:{trend} vs OI:{_oi_bias})"))
+
+                            # 6. RSI Buffer
+                            if trend == "BULLISH":
+                                rsi_ok = rsi < 70
+                                checks.append(("RSI Limit", rsi_ok, f"{rsi:.1f} < 70" if rsi_ok else f"{rsi:.1f} > 70"))
+                            else:
+                                rsi_ok = rsi > 30
+                                checks.append(("RSI Limit", rsi_ok, f"{rsi:.1f} > 30" if rsi_ok else f"{rsi:.1f} < 30"))
+
+                        # Calculate Confluence Score
+                        passed = [c for c in checks if c[1]]
+                        failed = [c for c in checks if not c[1]]
+                        score = len(passed)
+                        total = len(checks)
+
+                        if failed:
+                             logger.info(f"🔍 Confluence Score: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
+                        
+                        # Execution Logic based on Confluence
+                        if score == total and total >= 6:
+                            if trend == "BULLISH":
+                                self.enter_position(expiry, "CE")
+                            elif trend == "BEARISH":
                                 self.enter_position(expiry, "PE")
+                        elif trend != "NEUTRAL":
+                             logger.info(f"⏸️ Trade Opportunity Paused — waiting for full confluence.")
                     
                     else:
                         current_leg = self.active_position['leg']

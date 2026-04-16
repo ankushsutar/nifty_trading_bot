@@ -57,9 +57,10 @@ class CapitalTier:
     # ── Execution ──────────────────────────────────────────────────────────
     entry_slippage_pct: float             # Buffer for LIMIT orders
 
-    # ── Volatility (VIX) ──────────────────────────────────────────────────
+    # ── Volatility (VIX & Indicators) ───────────────────────────────────
     vix_reduction_threshold: float        # VIX level that triggers qty halving
     vix_qty_multiplier: float             # Qty multiplier when VIX exceeded
+    min_bbw_to_trade: float               # Minimum Bollinger Band Width to allow entry
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -93,6 +94,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
+        min_bbw_to_trade=0.008,
     ),
 
     # ── SMALL: ₹25,000 – ₹1,00,000 ──────────────────────────────────────
@@ -120,6 +122,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
+        min_bbw_to_trade=0.008,
     ),
 
     # ── MEDIUM: ₹1,00,000 – ₹5,00,000 ───────────────────────────────────
@@ -147,6 +150,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.008,
         vix_reduction_threshold=22.0,
         vix_qty_multiplier=0.5,
+        min_bbw_to_trade=0.008,
     ),
 
     # ── LARGE: > ₹5,00,000 ────────────────────────────────────────────────
@@ -174,6 +178,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.005,
         vix_reduction_threshold=20.0,
         vix_qty_multiplier=0.6,
+        min_bbw_to_trade=0.008,
     ),
 }
 
