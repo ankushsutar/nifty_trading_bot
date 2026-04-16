@@ -12,6 +12,7 @@ from bot.core.data_fetcher import DataFetcher
 from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 from bot.utils.expiry_calculator import get_next_weekly_expiry
 from bot.utils.trade_journal import TradeJournal
 from bot.core.trade_repo import trade_repo
@@ -768,7 +769,8 @@ class MomentumStrategy:
             f"{'ATM' if otm_offset == 0 else f'{otm_offset} OTM'} | "
             f"Strike={strike}"
         )
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
         if not token: 
             logger.error(f"Token not found for {strike} {leg}")
             return

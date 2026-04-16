@@ -6,6 +6,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.data_fetcher import DataFetcher
 from bot.core.order_manager import OrderManager
 from bot.utils.logger import logger
+from bot.config.instruments import get_instrument
 
 class OHLStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -91,8 +92,10 @@ class OHLStrategy:
             logger.info(">>> [Signal] No clear OHL Pattern.")
             return
 
-        strike = round(c_close / 50) * 50
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg_type if "leg_type" in locals() else ("CE" if signal == "BUY_CE" else "PE"))
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        strike = round(c_close / instr.strike_step) * instr.strike_step
+        leg_type = "CE" if signal == "BUY_CE" else "PE"
+        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg_type, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
         if not token: 
              logger.error(">>> [Error] Token Not Found")
              return

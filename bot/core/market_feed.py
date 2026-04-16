@@ -173,7 +173,7 @@ class MarketFeedService:
         # logger.info(f"Fetching Options for Expiry: {expiry}")
         
         # Get Bucket: ATM +/- 5 strikes (250 points)
-        bucket = self.token_lookup.get_option_bucket(expiry, atm_strike, range_points=250)
+        bucket = self.token_lookup.get_option_bucket(Config.ACTIVE_SYMBOL, expiry, atm_strike, range_points=250)
         
         if not bucket:
             logger.warning("No Options found for subscription!")

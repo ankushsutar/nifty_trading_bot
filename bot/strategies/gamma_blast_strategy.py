@@ -231,12 +231,15 @@ class GammaBlastStrategy:
                 oi_bias = oi_data.get('bias', 'NEUTRAL')
 
             if (leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH"):
+                # On high-ADX parabolic days, institutional OI (PCR) leads price.
+                # EMA crossover may still reflect the previous trend direction.
+                # Override leg to align with smart money rather than skipping entirely.
+                old_leg = leg
+                leg = "PE" if oi_bias == "BEARISH" else "CE"
                 logger.warning(
-                    f"Gamma Blast: ⚠️ OI Bias Conflict — Leg={leg} but institutions say {oi_bias}. "
-                    "Skipping entry to avoid trading against smart money."
+                    f"Gamma Blast: ⚡ OI Override — EMA says {old_leg} but institutions say {oi_bias}. "
+                    f"Switching to {leg} to follow smart money on this ADX={adx:.1f} parabolic day."
                 )
-                time.sleep(30)
-                continue
 
             # --- CANDLE MOMENTUM FILTER ---
             # At least 2 of the last 3 completed 5-min candles must close in the
