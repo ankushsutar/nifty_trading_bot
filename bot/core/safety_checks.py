@@ -206,11 +206,15 @@ class SafetyGatekeeper:
 
     def is_blackout_period(self):
         """
-        Rule: No new trades between 11:30 AM - 01:00 PM.
+        Rule: No new trades between 11:30 AM - 01:00 PM (Configurable).
         """
+        from bot.config.settings import Config
+        if Config.TRADE_FULL_DAY:
+            return False
+
         now = datetime.datetime.now().time()
-        start = datetime.time(11, 30)
-        end = datetime.time(13, 0)
+        start = datetime.time(*Config.BLACKOUT_START_TIME)
+        end = datetime.time(*Config.BLACKOUT_END_TIME)
         
         if start <= now <= end:
             logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")

@@ -304,14 +304,30 @@ class GammaBlastStrategy:
             try:
                 if _df_gb is not None and len(_df_gb) >= 20:
                     _adx_s_gb = self.regime_classifier._calculate_adx(_df_gb)
-                    if len(_adx_s_gb) >= 3 and _adx_s_gb.iloc[-1] < _adx_s_gb.iloc[-2]:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining "
-                            f"({_adx_s_gb.iloc[-2]:.1f} → {_adx_s_gb.iloc[-1]:.1f}). "
-                            "Trend losing strength — skipping entry."
-                        )
-                        time.sleep(30)
-                        continue
+                    if len(_adx_s_gb) >= 3:
+                        curr_adx_s = _adx_s_gb.iloc[-1]
+                        prev_adx_s = _adx_s_gb.iloc[-2]
+                        
+                        # NOISE TOLERANCE: Parabolic days have minor ADX fluctuations.
+                        # 1. If ADX > 50, ignore slope (trend is extreme).
+                        # 2. If ADX > 35, allow small decline up to 0.2pts (noise).
+                        # 3. Otherwise, require at least flat (diff > -0.05).
+                        _is_declining = False
+                        if curr_adx_s > 50:
+                            _is_declining = False
+                        elif curr_adx_s > 35:
+                            _is_declining = (curr_adx_s - prev_adx_s) < -0.2
+                        else:
+                            _is_declining = (curr_adx_s - prev_adx_s) < -0.05
+
+                        if _is_declining:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining "
+                                f"({prev_adx_s:.2f} → {curr_adx_s:.2f}). "
+                                "Trend losing strength — skipping entry."
+                            )
+                            time.sleep(30)
+                            continue
             except Exception as _ae:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
@@ -712,8 +728,8 @@ class GammaBlastStrategy:
                     self._last_sl_hit_time = time.time()
                     break
 
-                # ── Time exit at 15:10 ────────────────────────────────────
-                if datetime.datetime.now().time() >= datetime.time(15, 10):
+                # ── Time exit at 15:15 (Configurable) ────────────────────────────────────
+                if datetime.datetime.now().time() >= datetime.time(*Config.STRATEGY_EXIT_TIME):
                     if self.exit_market(token, symbol, remaining_qty, "TIME", trade_id, sl_oid):
                         sl_oid = None
                         self.active_position = None

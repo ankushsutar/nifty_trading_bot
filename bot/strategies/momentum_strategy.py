@@ -261,8 +261,8 @@ class MomentumStrategy:
                         self.last_trailing_check = time.time()
 
                 now_time = datetime.datetime.now().time()
-                if not self.dry_run and now_time >= datetime.time(15, 15):
-                    logger.info("Market Closed (15:15). Stopping Strategy.")
+                if not self.dry_run and now_time >= datetime.time(*Config.STRATEGY_EXIT_TIME):
+                    logger.info(f"Market Closed ({datetime.time(*Config.STRATEGY_EXIT_TIME).strftime('%H:%M')}). Stopping Strategy.")
                     if self.active_position:
                         self.close_position("TIME_EXIT")
                     break
@@ -712,13 +712,29 @@ class MomentumStrategy:
             _df_adx = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
             if _df_adx is not None and len(_df_adx) >= 20:
                 _adx_s = self.regime_classifier._calculate_adx(_df_adx)
-                if len(_adx_s) >= 3 and _adx_s.iloc[-1] < _adx_s.iloc[-2]:
-                    logger.warning(
-                        f"🛑 ADX Slope Filter: ADX declining "
-                        f"({_adx_s.iloc[-2]:.1f} → {_adx_s.iloc[-1]:.1f}). "
-                        "Trend is losing momentum — skipping entry."
-                    )
-                    return
+                if len(_adx_s) >= 3:
+                    curr_adx_m = _adx_s.iloc[-1]
+                    prev_adx_m = _adx_s.iloc[-2]
+
+                    # NOISE TOLERANCE: On parabolic days, minor ADX dips are expected noise.
+                    # 1. If ADX > 50, ignore slope (extreme trend regime).
+                    # 2. If ADX > 35, allow a small decline up to 0.2pts.
+                    # 3. Otherwise, require at least flat (diff > -0.05).
+                    _is_declining_m = False
+                    if curr_adx_m > 50:
+                        _is_declining_m = False
+                    elif curr_adx_m > 35:
+                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.2
+                    else:
+                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.05
+
+                    if _is_declining_m:
+                        logger.warning(
+                            f"🛑 ADX Slope Filter: ADX declining "
+                            f"({prev_adx_m:.2f} → {curr_adx_m:.2f}). "
+                            "Trend is losing momentum — skipping entry."
+                        )
+                        return
         except Exception as _e:
             logger.warning(f"ADX slope filter error: {_e}")
 
@@ -733,8 +749,8 @@ class MomentumStrategy:
              today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
              if expiry == today_str:
                  now = datetime.datetime.now().time()
-                 if now >= datetime.time(13, 30):
-                     logger.warning("⛔ Expiry Day Safety: Blocking new entries after 1:30 PM.")
+                 if not Config.TRADE_FULL_DAY and now >= datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME):
+                     logger.warning(f"⛔ Expiry Day Safety: Blocking new entries after {datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME).strftime('%H:%M')}.")
                      return
         except Exception as e:
              logger.error(f"Expiry Guard Check Error: {e}")
