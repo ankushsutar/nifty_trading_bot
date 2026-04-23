@@ -365,7 +365,7 @@ class MomentumStrategy:
                              logger.info(f"🔍 Confluence Score: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
                         # Execution Logic based on Confluence
-                        if score == total and total >= 6:
+                        if score >= 4 and total >= 4:
                             if trend == "BULLISH":
                                 self.enter_position(expiry, "CE")
                             elif trend == "BEARISH":
@@ -1234,8 +1234,8 @@ class MomentumStrategy:
         if is_trending:
             # TRENDING regime: fast breakeven, let winners run to 5:1
             # SAFETY UPGRADE: If lots >= 4, move to BE even earlier (0.6x instead of 1.0x)
-            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
-            be_trigger  = be_mult * trail_atr  # Move to breakeven at 1:1 (or 0.6:1 for high qty)
+            be_mult = 1.0 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.5
+            be_trigger  = be_mult * trail_atr  # Move to breakeven at 1.5:1 (or 1.0:1 for high qty)
             book_trigger = 2.5 * trail_atr  # Book 50% at 2.5:1
 
             if profit_points > be_trigger and current_sl < entry_price:
@@ -1252,7 +1252,7 @@ class MomentumStrategy:
                     return False
         else:
             # RANGEBOUND regime: tighter stages, early reversal exit
-            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 0.75
+            be_mult = 0.8 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.2
             be_trigger   = be_mult  * trail_atr
             book_trigger = 1.5   * trail_atr
 

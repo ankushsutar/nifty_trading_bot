@@ -5,7 +5,7 @@
 # Example: ./backtest.sh 60
 
 DAYS=${1:-30}
-CAPITAL=${2:-""}
+CAPITAL=${2:-38000}
 VENV_PATH="./venv/bin/python3"
 
 echo "--------------------------------------------------"

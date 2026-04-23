@@ -7,10 +7,10 @@ from bot.utils.expiry_calculator import get_next_weekly_expiry
 
 # Minimum strategy confidence score (0-100) to allow trade entry.
 # Based on last 5-day win-rate from the live/paper trade history.
-MIN_CONFIDENCE_SCORE = 70.0
+MIN_CONFIDENCE_SCORE = 60.0
 
 # Minimum trades needed before applying the confidence gate (warm-up period).
-MIN_TRADES_FOR_CONFIDENCE = 5
+MIN_TRADES_FOR_CONFIDENCE = 10
 
 
 class DecisionEngine:

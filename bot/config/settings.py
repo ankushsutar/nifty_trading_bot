@@ -79,13 +79,13 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         risk_per_trade_pct=0.12,
         max_daily_loss_pct=0.15,
         max_capital_usage_pct=0.90,
-        min_adx_to_trade=35.0,
+        min_adx_to_trade=25.0,            # Lowered from 35.0 (Trader recommendation)
         adx_gamma_blast=45.0,
         adx_trend_fade_exit=25.0,
         max_lots=1,
         margin_buffer_pct=0.10,
         gamma_blast_lot_pct=0.50,
-        sl_pct=0.20,
+        sl_pct=0.15,                      # Tightened from 0.20
         max_trades_per_day=2,
         max_consecutive_losses=2,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST"],
@@ -94,7 +94,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
-        min_bbw_to_trade=0.008,
+        min_bbw_to_trade=0.005,           # Lowered from 0.008 (Smoother trends)
     ),
 
     # ── SMALL: ₹25,000 – ₹1,00,000 ──────────────────────────────────────
@@ -107,13 +107,13 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         risk_per_trade_pct=0.08,
         max_daily_loss_pct=0.12,
         max_capital_usage_pct=0.85,
-        min_adx_to_trade=30.0,
+        min_adx_to_trade=25.0,            # Lowered from 30.0
         adx_gamma_blast=42.0,
         adx_trend_fade_exit=22.0,
         max_lots=5,
         margin_buffer_pct=0.12,
         gamma_blast_lot_pct=0.60,
-        sl_pct=0.20,
+        sl_pct=0.15,                      # Tightened from 0.20
         max_trades_per_day=3,
         max_consecutive_losses=2,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "ORB", "STRADDLE_SCALP"],
@@ -122,7 +122,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
-        min_bbw_to_trade=0.008,
+        min_bbw_to_trade=0.005,           # Lowered from 0.008
     ),
 
     # ── MEDIUM: ₹1,00,000 – ₹5,00,000 ───────────────────────────────────
@@ -150,7 +150,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.008,
         vix_reduction_threshold=22.0,
         vix_qty_multiplier=0.5,
-        min_bbw_to_trade=0.008,
+        min_bbw_to_trade=0.005,           # Lowered from 0.008
     ),
 
     # ── LARGE: > ₹5,00,000 ────────────────────────────────────────────────
@@ -178,7 +178,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.005,
         vix_reduction_threshold=20.0,
         vix_qty_multiplier=0.6,
-        min_bbw_to_trade=0.008,
+        min_bbw_to_trade=0.005,           # Lowered from 0.008
     ),
 }
 

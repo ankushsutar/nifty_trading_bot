@@ -15,15 +15,15 @@ TOTP_SECRET=your_totp_secret
 Open `bot/config/settings.py` and confirm:
 - `SIMULATION_CAPITAL = 10000.0`
 - `MIN_CAPITAL_THRESHOLD = 3000.0`
-- `RISK_PER_TRADE_PERCENT = 0.12`
-- `MAX_DAILY_LOSS = -1500.0`
-- `MIN_ADX_TO_TRADE = 35.0`
+- `RISK_PER_TRADE_PERCENT = 0.12` (MICRO tier)
+- `MAX_DAILY_LOSS_PCT = 0.15` (15% stop on total capital)
+- `MIN_ADX_TO_TRADE = 25.0` (Lowered for early entry)
 
-### 3. MongoDB Running
-```
-mongod --dbpath /your/data/path
-```
+### 3. MongoDB Connectivity
 The bot needs MongoDB to track trades and enable crash recovery.
+- Ensure the `MONGO_URI` in `.env` is accessible.
+- If using Atlas, check that your IP is whitelisted.
+- **Note**: Check for "Name or service not known" errors in `trading_bot.log`.
 
 ---
 
@@ -31,90 +31,42 @@ The bot needs MongoDB to track trades and enable crash recovery.
 
 | Rule | Value | Why |
 |------|-------|-----|
-| Only trade if ADX > 35 | Hard gate in code | Weak trends = noise trades |
-| Max 3 trades per day | Already in decision engine | Prevents overtrading |
-| Stop after ₹1,500 loss | MAX_DAILY_LOSS in settings | Protects 85% of capital |
+| Only trade if ADX > 25 | Hard gate in code | Relaxed for better momentum capture |
+| Max 2-3 trades per day | Tier-driven | Prevents overtrading |
+| Stop after 15% daily loss | Tier-driven | Protects capital from blowouts |
+| Confluence 4/6 minimum | MOMENTUM logic | Allows "A" setups, not just "A+" |
 | No trading 11:30–13:00 | Blackout in gatekeeper | Lunch hour = choppy |
-| Never override the bot | — | The rules exist for a reason |
 
 ---
 
-## What the Bot Will Do Now
+## Strategy Expectations
 
-### Days with ADX < 35 (~60–70% of days)
-- Bot detects weak/choppy trend
-- Returns `None` — no trade placed
-- You wait. This is correct behaviour.
+### MOMENTUM (ADX 25–45)
+- Captures established trends with 5m/15m alignment.
+- Requires 4/6 confluence (ADX, Trend, MTF, Squeeze, Sentiment, RSI).
+- Trailing SL: Moves to Breakeven at 1.5x ATR.
+- Target: 2.5x ATR.
 
-### Days with ADX 35–45 (~20–25% of days)
-- MOMENTUM strategy selected
-- EMA 9/21 crossover on 5m + 15m alignment required
-- Volatility-adjusted strike (ATM if ATR < 15, 1-OTM if ATR 15–30)
-- SL: 1× ATR (option space), Target: 2.5× ATR
-- Expected: ₹800–2,500 profit per winning trade
-
-### Days with ADX > 45 (~5–10% of days, 3–5 per month)
-- GAMMA_BLAST strategy selected
-- These are budget days, RBI policy days, global triggers
-- OTM option can move 200–500% in 2–3 hours
-- Expected: ₹2,000–8,000 profit per winning trade
-- **These are the days that drive the compounding.**
-
----
-
-## Monthly Expectation
-
-```
-Typical month breakdown:
-  ~15 trading days: ADX < 35 → no trade (cash preserved)
-  ~5 trading days:  ADX 35–45 → MOMENTUM
-  ~2 trading days:  ADX > 45  → GAMMA_BLAST
-
-Assuming 55% win rate:
-  MOMENTUM (5 trades × 55% WR × avg ₹1,500 win):  +₹4,125 gross
-  GAMMA_BLAST (2 trades × 55% WR × avg ₹4,000 win): +₹4,400 gross
-  Losses (3.15 trades × avg -₹1,200):               -₹3,780 gross
-  Net per month (approx):                            +₹4,745 (+47%)
-
-Compounded:
-  Month 1:  ₹10,000 → ₹14,745
-  Month 2:  ₹14,745 → ₹21,737
-  Month 3:  ₹21,737 → ₹32,070
-  Month 6:  ₹32,070 → ₹69,740
-  Month 9:  ₹69,740 → ₹1,51,700  ← crosses ₹1L here
-```
-
----
-
-## Compounding Rule
-
-After every month-end close, update `SIMULATION_CAPITAL` in settings.py
-to match your actual broker balance. This ensures position sizing scales
-with your growing capital.
-
-```python
-# Example: after Month 1
-SIMULATION_CAPITAL = 14745.0   # Update to actual balance
-```
-
-The bot's `get_compounded_lots()` function will automatically size up
-your positions as capital grows.
+### GAMMA_BLAST (ADX > 45)
+- High-intensity trending days (Policy days, big news).
+- Sizing increases to capture parabolic moves.
+- Target: Open-ended with aggressive trailing.
 
 ---
 
 ## Warning Signs — Stop the Bot Immediately If
 
-- Three consecutive losing trades in one week
-- Capital drops below ₹5,000 in the first month (re-evaluate strategy)
-- VIX > 22 for more than 3 consecutive days (market in fear mode)
-- You feel the urge to manually override the bot's "no trade" decision
+- Three consecutive losing trades in one week.
+- Capital drops below ₹5,000 in the first month.
+- MongoDB connection errors persist (prevents risk management).
+- The bot enters a "Confidence Lockout" (Win rate < 60% over 10 trades).
 
 ---
 
-## Key Files Changed for This Mode
+## Key Files Optimized
 
 | File | Change |
 |------|--------|
-| `bot/config/settings.py` | Capital ₹10k, risk 12%, daily loss -₹1,500 |
-| `bot/core/decision_engine.py` | ADX > 35 hard gate, GAMMA_BLAST+MOMENTUM whitelist |
-| `bot/strategies/momentum_strategy.py` | Strict 15m MTF confluence, vol-adjusted strikes, dynamic RR |
+| `bot/config/settings.py` | ADX 25 gate, 15% SL cap, 0.005 BBW squeeze. |
+| `bot/core/decision_engine.py` | 60% confidence gate, 10-trade sample stabilization. |
+| `bot/strategies/momentum_strategy.py` | 4/6 confluence requirement, 1.5x ATR breakeven trigger. |
