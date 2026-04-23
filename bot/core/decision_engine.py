@@ -275,11 +275,20 @@ class DecisionEngine:
                 selected_strategy = "MOMENTUM"
 
         elif regime in ["SIDEWAYS", "CHOP"]:
-            logger.info(
-                f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
-                "Whitelist requires TRENDING regime. Staying in CASH."
-            )
-            return None, 1.0
+            now = datetime.datetime.now().time()
+            _scalp_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(11, 0)
+            if now < _scalp_cutoff and "STRADDLE_SCALP" in tier.allowed_strategies:
+                logger.info(
+                    f">>> [Brain] 🎯 {regime} market (ADX={adx:.1f}) before 10:30. "
+                    "Selected: STRADDLE_SCALP"
+                )
+                selected_strategy = "STRADDLE_SCALP"
+            else:
+                logger.info(
+                    f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
+                    "No applicable strategy. Staying in CASH."
+                )
+                return None, 1.0
         
         else:
             logger.warning(f">>> [Brain] ⏸️ Unknown/Incompatible Regime: {regime}. Staying in CASH.")
@@ -314,7 +323,7 @@ class DecisionEngine:
             if regime_4h.get("regime") == "UNKNOWN":
                 return None, 1.0
             # If 4H regime still aligns with the strategy, override the gate
-            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP")
+            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP", "STRADDLE_SCALP")
             regime_4h_trending   = regime_4h.get("regime") == "TRENDING"
             if strategy_is_trending == regime_4h_trending:
                 logger.info(

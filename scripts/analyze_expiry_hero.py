@@ -10,7 +10,7 @@ from bot.core.backtest_engine import BacktestEngine
 from bot.config.settings import Config
 from bot.utils.logger import logger
 
-def analyze_expiries():
+def analyze_expiries(initial_capital=None):
     """
     Runs backtest and specifically analyzes performance on Expiry Days (Thursdays).
     """
@@ -24,7 +24,10 @@ def analyze_expiries():
     df = pd.read_csv(DATA_PATH, parse_dates=['timestamp'])
     
     # 2. Setup Engine
-    engine = BacktestEngine.from_capital(initial_capital=Config.SIMULATION_CAPITAL)
+    if initial_capital is None:
+        initial_capital = Config.SIMULATION_CAPITAL
+        
+    engine = BacktestEngine.from_capital(initial_capital=initial_capital)
     engine.load_data(df)
     
     # 3. Run Strategies
@@ -95,4 +98,11 @@ def analyze_expiries():
     print("="*62 + "\n")
 
 if __name__ == "__main__":
-    analyze_expiries()
+    cap = None
+    if len(sys.argv) > 1:
+        try:
+            cap = float(sys.argv[1])
+        except ValueError:
+            pass
+            
+    analyze_expiries(initial_capital=cap)

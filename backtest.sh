@@ -5,10 +5,11 @@
 # Example: ./backtest.sh 60
 
 DAYS=${1:-30}
+CAPITAL=${2:-""}
 VENV_PATH="./venv/bin/python3"
 
 echo "--------------------------------------------------"
-echo "🚀 NIFTY BOT BACKTEST AUTOMATION (Days: $DAYS)"
+echo "🚀 NIFTY BOT BACKTEST AUTOMATION (Days: $DAYS | Capital: ${CAPITAL:-'Default'})"
 echo "--------------------------------------------------"
 
 # 1. Fetch Data
@@ -23,7 +24,7 @@ fi
 # 2. Run Ranked Backtest
 echo ""
 echo "📊 Step 2: Running Ranked Strategy Backtest..."
-$VENV_PATH scripts/run_backtest.py
+$VENV_PATH scripts/run_backtest.py $CAPITAL
 
 if [ $? -ne 0 ]; then
     echo "❌ Error: Backtest execution failed."
@@ -33,7 +34,7 @@ fi
 # 3. Run Hero Analysis
 echo ""
 echo "🎯 Step 3: Running Expiry & Hero Analysis..."
-$VENV_PATH scripts/analyze_expiry_hero.py
+$VENV_PATH scripts/analyze_expiry_hero.py $CAPITAL
 
 echo ""
 echo "--------------------------------------------------"

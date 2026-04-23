@@ -25,7 +25,7 @@ from bot.utils.logger import logger
 class BacktestEngine:
     """Vectorized backtesting engine that mirrors live strategy logic."""
 
-    STRATEGIES = ["MOMENTUM", "VWAP", "ORB", "INSIDE_BAR", "OHL", "GAMMA_BLAST"]
+    STRATEGIES = ["MOMENTUM", "VWAP", "ORB", "INSIDE_BAR", "OHL", "GAMMA_BLAST", "STRADDLE_SCALP"]
 
     # Market session constants
     SESSION_START = dtime(9, 15)
@@ -179,6 +179,7 @@ class BacktestEngine:
             "INSIDE_BAR": self._inside_bar_signals,
             "OHL":        self._ohl_signals,
             "GAMMA_BLAST":self._gamma_blast_signals,
+            "STRADDLE_SCALP": self._straddle_scalp_signals,
         }
         fn = dispatch.get(strategy_name)
         if fn is None:
@@ -378,6 +379,31 @@ class BacktestEngine:
             
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
+    # ---- STRADDLE SCALP (ADX < 20 Sideways Market) ---- #
+
+    def _straddle_scalp_signals(self) -> pd.DataFrame:
+        df5 = self.df_5m.copy()
+        df5["adx"] = self._adx(df5, 14)
+        df5["atr"] = self._atr(df5, 14)
+
+        # Signal: Entry when ADX < 20 and it's morning session
+        # Strategy doesn't care about direction (buys both CE and PE)
+        # Session filtering is handled by _simulate_session as well.
+        entry_signals = (
+            (df5["adx"] < 20) &
+            self._in_session(df5) &
+            (df5.index.time <= dtime(11, 0))  # Strategy limit
+        )
+
+        rows = []
+        for ts in entry_signals[entry_signals].index:
+            rows.append({"timestamp": ts, "direction": "STRADDLE", "atr": df5.loc[ts, "atr"]})
+            
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
+            
+        return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+
     # ------------------------------------------------------------------ #
     #  Trade Simulation Engine                                             #
     # ------------------------------------------------------------------ #
@@ -418,19 +444,23 @@ class BacktestEngine:
                 continue
 
             # --- Option premium & sizing ---
-            entry_premium = max(5.0, atr * self.option_premium_atr_mult)
-
-            # Volatility-adjusted strike: high ATR → deeper OTM (lower premium ÷ higher leverage)
-            # We stay in premium terms and adjust risk/target multipliers instead.
-            if atr < 15:
-                # Low vol: tighter spreads, use ATM (delta 0.50)
-                delta, sl_mult, tgt_mult = 0.50, 0.25, 0.50   # SL 25%, Target 50%
-            elif atr < 30:
-                # Medium vol: 1 OTM (delta 0.35)
-                delta, sl_mult, tgt_mult = 0.35, 0.30, 0.60
+            if direction == "STRADDLE":
+                # Combined premium of CE + PE (ATM)
+                entry_premium = 2 * (atr * self.option_premium_atr_mult)
+                delta, sl_mult, tgt_mult = 0.50, 0.15, 0.20   # 15% SL, 20% Target (Combined)
             else:
-                # High vol: 2 OTM (delta 0.25) — bigger swings expected
-                delta, sl_mult, tgt_mult = 0.25, 0.35, 0.70
+                entry_premium = max(5.0, atr * self.option_premium_atr_mult)
+                # Volatility-adjusted strike: high ATR → deeper OTM (lower premium ÷ higher leverage)
+                # We stay in premium terms and adjust risk/target multipliers instead.
+                if atr < 15:
+                    # Low vol: tighter spreads, use ATM (delta 0.50)
+                    delta, sl_mult, tgt_mult = 0.50, 0.25, 0.50   # SL 25%, Target 50%
+                elif atr < 30:
+                    # Medium vol: 1 OTM (delta 0.35)
+                    delta, sl_mult, tgt_mult = 0.35, 0.30, 0.60
+                else:
+                    # High vol: 2 OTM (delta 0.25) — bigger swings expected
+                    delta, sl_mult, tgt_mult = 0.25, 0.35, 0.70
 
             sl_price     = entry_premium * (1 - sl_mult)
             target_price = entry_premium * (1 + tgt_mult)
@@ -527,16 +557,29 @@ class BacktestEngine:
         current_delta = delta
 
         for ts, row in future_bars.iterrows():
-            index_move = (row["close"] - entry_index) if direction == "CE" else (entry_index - row["close"])
-            
-            # Non-linear price simulation (Gamma proxy)
-            # Delta increases for profit, caps at 1.0 (Deep ITM)
-            # Delta decreases for loss, floors at 0.05 (Deep OTM)
-            adj_delta = max(0.05, min(1.0, current_delta + (index_move * gamma_factor)))
-            # Option price using average delta over the move
-            avg_delta = (current_delta + adj_delta) / 2
-            option_price = entry_price + (index_move * avg_delta)
-            option_price = max(0.05, option_price)
+            if direction == "STRADDLE":
+                entry_leg = entry_price / 2
+                # CE leg: move up is profit
+                move_ce = (row["close"] - entry_index)
+                adj_delta_ce = max(0.05, min(1.0, current_delta + (move_ce * gamma_factor)))
+                price_ce = entry_leg + (move_ce * (current_delta + adj_delta_ce) / 2)
+                # PE leg: move down is profit
+                move_pe = (entry_index - row["close"])
+                adj_delta_pe = max(0.05, min(1.0, current_delta + (move_pe * gamma_factor)))
+                price_pe = entry_leg + (move_pe * (current_delta + adj_delta_pe) / 2)
+                
+                option_price = max(0.1, price_ce + price_pe)
+            else:
+                index_move = (row["close"] - entry_index) if direction == "CE" else (entry_index - row["close"])
+                
+                # Non-linear price simulation (Gamma proxy)
+                # Delta increases for profit, caps at 1.0 (Deep ITM)
+                # Delta decreases for loss, floors at 0.05 (Deep OTM)
+                adj_delta = max(0.05, min(1.0, current_delta + (index_move * gamma_factor)))
+                # Option price using average delta over the move
+                avg_delta = (current_delta + adj_delta) / 2
+                option_price = entry_price + (index_move * avg_delta)
+                option_price = max(0.05, option_price)
 
             if use_progressive_trail:
                 # Progress stages based on Index risk (R)
