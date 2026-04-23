@@ -362,7 +362,7 @@ class MomentumStrategy:
                         total = len(checks)
 
                         if failed:
-                             logger.info(f"🔍 Confluence Score: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
+                            logger.info(f"🔍 Confluence Score: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
                         # Execution Logic based on Confluence
                         if score >= 4 and total >= 4:
@@ -371,22 +371,22 @@ class MomentumStrategy:
                             elif trend == "BEARISH":
                                 self.enter_position(expiry, "PE")
                         elif trend != "NEUTRAL":
-                             logger.info(f"⏸️ Trade Opportunity Paused — waiting for full confluence.")
+                            logger.info(f"⏸️ Trade Opportunity Paused — waiting for full confluence.")
                     
                     else:
                         current_leg = self.active_position['leg']
                         if current_leg == "CE" and trend == "BEARISH":
-                             logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
-                             self.close_position("REVERSAL")
-                             # Cooldown: skip immediate re-entry — next 5-min candle will evaluate PE.
-                             # Avoids whipsaws without blocking the global safety kill-switch (sleep removed).
-                             logger.info("⏳ Reversal Cooldown: PE entry will be evaluated on the next candle.")
+                            logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
+                            self.close_position("REVERSAL")
+                            # Cooldown: skip immediate re-entry — next 5-min candle will evaluate PE.
+                            # Avoids whipsaws without blocking the global safety kill-switch (sleep removed).
+                            logger.info("⏳ Reversal Cooldown: PE entry will be evaluated on the next candle.")
 
                         elif current_leg == "PE" and trend == "BULLISH":
-                             logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
-                             self.close_position("REVERSAL")
-                             # Cooldown: skip immediate re-entry — next 5-min candle will evaluate CE.
-                             logger.info("⏳ Reversal Cooldown: CE entry will be evaluated on the next candle.")
+                            logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
+                            self.close_position("REVERSAL")
+                            # Cooldown: skip immediate re-entry — next 5-min candle will evaluate CE.
+                            logger.info("⏳ Reversal Cooldown: CE entry will be evaluated on the next candle.")
 
                     now = datetime.datetime.now()
                     minute = now.minute
