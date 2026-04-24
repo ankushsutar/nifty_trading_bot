@@ -11,79 +11,95 @@ from bot.utils.expiry_calculator import _MONTH_ABBR
 
 
 class TokenLookup:
+    # --- SHARED STATE (Memory Optimization) ---
+    # These class-level variables ensure that the 100MB+ DataFrame is only 
+    # loaded ONCE per process, regardless of how many TokenLookup instances 
+    # are created (e.g. by bot, backend, and strategies).
+    _shared_df = None
+    _lookup_cache = {} # (name, instrumenttype, strike, opt_type, expiry, exchange) -> (token, symbol)
+    _last_load_date = None
+
     def __init__(self):
-        self.df = None
-        self._cache_date = None  # Track which date the in-memory df was loaded for
+        # Local reference for convenience, points to class-level shared state
+        self.df = TokenLookup._shared_df
 
     def _get_cache_path(self):
         """
         Cache file is date-stamped — auto-invalidates each new trading day.
-        Uses the OS temp directory so it works on both Windows and Linux.
-        Windows: C:\\Users\\<user>\\AppData\\Local\\Temp\\
-        Linux:   /tmp/
         """
         today = datetime.date.today().strftime("%Y%m%d")
         return os.path.join(tempfile.gettempdir(), f"scrip_master_{today}.json")
 
     def load_scrip_master(self):
         """
-        3-Layer loading strategy:
-          1. In-memory (self.df) — fastest, already loaded for today
-          2. Disk cache (/tmp/scrip_master_YYYYMMDD.json) — survives process restarts
-          3. Fresh download from Angel One URL — fallback, once per day
-        Cache is date-keyed: a new trading day always triggers a fresh download.
+        3-Layer loading strategy with Singleton-like process-level caching.
         """
         today = datetime.date.today()
 
-        # Layer 1: In-memory cache (same day)
-        if self.df is not None and self._cache_date == today:
+        # Layer 1: In-memory process-level cache
+        if TokenLookup._shared_df is not None and TokenLookup._last_load_date == today:
+            self.df = TokenLookup._shared_df
             return
 
         cache_path = self._get_cache_path()
 
-        # Layer 2: Disk cache (today's file exists)
+        # Layer 2: Disk cache
         if os.path.exists(cache_path):
             try:
-                logger.info(">>> [Data] Loading Scrip Master from disk cache (instant)...")
+                logger.info(">>> [Data] Loading Scrip Master from disk cache...")
                 with open(cache_path, 'r') as f:
                     data = json.load(f)
                 self._build_df(data)
-                self._cache_date = today
-                logger.info(f">>> [Data] Scrip Master loaded from cache ({len(self.df):,} instruments).")
+                TokenLookup._last_load_date = today
+                logger.info(f">>> [Data] Scrip Master loaded ({len(self.df):,} instruments).")
+                # Clear raw data from memory immediately
+                del data
                 return
             except Exception as e:
                 logger.warning(f">>> [Data] Disk cache corrupt, re-downloading: {e}")
-                os.remove(cache_path)
+                if os.path.exists(cache_path): os.remove(cache_path)
 
         # Layer 3: Fresh download
-        logger.info(">>> [Data] Downloading Scrip Master from Angel One (first run today)...")
+        logger.info(">>> [Data] Downloading Scrip Master from Angel One...")
         try:
             response = requests.get(Config.SCRIP_MASTER_URL, timeout=30)
             response.raise_for_status()
             data = response.json()
 
-            # Save to disk cache for the rest of the day
+            # Save to disk cache
             try:
                 with open(cache_path, 'w') as f:
                     json.dump(data, f)
-                logger.info(f">>> [Data] Scrip Master cached to disk: {cache_path}")
             except Exception as e:
                 logger.warning(f">>> [Data] Could not write disk cache: {e}")
 
             self._build_df(data)
-            self._cache_date = today
+            TokenLookup._last_load_date = today
             logger.info(f">>> [Data] Scrip Master downloaded ({len(self.df):,} instruments).")
+            del data
 
-        except requests.exceptions.Timeout:
-            logger.error(">>> [Error] Scrip Master download TIMED OUT (30s). Check network.")
         except Exception as e:
             logger.error(f">>> [Error] Failed to load Scrip Master: {e}")
 
     def _build_df(self, data):
         """Builds and optimises the DataFrame from raw JSON data."""
-        self.df = pd.DataFrame(data)
-        # Angel One 'strike' is in paise (e.g. 2300000.00 = ₹23,000)
-        self.df['strike'] = pd.to_numeric(self.df['strike'], errors='coerce')
+        df = pd.DataFrame(data)
+        
+        # 1. Optimize Memory: Use 'category' for repetitive strings
+        # This reduces memory usage for these columns by ~90%
+        for col in ['name', 'instrumenttype', 'exch_seg']:
+            if col in df.columns:
+                df[col] = df[col].astype('category')
+        
+        # 2. Convert strike to numeric (paise)
+        df['strike'] = pd.to_numeric(df['strike'], errors='coerce').fillna(0)
+        
+        # 3. Store in class variable for sharing across instances
+        TokenLookup._shared_df = df
+        self.df = df
+        
+        # 4. Clear lookup cache on new load
+        TokenLookup._lookup_cache = {}
 
     def _format_date_for_exchange(self, date_val, exchange):
         """
@@ -92,10 +108,9 @@ class TokenLookup:
         MCX (Commodities) usually uses 'DDMMMYYYY' (e.g., 20APR2026)
         """
         if isinstance(date_val, str):
-            # Legacy string support: If it was already formatted as YYYY, 
-            # we might need to truncate it for NFO.
-            if exchange == "NFO" and len(date_val) == 9: # e.g. 14APR2026
-                return date_val[:5] + date_val[7:] # -> 14APR26
+            # Normalise: if it's DDMMMYYYY but exchange is NFO, truncate to YY
+            if exchange == "NFO" and len(date_val) == 9: 
+                return date_val[:5] + date_val[7:] 
             return date_val
             
         if not isinstance(date_val, (datetime.date, datetime.datetime)):
@@ -111,18 +126,20 @@ class TokenLookup:
     def get_token(self, symbol_name, expiry_date, strike, option_type, instrument_type="OPTIDX", exchange="NFO"):
         """
         Finds the Angel One token for an option instrument.
-        expiry_date can be a 'DDMMMYYYY' string or a datetime.date object.
+        Uses a process-level lookup cache for O(1) performance.
         """
         if self.df is None:
             self.load_scrip_master()
 
-        if self.df is None:
-            logger.error(">>> [Error] Scrip Master not available. Cannot resolve token.")
-            return None, None
+        if self.df is None: return None, None
 
-        # 1. Format date for this specific exchange
         formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
         strike_paise = float(strike) * 100.0
+
+        # --- CACHE LOOKUP ---
+        cache_key = (symbol_name, instrument_type, strike_paise, option_type, formatted_expiry, exchange)
+        if cache_key in TokenLookup._lookup_cache:
+            return TokenLookup._lookup_cache[cache_key]
 
         def _search(exp):
             mask = (
@@ -135,22 +152,20 @@ class TokenLookup:
             )
             rows = self.df[mask]
             if not rows.empty:
-                return rows.iloc[0]['token'], rows.iloc[0]['symbol']
+                res = (rows.iloc[0]['token'], rows.iloc[0]['symbol'])
+                TokenLookup._lookup_cache[cache_key] = res
+                return res
             return None, None
 
-        # 2. Initial Search
+        # 1. Primary Search
         token, symbol = _search(formatted_expiry)
         if token: return token, symbol
 
-        # 3. Fallback: If original date was shifted by holiday logic (e.g. 13-APR),
-        # try the NEXT day (e.g. 14-APR) because Angel One often labels contracts
-        # with the original intended date.
+        # 2. Holiday Fallback
         if isinstance(expiry_date, (datetime.date, datetime.datetime)):
             shifted_date = expiry_date + datetime.timedelta(days=1)
             token, symbol = _search(self._format_date_for_exchange(shifted_date, exchange))
-            if token:
-                logger.debug(f">>> [Token] Found match via holiday fallback (using +1 day): {symbol}")
-                return token, symbol
+            if token: return token, symbol
 
         logger.warning(f">>> [Warning] Token NOT FOUND: {symbol_name} {formatted_expiry} {strike} {option_type} ({instrument_type})")
         return None, None
@@ -161,9 +176,7 @@ class TokenLookup:
         """
         if self.df is None:
             self.load_scrip_master()
-        if self.df is None:
-            logger.error(">>> [Error] Scrip Master not available. Cannot resolve futures token.")
-            return None, None
+        if self.df is None: return None, None
 
         formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
 
@@ -179,33 +192,25 @@ class TokenLookup:
                 return rows.iloc[0]['token'], rows.iloc[0]['symbol']
             return None, None
 
-        # 1. Initial Search
         token, symbol = _search(formatted_expiry)
         if token: return token, symbol
 
-        # 2. Fallback
         if isinstance(expiry_date, (datetime.date, datetime.datetime)):
             shifted_date = expiry_date + datetime.timedelta(days=1)
             token, symbol = _search(self._format_date_for_exchange(shifted_date, exchange))
             if token: return token, symbol
 
-        logger.warning(f">>> [Warning] Futures Token NOT FOUND: {symbol_name} {formatted_expiry} ({instrument_type}/{exchange})")
         return None, None
 
     def get_option_bucket(self, symbol_name, expiry_date, atm_strike, range_points=500, instrument_type="OPTIDX", exchange="NFO"):
         """
-        Returns a dict of relevant option tokens around the ATM strike for a given symbol.
-        Range: ATM +/- range_points
+        Returns a dict of relevant option tokens around the ATM strike.
         """
         if self.df is None:
             self.load_scrip_master()
+        if self.df is None: return {}
 
-        if self.df is None:
-            return {}
-
-        # Format date for this exchange
         formatted_expiry = self._format_date_for_exchange(expiry_date, exchange)
-
         min_strike = (atm_strike - range_points) * 100.0
         max_strike = (atm_strike + range_points) * 100.0
 
@@ -222,7 +227,6 @@ class TokenLookup:
         mask = _get_mask(formatted_expiry)
         subset = self.df[mask].copy()
 
-        # Fallback for buckets
         if subset.empty and isinstance(expiry_date, (datetime.date, datetime.datetime)):
             shifted_date = expiry_date + datetime.timedelta(days=1)
             mask = _get_mask(self._format_date_for_exchange(shifted_date, exchange))
@@ -232,25 +236,20 @@ class TokenLookup:
         for _, row in subset.iterrows():
             strike_val = int(row['strike'] / 100)
             opt_type = "CE" if row['symbol'].endswith("CE") else "PE"
-            key = f"{strike_val}_{opt_type}"
-            bucket[key] = {
-                "token": row['token'],
-                "symbol": row['symbol'],
-                "strike": strike_val,
-                "type": opt_type
+            bucket[f"{strike_val}_{opt_type}"] = {
+                "token": row['token'], "symbol": row['symbol'],
+                "strike": strike_val, "type": opt_type
             }
-
         return bucket
+
     def get_nearest_expiry_token(self, symbol_name, instrument_type, exchange):
         """
         Dynamically finds the front-month contract (nearest expiry >= today).
-        Useful for instruments where roll-over dates are frequent (Commodities).
         """
         if self.df is None:
             self.load_scrip_master()
         if self.df is None: return None
 
-        # Filter candidates
         mask = (
             (self.df['name'] == symbol_name) &
             (self.df['exch_seg'] == exchange) &
@@ -259,13 +258,10 @@ class TokenLookup:
         candidates = self.df[mask].copy()
         if candidates.empty: return None
 
-        # Parse expiry dates for sorting
         today = datetime.date.today()
         
         def _parse_exp(row):
             try:
-                # Expected format "DDMMMYYYY" e.g. "20APR2026"
-                # Some Angel One dates might be missing or different, handle gracefully
                 exp_str = row['expiry']
                 if not exp_str or len(exp_str) < 7: return datetime.date(2000, 1, 1)
                 return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
@@ -273,19 +269,15 @@ class TokenLookup:
                 return datetime.date(2000, 1, 1)
 
         candidates['parsed_expiry'] = candidates.apply(_parse_exp, axis=1)
-        
-        # Only look at future expiries
         valid = candidates[candidates['parsed_expiry'] >= today]
+        
         if valid.empty: 
-            # If no future expiries, it might be that scrip master labels are old.
-            # Return nearest in the past as fallback.
             return {
                 "token": candidates.iloc[0]['token'],
                 "symbol": candidates.iloc[0]['symbol'],
                 "expiry": candidates.iloc[0]['expiry']
             }
         
-        # Sort by expiry and return nearest
         nearest = valid.sort_values('parsed_expiry').iloc[0]
         return {
             "token": nearest['token'],

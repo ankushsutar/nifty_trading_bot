@@ -75,7 +75,7 @@ class MomentumStrategy(BaseStrategy):
             logger.warning("Momentum: 🛑 Execution Aborted - Market is Closed.")
             return
         if self.gatekeeper.is_blackout_period():
-            logger.info("Momentum: ⏸️ Execution Suspended - Mid-day Blackout.")
+            logger.info("Momentum: ⏸️ Execution Suspended by Gatekeeper.")
             return
         if not self.gatekeeper.check_max_daily_loss(0.0):
             logger.critical("Momentum: 🛑 Execution Blocked - Max Daily Loss reached.")
@@ -406,19 +406,19 @@ class MomentumStrategy(BaseStrategy):
 
         # --- RSI OVEREXTENSION FILTER ---
         # Block entries when the move is already exhausted.
-        # CE entry blocked if RSI > 68 (overbought); PE entry blocked if RSI < 32 (oversold).
-        # Note: not applied to GAMMA_BLAST — parabolic days are supposed to be "overbought".
+        # Professional traders often buy strength and sell weakness; 68/32 was too tight.
+        # Relaxed to 75/25 for better momentum capture.
         entry_rsi = self.last_analysis.get('rsi', 50.0)
-        if leg == "CE" and entry_rsi > 68:
+        if leg == "CE" and entry_rsi > 75:
             logger.warning(
-                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} > 68 (overbought). "
-                "Skipping CE entry — not chasing an exhausted move."
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} > 75 (overbought). "
+                "Skipping CE entry — not chasing an extremely exhausted move."
             )
             return
-        if leg == "PE" and entry_rsi < 32:
+        if leg == "PE" and entry_rsi < 25:
             logger.warning(
-                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} < 32 (oversold). "
-                "Skipping PE entry — not chasing an exhausted move."
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} < 25 (oversold). "
+                "Skipping PE entry — not chasing an extremely exhausted move."
             )
             return
 
@@ -437,18 +437,21 @@ class MomentumStrategy(BaseStrategy):
             logger.warning(f"Fresh OI fetch failed: {_e}. Falling back to cached bias.")
             _fresh_bias = self.oi_data.get('bias', 'NEUTRAL')
 
+        # Goldman Sachs Expert Move: Convert hard block into "Soft Gate".
+        # If bias conflicts, reduce position size by 50% instead of skipping.
+        qty_multiplier = 1.0
         if leg == "CE" and _fresh_bias == "BEARISH":
-            logger.warning(
-                "🛑 OI Alignment Gate: Fresh OI=BEARISH — CE blocked. "
-                "Institutions are against the bullish thesis. Skipping."
-            )
-            return
+            if instr.asset_type == "COMMODITY":
+                logger.info(f"🔍 OI Bias Conflict ({_fresh_bias}) — Proceeding with {leg} entry for {instr.name} (Technicals prioritised for commodities).")
+            else:
+                logger.warning(f"⚠️ OI BIAS CONFLICT ({_fresh_bias}). Reducing position size by 50% for {instr.name}.")
+                qty_multiplier = 0.5
         if leg == "PE" and _fresh_bias == "BULLISH":
-            logger.warning(
-                "🛑 OI Alignment Gate: Fresh OI=BULLISH — PE blocked. "
-                "Institutions are against the bearish thesis. Skipping."
-            )
-            return
+            if instr.asset_type == "COMMODITY":
+                logger.info(f"🔍 OI Bias Conflict ({_fresh_bias}) — Proceeding with {leg} entry for {instr.name} (Technicals prioritised for commodities).")
+            else:
+                logger.warning(f"⚠️ OI BIAS CONFLICT ({_fresh_bias}). Reducing position size by 50% for {instr.name}.")
+                qty_multiplier = 0.5
 
         # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
         _df_entry = None
@@ -459,15 +462,19 @@ class MomentumStrategy(BaseStrategy):
                 _last3 = _df_entry.tail(3)
                 _bull_count = (_last3['close'] > _last3['open']).sum()
                 _bear_count = (_last3['close'] < _last3['open']).sum()
-                if leg == "CE" and _bull_count < 2:
+                from backend.market_service import market_service
+                adx_now = market_service.get_market_data().get('analysis', {}).get('adx', 0)
+                req_cnt = 1 if adx_now > 30 else 2
+
+                if leg == "CE" and _bull_count < req_cnt:
                     logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bull_count}/3 bullish candles — "
+                        f"🛑 Candle Momentum Filter: {_bull_count}/{req_cnt} bullish candles — "
                         "weak confirmation for CE entry. Skipping."
                     )
                     return
-                if leg == "PE" and _bear_count < 2:
+                if leg == "PE" and _bear_count < req_cnt:
                     logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bear_count}/3 bearish candles — "
+                        f"🛑 Candle Momentum Filter: {_bear_count}/{req_cnt} bearish candles — "
                         "weak confirmation for PE entry. Skipping."
                     )
                     return
@@ -487,16 +494,18 @@ class MomentumStrategy(BaseStrategy):
                 if _vol.sum() > 0:
                     _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
                     _vwap = (_typical * _vol).sum() / _vol.sum()
-                    logger.info(f"📏 VWAP={_vwap:.1f} | {instr.name}={symbol_ltp:.1f} | Leg={leg}")
-                    if leg == "CE" and symbol_ltp < _vwap:
+                    # Relaxed: Allow entry if price is within 0.1% of VWAP to capture crossovers.
+                    threshold = _vwap * 0.001
+                    logger.info(f"📏 VWAP={_vwap:.1f} | {instr.name}={symbol_ltp:.1f} | Leg={leg} | Buffer={threshold:.1f}")
+                    if leg == "CE" and symbol_ltp < (_vwap - threshold):
                         logger.warning(
-                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} < VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} < VWAP {_vwap:.0f} (Buffered) — "
                             "CE blocked. Price trading below institutional anchor."
                         )
                         return
-                    if leg == "PE" and symbol_ltp > _vwap:
+                    if leg == "PE" and symbol_ltp > (_vwap + threshold):
                         logger.warning(
-                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} > VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {instr.name} {symbol_ltp:.0f} > VWAP {_vwap:.0f} (Buffered) — "
                             "PE blocked. Price trading above institutional anchor."
                         )
                         return
@@ -510,13 +519,26 @@ class MomentumStrategy(BaseStrategy):
             _df_adx = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
             if _df_adx is not None and len(_df_adx) >= 20:
                 _adx_s = self.regime_classifier._calculate_adx(_df_adx)
-                if len(_adx_s) >= 3 and _adx_s.iloc[-1] < _adx_s.iloc[-2]:
-                    logger.warning(
-                        f"🛑 ADX Slope Filter: ADX declining "
-                        f"({_adx_s.iloc[-2]:.1f} → {_adx_s.iloc[-1]:.1f}). "
-                        "Trend is losing momentum — skipping entry."
-                    )
-                    return
+                if len(_adx_s) >= 3:
+                    _curr_adx = _adx_s.iloc[-1]
+                    _prev_adx = _adx_s.iloc[-2]
+                    _decline = _prev_adx - _curr_adx
+                    
+                    # ── RELAXED ADX SLOPE ──────────────────────────────────────────
+                    # 1. If ADX > 40, trend is verified strong; minor dips are noise.
+                    # 2. If decline < 0.3, it's considered flat/consolidation, not a reversal.
+                    if _decline > 0.3 and _curr_adx < 40:
+                        logger.warning(
+                            f"🛑 ADX Slope Filter: ADX declining significantly "
+                            f"({_prev_adx:.1f} → {_curr_adx:.1f}). "
+                            "Trend is losing momentum — skipping entry."
+                        )
+                        return
+                    elif _decline > 0:
+                        logger.info(
+                            f"ℹ️ ADX minor decline ({_prev_adx:.1f} → {_curr_adx:.1f}) "
+                            f"ignored due to strong trend (ADX={_curr_adx:.1f})."
+                        )
         except Exception as _e:
             logger.warning(f"ADX slope filter error: {_e}")
 
@@ -606,11 +628,12 @@ class MomentumStrategy(BaseStrategy):
         if option_sl_points < 5: option_sl_points = 5
 
         # Calculate actual margin per lot. Fallback to half the tier threshold if LTP unknown.
-        margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
+        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
         
         # Apply Compounding (Exponential Scaling) using real estimated cost
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
-        qty = lots * Config.NIFTY_LOT_SIZE
+        lots = int(lots * qty_multiplier) # Apply Soft OI Gate multiplier
+        qty = lots * instr.lot_size
         
         logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
 
@@ -1002,40 +1025,41 @@ class MomentumStrategy(BaseStrategy):
                 self.close_position("TARGET_HIT")
                 return True
 
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
         if is_trending:
             # TRENDING regime: fast breakeven, let winners run to 5:1
             # SAFETY UPGRADE: If lots >= 4, move to BE even earlier (0.6x instead of 1.0x)
-            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * instr.lot_size) else 1.0
             be_trigger  = be_mult * trail_atr  # Move to breakeven at 1:1 (or 0.6:1 for high qty)
             book_trigger = 2.5 * trail_atr  # Book 50% at 2.5:1
-
+    
             if profit_points > be_trigger and current_sl < entry_price:
                 new_sl = entry_price + 1.0
                 logger.info("🎯 TRENDING Stage 1 (1:1 ATR). Moving SL to Break-Even (fast pivot).")
                 self.update_sl(new_sl, ltp)
                 return False
-
+    
             if profit_points > book_trigger and not is_partial:
                 qty_to_close = self.active_position['qty'] // 2
-                if qty_to_close >= Config.NIFTY_LOT_SIZE:
+                if qty_to_close >= instr.lot_size:
                     logger.info(f"💰 TRENDING Stage 2 (2.5x ATR). Booking 50% ({qty_to_close} qty).")
                     self.close_position("PARTIAL_PROFIT", override_qty=qty_to_close)
                     return False
         else:
             # RANGEBOUND regime: tighter stages, early reversal exit
-            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 0.75
+            be_mult = 0.6 if (self.active_position.get('qty', 0) >= 4 * instr.lot_size) else 0.75
             be_trigger   = be_mult  * trail_atr
             book_trigger = 1.5   * trail_atr
-
+    
             if profit_points > be_trigger and current_sl < entry_price:
                 new_sl = entry_price + 1.0
                 logger.info("🎯 RANGEBOUND Stage 1 (0.75 ATR). Moving SL to Break-Even.")
                 self.update_sl(new_sl, ltp)
                 return False
-
+    
             if profit_points > book_trigger and not is_partial:
                 qty_to_close = self.active_position['qty'] // 2
-                if qty_to_close >= Config.NIFTY_LOT_SIZE:
+                if qty_to_close >= instr.lot_size:
                     logger.info(f"💰 RANGEBOUND Stage 2 (1.5 ATR). Full exit (range target reached).")
                     self.close_position("RANGEBOUND_TARGET")
                     return True
@@ -1127,8 +1151,8 @@ class MomentumStrategy(BaseStrategy):
         if trend == "BULLISH":
             if htf_trend != "BULLISH":
                 logger.info(f"Signal Ignored: 5m BULLISH but 15m is {htf_trend} (need strict MTF confluence).")
-            elif rsi >= 70:
-                logger.info("Signal Ignored: Bullish but RSI Overbought (>70).")
+            elif rsi >= 75:
+                logger.info("Signal Ignored: Bullish but RSI Overbought (>75).")
             elif _bbw > 0 and _bbw < 0.008:
                 logger.info(f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze.")
             elif _oi_bias == "BEARISH":
@@ -1144,8 +1168,8 @@ class MomentumStrategy(BaseStrategy):
         elif trend == "BEARISH":
             if htf_trend != "BEARISH":
                 logger.info(f"Signal Ignored: 5m BEARISH but 15m is {htf_trend} (need strict MTF confluence).")
-            elif rsi <= 30:
-                logger.info("Signal Ignored: Bearish but RSI Oversold (<30).")
+            elif rsi <= 25:
+                logger.info("Signal Ignored: Bearish but RSI Oversold (<25).")
             elif _bbw > 0 and _bbw < 0.008:
                 logger.info(f"Signal Ignored: BBW={_bbw:.4f} — market in tight squeeze.")
             elif _oi_bias == "BULLISH":

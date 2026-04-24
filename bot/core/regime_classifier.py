@@ -64,11 +64,11 @@ class RegimeClassifier:
             )
         else:
             # 3. Full Classification Logic (22+ candles)
-            if adx > 25:
+            if adx > 20:
                 regime = "TRENDING"
-            elif adx >= 20 and bbw > 0.02:
+            elif adx >= 15 and bbw > 0.02:
                 regime = "VOLATILE"
-            elif adx < 20:
+            elif adx < 15:
                 regime = "CHOP"
             else:
                 regime = "SIDEWAYS"

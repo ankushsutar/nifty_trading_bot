@@ -212,14 +212,27 @@ class GammaBlastStrategy(BaseStrategy):
             try:
                 if _df_gb is not None and len(_df_gb) >= 20:
                     _adx_s_gb = self.regime_classifier._calculate_adx(_df_gb)
-                    if len(_adx_s_gb) >= 3 and _adx_s_gb.iloc[-1] < _adx_s_gb.iloc[-2]:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining "
-                            f"({_adx_s_gb.iloc[-2]:.1f} → {_adx_s_gb.iloc[-1]:.1f}). "
-                            "Trend losing strength — skipping entry."
-                        )
-                        time.sleep(30)
-                        continue
+                    if len(_adx_s_gb) >= 3:
+                        _curr_adx = _adx_s_gb.iloc[-1]
+                        _prev_adx = _adx_s_gb.iloc[-2]
+                        _decline = _prev_adx - _curr_adx
+                        
+                        # ── RELAXED ADX SLOPE ──────────────────────────────────────────
+                        # 1. If ADX > 45, the move is parabolic; minor dips are common.
+                        # 2. If decline < 0.3, it's noise, not an exhaustion signal.
+                        if _decline > 0.3 and _curr_adx < 45:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining significantly "
+                                f"({_prev_adx:.1f} → {_curr_adx:.1f}). "
+                                "Trend losing strength — skipping entry."
+                            )
+                            time.sleep(30)
+                            continue
+                        elif _decline > 0:
+                            logger.info(
+                                f"Gamma Blast: ℹ️ ADX minor decline ({_prev_adx:.1f} → {_curr_adx:.1f}) "
+                                f"ignored due to strong trend (ADX={_curr_adx:.1f})."
+                            )
             except Exception as _ae:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
@@ -352,7 +365,8 @@ class GammaBlastStrategy(BaseStrategy):
                         continue
 
                     # ── 30s status heartbeat ──────────────────────────────────────
-                    _be_mult  = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+                    instr = get_instrument(Config.ACTIVE_SYMBOL)
+                    _be_mult  = 0.5 if (qty >= 4 * instr.lot_size) else 1.0
                     _pnl      = round((ltp - entry_price) * remaining_qty, 2)
                     _pnl_pct  = round((_pnl / (entry_price * remaining_qty)) * 100, 2) if entry_price > 0 else 0
 
@@ -386,7 +400,8 @@ class GammaBlastStrategy(BaseStrategy):
                         trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
 
                 # ── Stage 1: Breakeven at 1R (or 0.5R for high qty) ───
-                be_trigger_mult = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                be_trigger_mult = 0.5 if (qty >= 4 * instr.lot_size) else 1.0
                 if stage < 1 and ltp >= entry_price + (be_trigger_mult * risk):
                     logger.info(f"Gamma Blast: 🛡️ Stage 1 ({be_trigger_mult}R). SL → Breakeven ({entry_price})")
                     sl    = entry_price
@@ -398,7 +413,8 @@ class GammaBlastStrategy(BaseStrategy):
 
                 # ── Stage 2: Book 50% at 2R ───────────────────────────────
                 if stage < 2 and ltp >= entry_price + 2 * risk:
-                    lot_size  = Config.NIFTY_LOT_SIZE
+                    instr = get_instrument(Config.ACTIVE_SYMBOL)
+                    lot_size  = instr.lot_size
                     half_lots = max(0, (remaining_qty // lot_size) // 2)
                     half_qty  = half_lots * lot_size
 

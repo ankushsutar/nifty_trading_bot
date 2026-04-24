@@ -245,17 +245,33 @@ class SafetyGatekeeper:
             start = datetime.time(11, 30)
             end = datetime.time(13, 0)
             if start <= now <= end:
+                # Goldman Sachs Move: If ADX > 35, the trend is strong enough to ignore the mid-day dip.
+                from backend.market_service import market_service
+                market_data = market_service.get_market_data()
+                adx = market_data.get('analysis', {}).get('adx', 0)
+                if adx > 35:
+                    logger.info(f">>> [Gatekeeper] 🚀 TRENDING MARKET (ADX={adx:.1f}): Bypassing mid-day blackout.")
+                    return False
                 logger.info(f">>> [Gatekeeper] ⏸️ Blackout Period ({start}-{end}). No new trades.")
                 return True
 
-        # Commodity: restrict entries to Warm-up and Aggressive sessions ONLY
+        # Commodity: restrict entries based on liquidity/volatility windows
         if instr.asset_type == "COMMODITY":
             if self.is_in_delivery_period():
-                logger.critical(">>> [Gatekeeper] 🛑 COMMODITY DELIVERY GUARD: Entry Blocked (T-2 to Expiry).")
+                logger.critical(">>> [Gatekeeper] 🛑 COMMODITY DELIVERY GUARD: Entry Blocked (Expiry Day).")
                 return True
+            
+            # ── COMMODITY SLEEP WINDOW (9AM-1PM) ──
+            # Re-implemented but with a "Global Volatility" bypass (VIX > 18).
+            # Commodities often move on Asian session news, but low-volatility mornings can be choppy.
             if state == "SLEEP":
-                logger.info(">>> [Gatekeeper] 😴 MCX Morning SLEEP (9AM-1PM). No new entries.")
-                return True
+                self.get_vix_adjustment() # Ensure VIX is fetched
+                if SafetyGatekeeper._last_vix > 18.0:
+                    logger.info(f">>> [Gatekeeper] ⚡ HIGH VOLATILITY detected (VIX={SafetyGatekeeper._last_vix:.1f} > 18). Bypassing Commodity SLEEP window.")
+                else:
+                    logger.info(f">>> [Gatekeeper] ⏸️ Commodity SLEEP Window (9AM-1PM). No new entries.")
+                    return True
+
             if state == "COOL_DOWN":
                 logger.info(">>> [Gatekeeper] 🧊 MCX COOL_DOWN (Post-10:30 PM). No new entries.")
                 return True
@@ -265,6 +281,8 @@ class SafetyGatekeeper:
 
         return False
 
+    _last_vix = 15.0
+
     def get_vix_adjustment(self):
         """
         Rule: If India VIX > 25, reduce quantity by 50%.
@@ -272,15 +290,15 @@ class SafetyGatekeeper:
         Falls back to ltpData only if shared file is missing/stale. Result cached 60s.
 
         Note: India VIX is NIFTY-specific. For MCX commodity instruments we skip this
-        adjustment entirely (return 1.0) to avoid incorrectly downsizing commodity
-        positions based on equity-market volatility.
+        adjustment entirely (return 1.0) for sizing, but we still fetch it to measure
+        global market volatility for other safety gates.
         """
         instr = get_instrument(Config.ACTIVE_SYMBOL)
-        if instr.asset_type == "COMMODITY":
-            return 1.0  # India VIX not applicable to MCX futures
-
+        
         # 1. Return cached multiplier if still fresh (60s)
         if time.time() - SafetyGatekeeper._vix_cache_time < 60:
+            if instr.asset_type == "COMMODITY":
+                return 1.0
             return SafetyGatekeeper._vix_multiplier
 
         vix = 0.0
@@ -308,20 +326,28 @@ class SafetyGatekeeper:
             except Exception as e:
                 logger.error(f">>> [Risk] VIX ltpData fallback error: {e}")
 
+        if vix > 0:
+            SafetyGatekeeper._last_vix = vix
+
         # 4. Apply rule and cache result — threshold and multiplier from capital tier
-        from bot.config.settings import Config
         capital    = self.get_current_capital()
         tier       = Config.get_tier(capital)
         multiplier = 1.0
         if vix > tier.vix_reduction_threshold:
-            logger.warning(
-                f">>> [Risk] ⚠️ High VIX ({vix:.1f} > {tier.vix_reduction_threshold}). "
-                f"Reducing Quantity by {int((1 - tier.vix_qty_multiplier)*100)}% [{tier.name} tier]."
-            )
+            # Only log warning and apply reduction for non-commodities
+            if instr.asset_type != "COMMODITY":
+                logger.warning(
+                    f">>> [Risk] ⚠️ High VIX ({vix:.1f} > {tier.vix_reduction_threshold}). "
+                    f"Reducing Quantity by {int((1 - tier.vix_qty_multiplier)*100)}% [{tier.name} tier]."
+                )
             multiplier = tier.vix_qty_multiplier
 
         SafetyGatekeeper._vix_cache_time = time.time()
         SafetyGatekeeper._vix_multiplier = multiplier
+
+        if instr.asset_type == "COMMODITY":
+            return 1.0
+        return multiplier
 
         # 5. Track rolling 30-day VIX range → compute IV Rank
         # IV Rank tells strategies whether options are cheap or expensive right now.
@@ -516,8 +542,10 @@ class SafetyGatekeeper:
             today = datetime.date.today()
             days_to_expiry = (expiry_dt - today).days
             
-            # T-2 Safety Window
-            if days_to_expiry <= 2:
+            # Expiry Day Safety Window (T-0)
+            # We allow trading on T-2 and T-1 for intraday, but block T-0 
+            # to avoid thin liquidity and devolvement risk.
+            if days_to_expiry < 1:
                 return True
             return False
         except Exception as e:

@@ -9,8 +9,8 @@ from backend.market_service import market_service
 
 
 # Minimum strategy confidence score (0-100) to allow trade entry.
-# Based on last 5-day win-rate from the live/paper trade history.
-MIN_CONFIDENCE_SCORE = 70.0
+# Lowered from 70 to 60 for more responsive participation.
+MIN_CONFIDENCE_SCORE = 60.0
 
 # Minimum trades needed before applying the confidence gate (warm-up period).
 MIN_TRADES_FOR_CONFIDENCE = 5
@@ -218,16 +218,23 @@ class DecisionEngine:
             elif not confidence_high and adx > tier.min_adx_to_trade + adx_boost:
                 logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
 
-        # ── HARD ADX GATE ─────────────────────────────────────────────────────────
-        # No trade unless trend is strong enough for the current capital tier.
-        # Larger accounts tolerate lower ADX; small accounts need strong trends only.
+        # ── ADX GATE ──────────────────────────────────────────────────────────────
+        # Adaptive Logic: Allow entry if trend is strong enough OR confluence is high.
+        # Professional traders don't wait for "parabolic" ADX if technicals align.
         adx = regime_data.get('adx', 0)
-        if adx < tier.min_adx_to_trade + adx_boost:
+        adx_threshold = tier.min_adx_to_trade + adx_boost
+        
+        # Adaptive ADX: reduce threshold if confluence score is high (>= 5)
+        if confluence_score >= 5:
+            adx_threshold = 20.0
+            logger.info(f">>> [Brain] 🧠 High Confluence detected. Adaptive ADX gate lowered to {adx_threshold:.1f}")
+
+        if adx < adx_threshold:
             logger.info(
                 f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
-                f"{tier.min_adx_to_trade + adx_boost} minimum"
+                f"{adx_threshold:.1f} minimum"
                 + (f" (base {tier.min_adx_to_trade} + session boost {adx_boost})" if adx_boost else "")
-                + ". No trade — waiting for a strong trend."
+                + ". No trade — waiting for a stronger setup."
             )
             return None, 1.0
         # ──────────────────────────────────────────────────────────────────────────
@@ -285,11 +292,17 @@ class DecisionEngine:
                 selected_strategy = "MOMENTUM"
 
         elif regime in ["SIDEWAYS", "CHOP"]:
-            logger.info(
-                f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
-                "Whitelist requires TRENDING regime. Staying in CASH."
-            )
-            return None, 1.0
+            # Goldman Sachs Expert Move: If market is sideways but a volume spike occurs, 
+            # it often signals the START of a trend. Enter early via MOMENTUM.
+            if volume_spike and confluence_score >= 4:
+                logger.info(f">>> [Brain] 🔥 BREAKOUT DETECTED: {regime} with Volume Spike. Selected: MOMENTUM (Early Entry)")
+                selected_strategy = "MOMENTUM"
+            else:
+                logger.info(
+                    f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
+                    "Waiting for Trend or Breakout (Volume Spike)."
+                )
+                return None, 1.0
         
         else:
             logger.warning(f">>> [Brain] ⏸️ Unknown/Incompatible Regime: {regime}. Staying in CASH.")

@@ -300,16 +300,27 @@ class MarketService:
                         ltp = df.iloc[-1]['close']
                         
                         # 3. OI Analysis
-                        opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
-                        if instr.expiry_type == "MONTHLY":
-                            from bot.utils.expiry_calculator import get_next_monthly_expiry
-                            option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
+                        if instr.asset_type == "COMMODITY":
+                            # Use dynamic contract resolution for commodities
+                            res = self.token_lookup.get_nearest_expiry_token(instr.name, "OPTFUT", instr.exchange)
+                            if res and res.get('date'):
+                                option_expiry = res['date']
+                            else:
+                                opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
+                                from bot.utils.expiry_calculator import get_next_monthly_expiry
+                                option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
                         else:
-                            from bot.utils.expiry_calculator import get_next_weekly_expiry
-                            option_expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
+                            opt_day = instr.option_expiry_day_of_month or instr.expiry_day_of_month
+                            if instr.expiry_type == "MONTHLY":
+                                from bot.utils.expiry_calculator import get_next_monthly_expiry
+                                option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
+                            else:
+                                from bot.utils.expiry_calculator import get_next_weekly_expiry
+                                option_expiry = get_next_weekly_expiry(target_weekday=instr.expiry_day, raw_date=True)
 
                         try:
                             self.oi_data = self.oi_engine.get_market_sentiment(option_expiry, ltp, symbol=instr.name)
+
                         except Exception as e:
                             logger.warning(f"OI Analysis Error: {e}")
                             self.oi_data = {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}

@@ -194,7 +194,25 @@ def run_bot():
     # Decouple Option Expiry from Futures Expiry (important for MCX)
     opt_day = active_instr.option_expiry_day_of_month or active_instr.expiry_day_of_month
     
-    if active_instr.expiry_type == "MONTHLY":
+    if active_instr.asset_type == "COMMODITY":
+        # DYNAMIC RESOLUTION for Commodities
+        # Prevents hardcoded date logic from missing mid-month roll-overs
+        futures_contract = loader.get_nearest_expiry_token(active_instr.name, "FUTCOM", active_instr.exchange)
+        options_contract = loader.get_nearest_expiry_token(active_instr.name, "OPTFUT", active_instr.exchange)
+        
+        if futures_contract and futures_contract.get('date'):
+            expiry = futures_contract['date']
+        else:
+            from bot.utils.expiry_calculator import get_next_monthly_expiry
+            expiry = get_next_monthly_expiry(expiry_day_of_month=active_instr.expiry_day_of_month, raw_date=True)
+
+        if options_contract and options_contract.get('date'):
+            option_expiry = options_contract['date']
+        else:
+            from bot.utils.expiry_calculator import get_next_monthly_expiry
+            option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
+            
+    elif active_instr.expiry_type == "MONTHLY":
         from bot.utils.expiry_calculator import get_next_monthly_expiry
         expiry = get_next_monthly_expiry(expiry_day_of_month=active_instr.expiry_day_of_month, raw_date=True)
         option_expiry = get_next_monthly_expiry(expiry_day_of_month=opt_day, raw_date=True)
@@ -207,6 +225,7 @@ def run_bot():
     logger.info(f">>> [Setup] Target Expiry: {_format_expiry(expiry)}")
     if option_expiry != expiry:
         logger.info(f">>> [Setup] Option Expiry: {_format_expiry(option_expiry)}")
+
     
     # SAFEGUARD: Prevent using past expiry
     if expiry < datetime.date.today():
