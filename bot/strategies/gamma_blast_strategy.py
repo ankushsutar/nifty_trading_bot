@@ -502,6 +502,18 @@ class GammaBlastStrategy:
         # Place Broker SL
         sl_oid = self.order_manager.place_sl_order(symbol, token, qty, sl_price, leg)
         
+        # SL VERIFICATION: If SL placement failed, we cannot hold the position safely.
+        if not sl_oid and not self.dry_run:
+            logger.critical(f"🚨 GAMMA BLAST: SL placement FAILED for {symbol}. Emergency exiting position for safety!")
+            exit_params = {
+                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                "transactiontype": "SELL", "exchange": "NFO",
+                "ordertype": "MARKET", "price": 0,
+                "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+            }
+            self.order_manager.place_order(exit_params)
+            return
+
         # PERSIST SL OID: Critical for recovery after restarts
         if trade_id and sl_oid:
             trade_repo.update_sl_order_id(trade_id, sl_oid)

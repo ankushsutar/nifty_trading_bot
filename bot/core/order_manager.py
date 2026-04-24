@@ -35,7 +35,10 @@ class OrderManager:
             response = self.api.placeOrder(order_params)
             
             if isinstance(response, dict):
-                if response.get('status') == True:
+                # Angel One SDK uses 'status' (True/False) or sometimes 'success'
+                is_success = response.get('status') == True or response.get('success') == True
+                
+                if is_success:
                     oid = response.get('data', {}).get('orderid')
                     logger.info(f"✅ Order Placed Successfully: {oid}")
                     
@@ -61,7 +64,9 @@ class OrderManager:
 
                     return oid
                 else:
-                    logger.error(f"❌ Order Placement Rejected: {response.get('message')}")
+                    error_msg = response.get('message') or response.get('error_message') or "Unknown Error"
+                    error_code = response.get('errorCode') or response.get('errorcode') or "???"
+                    logger.error(f"❌ Order Placement Rejected: {error_msg} (Code: {error_code})")
                     return None
             
             # Mock or direct string return
@@ -214,7 +219,8 @@ class OrderManager:
             # We set 'price' slightly below 'trigger_price' for SELL SL to ensure fill within a corridor.
             # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
             trigger_price = price
-            limit_price = round(price * 0.95, 2) if transaction_type == "SELL" else round(price * 1.05, 2)
+            limit_price = round(price * 0.95 / 0.05) * 0.05 if transaction_type == "SELL" else round(price * 1.05 / 0.05) * 0.05
+            limit_price = round(limit_price, 2)
             
             orderparams = {
                 "variety": "STOPLOSS",

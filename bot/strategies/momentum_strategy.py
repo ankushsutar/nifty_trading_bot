@@ -919,43 +919,43 @@ class MomentumStrategy:
             return
 
         try:
-             # For BUY orders, pay slightly above LTP to improve fill probability.
-             # Slippage buffer from capital tier (smaller accounts use 1%, larger use 0.5%).
-             limit_price = quote_ltp * (1.0 + tier.entry_slippage_pct)
-                 
-             oid = self.order_manager.place_smart_limit(
+            # For BUY orders, pay slightly above LTP to improve fill probability.
+            # Slippage buffer from capital tier (smaller accounts use 1%, larger use 0.5%).
+            limit_price = quote_ltp * (1.0 + tier.entry_slippage_pct)
+                
+            oid = self.order_manager.place_smart_limit(
                 symbol, token, qty, limit_price, 
                 transaction_type="BUY", 
                 strategy_name="MOMENTUM"
-             )
-             
-             if not oid:
-                 logger.error("❌ Smart-Limit Order Placement Failed! (API returned None).")
-                 return
-
-             logger.info(f"Success: Order Placed: {oid}")
+            )
             
-             # 2. Wait for fill
-             fill_result = self.wait_for_fill(oid)
-             
-             if fill_result['status'] in ['REJECTED', 'CANCELLED']:
-                 logger.error(f"❌ Order {oid} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
-                 return 
+            if not oid:
+                logger.error("❌ Smart-Limit Order Placement Failed! (API returned None).")
+                return
 
-             fill_price = fill_result['price']
-             if not fill_price:
-                 fill_price = quote_ltp
-                 logger.warning(f"Momentum: Fill price not captured, using estimate: ₹{fill_price}")
+            logger.info(f"Success: Order Placed: {oid}")
+           
+            # 2. Wait for fill
+            fill_result = self.wait_for_fill(oid)
+            
+            if fill_result['status'] in ['REJECTED', 'CANCELLED']:
+                logger.error(f"❌ Order {oid} was {fill_result['status']}. Reason: {fill_result.get('message', 'Unknown')}")
+                return 
 
-             actual_sl = max(0.1, fill_price - actual_sl_points)
+            fill_price = fill_result['price']
+            if not fill_price:
+                fill_price = quote_ltp
+                logger.warning(f"Momentum: Fill price not captured, using estimate: ₹{fill_price}")
 
-             # 3. Finalize Local State & Update DB
-             trade_id = self.order_manager.update_trade_fill(symbol, "MOMENTUM", fill_price, expected_price=quote_ltp)
-             
-             actual_sl = max(0.1, fill_price - actual_sl_points)
+            actual_sl = max(0.1, fill_price - actual_sl_points)
 
-             actual_target = fill_price + tgt_option_pts
-             self.active_position = {
+            # 3. Finalize Local State & Update DB
+            trade_id = self.order_manager.update_trade_fill(symbol, "MOMENTUM", fill_price, expected_price=quote_ltp)
+            
+            actual_sl = max(0.1, fill_price - actual_sl_points)
+
+            actual_target = fill_price + tgt_option_pts
+            self.active_position = {
                 'id': trade_id,
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token,
                 'entry_price': fill_price,
@@ -965,23 +965,36 @@ class MomentumStrategy:
                 'atr': atr,
                 'context': trade_context
             }
-             
-             if trade_id:
-                 trade_repo.update_sl(trade_id, actual_sl)
-             
-             # Place Hard SL (Broker-Side)
-             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
-             if sl_oid:
-                 self.active_position['sl_order_id'] = sl_oid
-                 if trade_id:
-                     trade_repo.update_sl_order_id(trade_id, sl_oid)
-                 logger.info(f"🛡️ Broker-Side SL Placed: {sl_oid}")
-             
-             # Notify
-             notifier.notify_trade_entry("MOMENTUM", symbol, "BUY", qty, fill_price)
-                 
+            
+            if trade_id:
+                trade_repo.update_sl(trade_id, actual_sl)
+            
+            # Place Hard SL (Broker-Side)
+            sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
+            
+            # SL VERIFICATION: If SL placement failed, we cannot hold the position safely.
+            if not sl_oid and not self.dry_run:
+                logger.critical(f"🚨 MOMENTUM: SL placement FAILED for {symbol}. Emergency exiting position for safety!")
+                exit_params = {
+                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                    "transactiontype": "SELL", "exchange": "NFO",
+                    "ordertype": "MARKET", "price": 0,
+                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                }
+                self.order_manager.place_order(exit_params)
+                return
+
+            if sl_oid:
+                self.active_position['sl_order_id'] = sl_oid
+                if trade_id:
+                    trade_repo.update_sl_order_id(trade_id, sl_oid)
+                logger.info(f"🛡️ Broker-Side SL Placed: {sl_oid}")
+            
+            # Notify
+            notifier.notify_trade_entry("MOMENTUM", symbol, "BUY", qty, fill_price)
+                
         except Exception as e:
-             logger.error(f"Enter Order Failure: {e}")
+            logger.error(f"Enter Order Failure: {e}")
 
     def wait_for_fill(self, order_id):
         """Uses WebSocket Order Feed for sub-second fill detection."""
