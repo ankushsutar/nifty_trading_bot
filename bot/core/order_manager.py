@@ -14,6 +14,17 @@ class OrderManager:
         self._slippage_adjustment = 0.0
         self._last_slippage_check = 0
 
+    def _get_tick_size(self, exchange):
+        """Returns the minimum price variation (tick size) for the exchange."""
+        # MCX Crude/Gold = 1.0, Nifty/NSE Options = 0.05
+        return 1.0 if exchange == "MCX" else 0.05
+
+    def _round_to_tick(self, price, exchange):
+        """Rounds a price to the nearest valid tick size for the exchange."""
+        tick = self._get_tick_size(exchange)
+        # Round to 2 decimal places to avoid floating point artifacts (e.g. 5400.0000000001)
+        return round(round(price / tick) * tick, 2)
+
     def _get_slippage_adjustment(self):
         """Fetches recent slippage stats to adjust execution aggressiveness."""
         now = time.time()
@@ -102,8 +113,8 @@ class OrderManager:
         producttype: "INTRADAY" for NSE options, "CARRYFORWARD" for MCX futures.
         """
         try:
-            # Round to 0.05 tick size
-            limit_price = round(price / 0.05) * 0.05
+            # Round to exchange-specific tick size
+            limit_price = self._round_to_tick(price, exchange)
 
             orderparams = {
                 "variety": "NORMAL",
@@ -136,7 +147,7 @@ class OrderManager:
             return self.place_limit_order(symbol, token, qty, initial_price, transaction_type, exchange=exchange, producttype=producttype)
 
         try:
-            current_price = round(initial_price / 0.05) * 0.05
+            current_price = self._round_to_tick(initial_price, exchange)
             oid = self.place_limit_order(symbol, token, qty, current_price, transaction_type, exchange=exchange, producttype=producttype)
             if not oid: return None
 
@@ -174,11 +185,14 @@ class OrderManager:
                     return None
 
                 # If TIMEOUT, walk the price one tick
-                tick_size = 0.05
+                tick_size = self._get_tick_size(exchange)
                 if transaction_type == "BUY":
                     current_price += tick_size
                 else:
                     current_price -= tick_size
+                
+                # Ensure rounding after walk
+                current_price = self._round_to_tick(current_price, exchange)
 
                 logger.info(f"🚶 Walking Smart-Limit: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
 
@@ -208,7 +222,7 @@ class OrderManager:
         producttype must match the original order (INTRADAY or CARRYFORWARD).
         """
         try:
-            price = round(new_price / 0.05) * 0.05
+            price = self._round_to_tick(new_price, exchange)
             orderparams = {
                 "variety": variety,
                 "orderid": order_id,
@@ -242,14 +256,14 @@ class OrderManager:
             return None
 
         try:
-            # Round SL to 0.05 tick size
-            price = round(sl_price / 0.05) * 0.05
-            trigger_price = price
+            # Round trigger to exchange-specific tick size
+            trigger_price = self._round_to_tick(sl_price, exchange)
 
             # Corridor keeps the limit within exchange LPP (Limit Price Protection) rules.
             # SELL SL (long exit): limit slightly below trigger so it fills on the way down.
             # BUY  SL (short exit): limit slightly above trigger so it fills on the way up.
-            limit_price = round(price * 0.95, 2) if transaction_type == "SELL" else round(price * 1.05, 2)
+            limit_raw = trigger_price * 0.95 if transaction_type == "SELL" else trigger_price * 1.05
+            limit_price = self._round_to_tick(limit_raw, exchange)
 
             orderparams = {
                 "variety": "STOPLOSS",
@@ -302,29 +316,34 @@ class OrderManager:
             logger.error(f"Cancel Order Error: {e}")
             return False
 
-    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, variety="STOPLOSS", exchange="NFO", transaction_type="SELL"):
+    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, variety="STOPLOSS", exchange="NFO", transaction_type="SELL", producttype=None):
         """Modifies an existing SL Order.
         transaction_type: "SELL" for long-position SL, "BUY" for short-position SL.
+        producttype: if None, derived from exchange (CARRYFORWARD for MCX, INTRADAY for NSE).
         """
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Modification Rejected.")
             return False
 
         try:
-            # Round SL to 0.05 tick size
-            price = round(new_trigger_price / 0.05) * 0.05
-            trigger_price = price
+            # Round trigger to exchange-specific tick size
+            trigger_price = self._round_to_tick(new_trigger_price, exchange)
 
             # Corridor keeps the limit within exchange LPP (Limit Price Protection) rules.
             # SELL SL (long exit): limit slightly below trigger so it fills on the way down.
             # BUY  SL (short exit): limit slightly above trigger so it fills on the way up.
-            limit_price = round(price * 0.95, 2) if transaction_type == "SELL" else round(price * 1.05, 2)
+            limit_raw = trigger_price * 0.95 if transaction_type == "SELL" else trigger_price * 1.05
+            limit_price = self._round_to_tick(limit_raw, exchange)
             
+            # Dynamic Product Type: Must match original order (CARRYFORWARD for MCX)
+            if producttype is None:
+                producttype = "CARRYFORWARD" if exchange == "MCX" else "INTRADAY"
+
             orderparams = {
                 "variety": variety,
                 "orderid": order_id,
                 "ordertype": "STOPLOSS_LIMIT",
-                "producttype": "INTRADAY",
+                "producttype": producttype,
                 "duration": "DAY",
                 "price": limit_price,
                 "quantity": qty,
@@ -335,7 +354,7 @@ class OrderManager:
                 "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:
-                logger.info(f"🧪 [DRY RUN] Simulating Modify: {order_id} -> {price}")
+                logger.info(f"🧪 [DRY RUN] Simulating Modify: {order_id} -> {trigger_price}")
                 return True
 
             rate_limiter.wait()
@@ -344,7 +363,7 @@ class OrderManager:
             if isinstance(response, dict):
                 # Check API response status (modifyOrder returns full response dict)
                 if response and response.get('status') == True:
-                    logger.info(f"📝 Modified SL Order {order_id} -> {price}")
+                    logger.info(f"📝 Modified SL Order {order_id} -> {trigger_price}")
                     return True
                 else:
                     err_msg = response.get('message', 'Unknown error') if response else 'No response'
@@ -352,7 +371,7 @@ class OrderManager:
                     return False
             
             # Mock might return something else, assume True if no exception
-            logger.info(f"📝 Modified SL Order {order_id} -> {price}")
+            logger.info(f"📝 Modified SL Order {order_id} -> {trigger_price}")
             return True
         except Exception as e:
             logger.error(f"Modify SL Error: {e}")
