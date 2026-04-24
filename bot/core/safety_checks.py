@@ -37,6 +37,22 @@ class SafetyGatekeeper:
         logger.warning(f">>> [Gatekeeper] Market Closed for {instr.name}. Current Time: {now} (Window: {instr.market_start}-{instr.market_end})")
         return False
 
+    def is_gamma_window(self):
+        """
+        Rule: Gamma Blast only active between 13:45 and 14:15 IST (Master Sheet).
+        """
+        now = datetime.datetime.now().time()
+        capital = self.get_current_capital()
+        tier = Config.get_tier(capital)
+        
+        start_h, start_m = map(int, tier.gamma_window_start.split(":"))
+        end_h, end_m = map(int, tier.gamma_window_end.split(":"))
+        
+        start = datetime.time(start_h, start_m)
+        end = datetime.time(end_h, end_m)
+        
+        return start <= now <= end
+
     def get_market_state(self):
         """
         Returns the current market state based on Time-of-Day (IST).
@@ -481,6 +497,45 @@ class SafetyGatekeeper:
             return lots
         except Exception as e:
             logger.error(f"Compounding Error: {e}")
+            return 1
+
+    def get_atr_lots(self, risk_amount, atr, multiplier=1.0):
+        """
+        Master Sheet Sizing: Quantity = Risk / (ATR * Multiplier)
+        risk_amount: ₹ amount willing to lose on this trade (from CapitalTier.risk_per_trade_pct)
+        atr: current ATR of the underlying instrument
+        multiplier: factor to adjust risk aggressiveness
+        """
+        try:
+            if not atr or atr <= 0:
+                return 0
+                
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            
+            # Master Formula
+            # We assume Multiplier defaults to 1.0 (Standard ATR sizing)
+            # Quantity = ₹Risk / (ATR pts * ₹Value_per_point)
+            # For Nifty, 1 pt = 1 * (lot_size / lot_size) = 1? 
+            # No, Risk per trade is usually calculated on the entry premium.
+            # But ATR sizing usually applies to the underlying.
+            
+            # institutional standard: 1 ATR move = 1 Risk Unit.
+            # qty = Risk / (ATR * lot_size)
+            # Actually, for options, Delta matters. But Master Sheet uses ATR as a proxy.
+            
+            qty = risk_amount / (atr * multiplier)
+            lots = int(qty / instr.lot_size)
+            
+            # Apply tier-based caps
+            capital = self.get_current_capital()
+            tier = Config.get_tier(capital)
+            
+            if tier.max_lots > 0:
+                lots = min(lots, tier.max_lots)
+                
+            return max(1, lots)
+        except Exception as e:
+            logger.error(f"ATR Sizing Error: {e}")
             return 1
 
     def get_intraday_cutoff(self) -> datetime.time:

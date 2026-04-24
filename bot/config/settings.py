@@ -61,6 +61,12 @@ class CapitalTier:
     vix_reduction_threshold: float        # VIX level that triggers qty halving
     vix_qty_multiplier: float             # Qty multiplier when VIX exceeded
 
+    # ── Gamma Blast Master Mode ──────────────────────────────────────────
+    gamma_window_start: str               # "13:45"
+    gamma_window_end: str                 # "14:15"
+    gamma_oi_roc_threshold: float         # 0.10 = 10% change in OI
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # TIER DEFINITIONS
@@ -93,6 +99,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
+        gamma_window_start="13:45",
+        gamma_window_end="14:15",
+        gamma_oi_roc_threshold=0.15,
     ),
 
     # ── SMALL: ₹25,000 – ₹1,00,000 ──────────────────────────────────────
@@ -120,6 +129,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.01,
         vix_reduction_threshold=25.0,
         vix_qty_multiplier=0.5,
+        gamma_window_start="13:45",
+        gamma_window_end="14:15",
+        gamma_oi_roc_threshold=0.12,
     ),
 
     # ── MEDIUM: ₹1,00,000 – ₹5,00,000 ───────────────────────────────────
@@ -147,6 +159,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.008,
         vix_reduction_threshold=22.0,
         vix_qty_multiplier=0.5,
+        gamma_window_start="13:45",
+        gamma_window_end="14:15",
+        gamma_oi_roc_threshold=0.10,
     ),
 
     # ── LARGE: > ₹5,00,000 ────────────────────────────────────────────────
@@ -174,6 +189,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         entry_slippage_pct=0.005,
         vix_reduction_threshold=20.0,
         vix_qty_multiplier=0.6,
+        gamma_window_start="13:45",
+        gamma_window_end="14:15",
+        gamma_oi_roc_threshold=0.08,
     ),
 }
 

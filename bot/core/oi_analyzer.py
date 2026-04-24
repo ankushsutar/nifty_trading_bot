@@ -11,6 +11,79 @@ class OIAnalyzer:
         self.api = api
         self.token_lookup = token_lookup
         self.snapshot_file = os.path.join(os.getcwd(), "data", "oi_snapshot.json")
+        self.rolling_snapshots = {} # Key = Token, Value = List of (timestamp, oi)
+
+    def get_oi_roc(self, expiry, atm_strike, symbol="NIFTY", window_mins=5):
+        """
+        Calculates the Rate of Change (%) in Open Interest over the last X minutes.
+        Triggers "Gamma Blast" if ROC exceeds thresholds (short covering).
+        """
+        try:
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(symbol)
+            
+            # Use the existing market sentiment logic to fetch current OI for the ATM strike
+            # For ROC, we focus specifically on the ATM/OTM strikes likely to be covered.
+            token_ce, _ = self.token_lookup.get_token(instr.name, expiry, atm_strike, "CE", instrument_type=instr.trading_type, exchange=instr.exchange)
+            token_pe, _ = self.token_lookup.get_token(instr.name, expiry, atm_strike, "PE", instrument_type=instr.trading_type, exchange=instr.exchange)
+            
+            if not token_ce or not token_pe:
+                return 0.0
+                
+            batch_params = {instr.exchange: [token_ce, token_pe]}
+            rate_limiter.wait()
+            response = self.api.getMarketData("FULL", batch_params)
+            
+            if not response.get('status') or 'data' not in response:
+                return 0.0
+
+            fetched_data = response['data']['fetched']
+            now = time.time()
+            
+            total_current_oi = 0
+            for item in fetched_data:
+                token = item['symbolToken']
+                oi = item['opnInterest']
+                total_current_oi += oi
+                
+                # Update rolling snapshots
+                if token not in self.rolling_snapshots:
+                    self.rolling_snapshots[token] = []
+                self.rolling_snapshots[token].append((now, oi))
+                
+                # Prune old snapshots (keep 15 mins of data)
+                self.rolling_snapshots[token] = [(t, v) for t, v in self.rolling_snapshots[token] if now - t < 900]
+
+            # Calculate ROC
+            # Formula: (Current OI - Past OI) / Past OI
+            # A negative ROC (OI decreasing while price rises) = Short Covering.
+            # Master Sheet specifies ROC in OI > 10% (as an absolute speed of exit).
+            
+            total_past_oi = 0
+            for token in [token_ce, token_pe]:
+                snaps = self.rolling_snapshots.get(token, [])
+                if len(snaps) < 2:
+                    continue
+                
+                # Find the snapshot closest to 'window_mins' ago
+                target_time = now - (window_mins * 60)
+                past_snap = snaps[0] # Default to oldest
+                for t, v in snaps:
+                    if t >= target_time:
+                        past_snap = (t, v)
+                        break
+                total_past_oi += past_snap[1]
+
+            if total_past_oi == 0:
+                return 0.0
+                
+            roc = (total_current_oi - total_past_oi) / total_past_oi
+            # We return absolute ROC because Master Sheet cares about the *speed* of exit/entry
+            return abs(roc)
+
+        except Exception as e:
+            logger.error(f"OI ROC Calculation Error: {e}")
+            return 0.0
 
     def _get_oi_snapshot(self):
         """Loads today's 09:15 OI snapshot."""

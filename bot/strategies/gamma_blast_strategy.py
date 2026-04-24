@@ -39,6 +39,14 @@ class GammaBlastStrategy(BaseStrategy):
                 logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
                 break
 
+            # --- MASTER SHEET TIMING GATE ---
+            if not self.gatekeeper.is_gamma_window():
+                # Only log every 10 mins to avoid noise
+                if int(time.time()) % 600 < 30:
+                    logger.info("Gamma Blast: ⏳ Waiting for Master Window (1:45 PM – 2:15 PM)...")
+                time.sleep(30)
+                continue
+
             # Post-SL cooldown: wait 5 min before re-entering after a stop-loss hit.
             # Prevents revenge trading on bounces and ensures OI data refreshes.
             _SL_COOLDOWN_SECS = 300
@@ -152,6 +160,17 @@ class GammaBlastStrategy(BaseStrategy):
                     time.sleep(30)
                     continue
 
+            # --- MASTER SHEET ROC OI TRIGGER ---
+            # ROC in OI > 10% (0.10) signifies aggressive short covering (Gamma Blast trigger).
+            oi_roc = self.oi_analyzer.get_oi_roc(_expiry_now, _atm_now, symbol=instr.name, window_mins=5)
+            _tier_roc = _Cfg.get_tier(self.gatekeeper.get_current_capital()).gamma_oi_roc_threshold
+            if oi_roc < _tier_roc:
+                logger.info(f"Gamma Blast: ⏳ Waiting for OI ROC Spike (Current: {oi_roc*100:.1f}% < Threshold: {_tier_roc*100:.1f}%)")
+                time.sleep(30)
+                continue
+            
+            logger.info(f"Gamma Blast: 🔥 OI ROC SPIKE DETECTED ({oi_roc*100:.1f}%)! Gamma Trigger Active.")
+
             # --- CANDLE MOMENTUM FILTER ---
             try:
                 _df_gb = self.data_fetcher.fetch_latest_candles(instr.analysis_token, exchange=instr.exchange)
@@ -236,33 +255,35 @@ class GammaBlastStrategy(BaseStrategy):
             except Exception as _ae:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
-            # 4. Strike Selection — OTM depth scales with ADX strength.
-            atm_strike = round(ltp / instr.strike_step) * instr.strike_step
-            if adx < 50:
-                otm_depth = 1
-            elif adx < 55:
-                otm_depth = 2
-            else:
-                otm_depth = 3
-
-            # --- IV RANK: OTM DEPTH CAP ---
-            # When options are expensive (IV Rank > 70%), avoid going too deep OTM —
-            # a fat premium on a low-delta strike needs a huge move to break even.
-            # Floor at 1 OTM (never go ATM for gamma blast — it's a leverage strategy).
-            iv_rank = self.gatekeeper.get_iv_rank()
-            if iv_rank > 0.70 and otm_depth > 1:
-                otm_depth = max(1, otm_depth - 1)
-                logger.info(
-                    f"📉 IV Rank={iv_rank:.0%}: Options expensive, "
-                    f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
-                )
-
-            strike = atm_strike + (otm_depth * instr.strike_step * (1 if leg == "CE" else -1))
-
-            logger.info(
-                f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | "
-                f"OTM depth={otm_depth} strikes | Strike={strike}"
-            )
+            # --- MASTER SHEET PREMIUM-BASED STRIKE SELECTION ---
+            # Target premiums between ₹3 and ₹6 (Nifty Expiry).
+            # This ensures we get the high-gamma leverage discussed in the Master Sheet.
+            target_strike = None
+            for depth in range(4, 10): # Start at 4 OTM and go deeper
+                test_strike = atm_strike + (depth * instr.strike_step * (1 if leg == "CE" else -1))
+                test_token, _ = self.token_loader.get_token(instr.name, _expiry_now, test_strike, leg, instrument_type=instr.trading_type, exchange=instr.exchange)
+                if not test_token: continue
+                
+                test_ltp = self.data_fetcher.get_ltp(test_token, exchange=instr.exchange)
+                if test_ltp and 3.0 <= test_ltp <= 6.5:
+                    target_strike = test_strike
+                    quote_ltp = test_ltp
+                    token = test_token
+                    symbol = _ # Wait, get_token returns (token, symbol)
+                    break
+            
+            # Fallback if no strike found in ₹3-₹6 range (unlikely during gamma window)
+            if not target_strike:
+                logger.warning("Gamma Blast: No strike found in ₹3-₹6 range. Falling back to default OTM depth.")
+                if adx < 50: otm_depth = 1
+                elif adx < 55: otm_depth = 2
+                else: otm_depth = 3
+                target_strike = atm_strike + (otm_depth * instr.strike_step * (1 if leg == "CE" else -1))
+                token, symbol = self.token_loader.get_token(instr.name, _expiry_now, target_strike, leg, instrument_type=instr.trading_type, exchange=instr.exchange)
+                quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 5.0
+            
+            strike = target_strike
+            logger.info(f"🎯 Master Strike Selected: {strike} {leg} @ ₹{quote_ltp:.1f}")
 
             token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.trading_type, exchange=instr.exchange)
             if not token:
@@ -273,19 +294,13 @@ class GammaBlastStrategy(BaseStrategy):
             # Fetch Option LTP for early record and price estimate
             quote_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 50.0
 
-            # 5. Position Sizing
-            margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
-            # Lots are scaled by the Brain's risk multiplier AND the strategy's specific lot fraction
-            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier) * _tier.gamma_blast_lot_pct)
-            if lots < 1:
-                # Only force 1 lot if capital can actually cover a single lot
-                estimated_cost = margin_per_lot
-                if self.gatekeeper.check_trade_margin(estimated_cost, silent=True):
-                    lots = 1
-                else:
-                    logger.warning(f"Gamma Blast: ❌ Insufficient capital for 1 lot (₹{estimated_cost:,.0f} required). Skipping.")
-                    time.sleep(60)
-                    continue
+            # 5. Position Sizing — ATR Risk Engine (Master Sheet)
+            atr = analysis.get('atr', 20.0) # Fallback to 20 pts
+            capital = self.gatekeeper.get_current_capital()
+            tier = _Cfg.get_tier(capital)
+            risk_amount = capital * tier.risk_per_trade_pct
+            
+            lots = self.gatekeeper.get_atr_lots(risk_amount, atr, multiplier=1.0)
             qty = lots * instr.lot_size
 
             # --- TRADE VIABILITY CHECK ---

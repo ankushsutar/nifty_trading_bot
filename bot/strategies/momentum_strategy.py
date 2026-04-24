@@ -620,22 +620,26 @@ class MomentumStrategy(BaseStrategy):
         # All risk parameters come from the capital tier — no hardcoded values
         tier = Config.get_tier(capital)
 
-        risk_per_trade = capital * tier.risk_per_trade_pct
-        if risk_per_trade < tier.min_risk_floor:
-            risk_per_trade = tier.min_risk_floor
-
-        option_sl_points = atr
-        if option_sl_points < 5: option_sl_points = 5
-
-        # Calculate actual margin per lot. Fallback to half the tier threshold if LTP unknown.
-        margin_per_lot = (quote_ltp * instr.lot_size) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
+        risk_amount = capital * tier.risk_per_trade_pct
+        if risk_amount < tier.min_risk_floor:
+            risk_amount = tier.min_risk_floor
         
-        # Apply Compounding (Exponential Scaling) using real estimated cost
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
-        lots = int(lots * qty_multiplier) # Apply Soft OI Gate multiplier
+        # We multiply risk_amount by qty_multiplier (0.5 for OI bias conflict)
+        lots = self.gatekeeper.get_atr_lots(risk_amount * qty_multiplier, atr, multiplier=1.0)
+        
+        # Safety Buffer: Ensure we don't exceed the tier's margin-based compounded lots
+        # This prevents over-leveraging on low-ATR instruments.
+        option_ltp = self.data_fetcher.get_ltp(token, exchange=instr.exchange) or 50.0
+        margin_per_lot = option_ltp * instr.lot_size
+        compounded_lots = self.gatekeeper.get_compounded_lots(margin_per_lot, multiplier=self.risk_multiplier)
+        
+        if lots > compounded_lots:
+            logger.info(f"🛡️ ATR Sizing capped by Margin: {lots} → {compounded_lots} lots.")
+            lots = compounded_lots
+            
         qty = lots * instr.lot_size
         
-        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
+        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=ATR Risk Parity | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
 
         # 1.5 Cost Viability Check (Small Account Protection)
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
