@@ -625,30 +625,42 @@ class MomentumStrategy:
         # Root cause of 2026-04-09 bad trade: stale OI showed BEARISH while market
         # had already reversed to BULLISH after the first SL hit.
         _fresh_bias = 'NEUTRAL'
+        _oi_speed = 0.0
         try:
             _fresh_atm = round(nifty_ltp / 50) * 50
-            _fresh_oi = self.oi_analyzer.get_market_sentiment(expiry, _fresh_atm)
+            _fresh_oi = self.oi_analyzer.get_oi_velocity(expiry, _fresh_atm)
             _fresh_bias = _fresh_oi.get('bias', 'NEUTRAL')
+            _oi_speed = _fresh_oi.get('pcr_velocity', 0.0)
             logger.info(
                 f"🔍 Fresh OI at entry: bias={_fresh_bias} | "
-                f"PCR={_fresh_oi.get('pcr', '?')} | ΔR={_fresh_oi.get('delta_ratio', '?')}"
+                f"PCR={_fresh_oi.get('pcr', '?')} | Vel={_oi_speed:.4f}"
             )
         except Exception as _e:
             logger.warning(f"Fresh OI fetch failed: {_e}. Falling back to cached bias.")
             _fresh_bias = self.oi_data.get('bias', 'NEUTRAL')
+            _oi_speed = 0.0
 
-        if leg == "CE" and _fresh_bias == "BEARISH":
-            logger.warning(
-                "🛑 OI Alignment Gate: Fresh OI=BEARISH — CE blocked. "
-                "Institutions are against the bullish thesis. Skipping."
-            )
-            return
-        if leg == "PE" and _fresh_bias == "BULLISH":
-            logger.warning(
-                "🛑 OI Alignment Gate: Fresh OI=BULLISH — PE blocked. "
-                "Institutions are against the bearish thesis. Skipping."
-            )
-            return
+        _is_squeeze = False
+        if leg == "CE" and _oi_speed > 0.05:
+            _is_squeeze = True
+            logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Short Covering). Permitting CE entry.")
+        elif leg == "PE" and _oi_speed < -0.05:
+            _is_squeeze = True
+            logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
+
+        if not _is_squeeze:
+            if leg == "CE" and _fresh_bias == "BEARISH":
+                logger.warning(
+                    "🛑 OI Alignment Gate: Fresh OI=BEARISH — CE blocked. "
+                    "Institutions are against the bullish thesis. Skipping."
+                )
+                return
+            if leg == "PE" and _fresh_bias == "BULLISH":
+                logger.warning(
+                    "🛑 OI Alignment Gate: Fresh OI=BULLISH — PE blocked. "
+                    "Institutions are against the bearish thesis. Skipping."
+                )
+                return
 
         # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
         # Require at least 2 of the last 3 completed 5-min candles to close in

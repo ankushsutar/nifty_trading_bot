@@ -19,9 +19,9 @@ class DataFetcher:
                 cls._instance = super(DataFetcher, cls).__new__(cls)
                 cls._instance.api = api
                 cls._instance.data_cache = {} # Key: (token, interval), Value: (timestamp, df)
-                # 600s cache = 10 minutes.
-                # WebSocket keeps prices live, so we only need REST for historical context.
-                cls._instance.cache_duration = 3600 # 1 Hour cache (Hybrid merge keeps candles live)
+                # 300s cache = 5 minutes.
+                # Ensures we fetch fresh REST data every candle close as a fallback if WebSocket fails.
+                cls._instance.cache_duration = 300 # 5 Minute cache
                 cls._instance._ab1004_cooldowns = {} # Key: token, Value: timestamp of last AB1004
                 cls._instance.disk_cache_path = os.path.join(os.getcwd(), "data", "cache_candles.json")
                 cls._instance.disk_cache_lock = os.path.join(os.getcwd(), "data", "cache_candles.lock")

@@ -128,3 +128,30 @@ class OIAnalyzer:
         except Exception as e:
             logger.error(f"OI Analysis Error: {e}")
             return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+
+    def get_oi_velocity(self, expiry, atm_strike):
+        """
+        Calculates the Rate of Change (ROC) of the Put-Call Ratio (PCR).
+        This detects rapid institutional position unwinding (Short Squeezes).
+        """
+        current_data = self.get_market_sentiment(expiry, atm_strike)
+        current_time = time.time()
+        
+        # Initialize history if missing
+        if not hasattr(self, '_history'):
+            self._history = []
+            
+        self._history.append({"time": current_time, "pcr": current_data["pcr"]})
+        
+        # Keep only last 5 minutes (300 seconds)
+        self._history = [x for x in self._history if current_time - x["time"] <= 300]
+        
+        pcr_velocity = 0.0
+        if len(self._history) >= 2:
+            oldest_pcr = self._history[0]["pcr"]
+            newest_pcr = self._history[-1]["pcr"]
+            # Velocity = change in PCR over the window. Positive means more bullish.
+            pcr_velocity = newest_pcr - oldest_pcr
+            
+        current_data["pcr_velocity"] = round(pcr_velocity, 4)
+        return current_data

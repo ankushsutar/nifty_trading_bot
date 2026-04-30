@@ -219,28 +219,34 @@ class GammaBlastStrategy:
             _expiry_now = expiry if expiry else _get_expiry()
             _atm_now = round(ltp / 50) * 50
             try:
-                _fresh_oi = self.oi_analyzer.get_market_sentiment(_expiry_now, _atm_now)
+                _fresh_oi = self.oi_analyzer.get_oi_velocity(_expiry_now, _atm_now)
                 oi_bias = _fresh_oi.get('bias', 'NEUTRAL')
+                oi_speed = _fresh_oi.get('pcr_velocity', 0.0)
                 logger.info(
                     f"Gamma Blast: 🔍 Fresh OI: bias={oi_bias} | "
-                    f"PCR={_fresh_oi.get('pcr', '?')} | ΔR={_fresh_oi.get('delta_ratio', '?')}"
+                    f"PCR={_fresh_oi.get('pcr', '?')} | Vel={oi_speed:.4f}"
                 )
             except Exception as _oe:
                 logger.warning(f"Gamma Blast: Fresh OI fetch failed: {_oe}. Using market_service cache.")
                 oi_data = market_data.get('oi_data', {})
                 oi_bias = oi_data.get('bias', 'NEUTRAL')
+                oi_speed = 0.0
 
-            if (leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH"):
-                # On high-ADX parabolic days, institutional OI (PCR) leads price.
-                # EMA crossover may still reflect the previous trend direction.
-                # Override leg to align with smart money rather than skipping entirely.
-                old_leg = leg
-                leg = "PE" if oi_bias == "BEARISH" else "CE"
+            _is_squeeze = False
+            if leg == "CE" and oi_speed > 0.05:
+                _is_squeeze = True
+                logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {oi_speed:.4f} (Short Covering). Permitting CE entry.")
+            elif leg == "PE" and oi_speed < -0.05:
+                _is_squeeze = True
+                logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
+
+            if not _is_squeeze and ((leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH")):
                 logger.warning(
-                    f"Gamma Blast: ⚡ OI Override — EMA says {old_leg} but institutions say {oi_bias}. "
-                    f"Switching to {leg} to follow smart money on this ADX={adx:.1f} parabolic day."
+                    f"Gamma Blast: 🛑 Strict OI Gate — Price Action says {leg} but institutions say {oi_bias}. "
+                    f"Contradicting signals on ADX={adx:.1f} day. Skipping entry to protect capital."
                 )
-
+                time.sleep(30)
+                continue
             # --- CANDLE MOMENTUM FILTER ---
             # At least 2 of the last 3 completed 5-min candles must close in the
             # trade direction. Prevents entering on an EMA crossover from a single
@@ -331,30 +337,32 @@ class GammaBlastStrategy:
             except Exception as _ae:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
-            # 4. Strike Selection — OTM depth scales with ADX strength.
-            # Stronger trend = deeper OTM = exponentially higher leverage.
-            #   ADX 35–50 → 1 OTM (delta ~0.35, moderate leverage, safer)
-            #   ADX 50–55 → 2 OTM (delta ~0.20, high leverage)
-            #   ADX > 55  → 3 OTM (delta ~0.10, maximum leverage, parabolic days only)
+            # 4. Strike Selection — Goldman Squeeze Logic (Delta Shift)
             atm_strike = round(ltp / 50) * 50
-            if adx < 50:
-                otm_depth = 1
-            elif adx < 55:
-                otm_depth = 2
+            if getattr(self, '_is_squeeze', False):
+                # SQUEEZE DETECTED: Shift to ATM (0 depth) for maximum absolute rupee profit.
+                otm_depth = 0
+                logger.info("🔥 SQUEEZE DELTA SHIFT: Upgrading strike selection to ATM for maximum absolute profit.")
             else:
-                otm_depth = 3
+                # Standard ADX scale
+                if adx < 50:
+                    otm_depth = 1
+                elif adx < 55:
+                    otm_depth = 2
+                else:
+                    otm_depth = 3
 
-            # --- IV RANK: OTM DEPTH CAP ---
-            # When options are expensive (IV Rank > 70%), avoid going too deep OTM —
-            # a fat premium on a low-delta strike needs a huge move to break even.
-            # Floor at 1 OTM (never go ATM for gamma blast — it's a leverage strategy).
-            iv_rank = self.gatekeeper.get_iv_rank()
-            if iv_rank > 0.70 and otm_depth > 1:
-                otm_depth = max(1, otm_depth - 1)
-                logger.info(
-                    f"📉 IV Rank={iv_rank:.0%}: Options expensive, "
-                    f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
-                )
+                # --- IV RANK: OTM DEPTH CAP ---
+                # When options are expensive (IV Rank > 70%), avoid going too deep OTM —
+                # a fat premium on a low-delta strike needs a huge move to break even.
+                # Floor at 1 OTM (never go ATM for gamma blast — it's a leverage strategy).
+                iv_rank = self.gatekeeper.get_iv_rank()
+                if iv_rank > 0.70 and otm_depth > 1:
+                    otm_depth = max(1, otm_depth - 1)
+                    logger.info(
+                        f"📉 IV Rank={iv_rank:.0%}: Options expensive, "
+                        f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
+                    )
 
             strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
 
@@ -372,11 +380,16 @@ class GammaBlastStrategy:
             # Fetch Option LTP for early record and price estimate
             quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0
 
-            # 5. Position Sizing — lot fraction from capital tier (MICRO=50%, SMALL=60%, etc.)
+            # 5. Position Sizing — Uncapped Deployment for Squeezes
             # Reuse _tier already resolved above — no extra API call needed.
             margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (_tier.min_capital_threshold * 0.5)
-            # Lots are scaled by the Brain's risk multiplier AND the strategy's specific lot fraction
-            lots = int(self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier) * _tier.gamma_blast_lot_pct)
+            
+            raw_lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
+            if getattr(self, '_is_squeeze', False):
+                lots = int(raw_lots)
+                logger.info(f"🔥 SQUEEZE DEPLOYMENT: Bypassing lot fraction handicap. Deploying 100% of risk-parity lots ({lots}).")
+            else:
+                lots = int(raw_lots * _tier.gamma_blast_lot_pct)
             if lots < 1:
                 # Only force 1 lot if capital can actually cover a single lot
                 estimated_cost = margin_per_lot
@@ -591,13 +604,13 @@ class GammaBlastStrategy:
                         _next_label = f"BE trigger"
                         _next_price = round(entry_price + _be_mult * risk, 1)
                     elif stage == 1:
-                        _next_label = f"2R partial-book"
+                        _next_label = f"2R trail tight"
                         _next_price = round(entry_price + 2 * risk, 1)
                     elif stage == 2:
-                        _next_label = f"3R tight-trail"
+                        _next_label = f"3R hyper-trail"
                         _next_price = round(entry_price + 3 * risk, 1)
                     else:
-                        _next_label = "Tight trail active"
+                        _next_label = "Hyper-trail active"
                         _next_price = None
 
                     _next_str = (
@@ -627,65 +640,26 @@ class GammaBlastStrategy:
                     if sl_oid and not self.dry_run:
                         self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
 
-                # ── Stage 2: Book 50% at 2R ───────────────────────────────
+                # ── Stage 2: Tighten Trail at 2R (No Partial Booking) ───
                 if stage < 2 and ltp >= entry_price + 2 * risk:
-                    lot_size  = Config.NIFTY_LOT_SIZE
-                    half_lots = max(0, (remaining_qty // lot_size) // 2)
-                    half_qty  = half_lots * lot_size
-
-                    if half_qty >= lot_size and remaining_qty > lot_size:
-                        partial_pnl = round((ltp - entry_price) * half_qty, 2)
-                        logger.info(
-                            f"💰 Gamma Blast: Stage 2 (2R). Booking {half_qty} qty @ ₹{ltp:.1f} "
-                            f"(locked P&L: ₹{partial_pnl:+,.0f}). "
-                            f"Remaining {remaining_qty - half_qty} qty runs free."
-                        )
-                        partial_confirmed = self.dry_run  # dry_run always confirms
-                        if not self.dry_run:
-                            partial_limit = round(ltp * 0.98, 1)
-                            partial_params = {
-                                "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                                "transactiontype": "SELL", "exchange": "NFO",
-                                "ordertype": "LIMIT", "price": partial_limit,
-                                "producttype": "INTRADAY", "duration": "DAY", "quantity": half_qty,
-                            }
-                            p_oid = self.order_manager.place_order(partial_params)
-                            if p_oid:
-                                fill = self.wait_for_fill(p_oid)
-                                if fill['status'] == 'FILLED':
-                                    partial_pnl = round((fill['price'] - entry_price) * half_qty, 2)
-                                    partial_confirmed = True
-                                else:
-                                    logger.warning(
-                                        f"Gamma Blast: ⚠️ Partial booking order {p_oid} not filled "
-                                        f"(status={fill['status']}). Keeping full position active."
-                                    )
-
-                        # Only update state if the broker actually filled the partial sell.
-                        # Avoids desync where local state shows half-position but broker holds full.
-                        if partial_confirmed:
-                            trade_repo.reduce_position(
-                                trade_id=trade_id,
-                                reduction_qty=half_qty,
-                                exit_price=ltp,
-                                pnl_segment=partial_pnl,
-                                reason="PARTIAL_PROFIT_2R",
-                            )
-                            remaining_qty -= half_qty
-
-                    # Raise SL floor to lock 0.5R on the remaining position
-                    sl = round(entry_price + 0.5 * risk, 1)
+                    logger.info(
+                        f"Gamma Blast: 💰 Stage 2 (2R). Full quantity ({remaining_qty}) running. "
+                        f"Activating 0.75R tight trail to lock in explosive profits."
+                    )
+                    # Raise SL floor to lock 1R profit instantly
+                    sl = round(entry_price + 1.0 * risk, 1)
                     stage = 2
                     trade_repo.update_sl(trade_id, sl)
                     trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
                     if sl_oid and not self.dry_run:
                         self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
 
-                # ── Stage 3: Tighten trail at 3R ──────────────────────────
+                # ── Stage 3: Hyper-Tighten trail at 3R ──────────────────────────
                 if stage < 3 and ltp >= entry_price + 3 * risk:
                     logger.info(
                         f"Gamma Blast: 💎 Stage 3 (3R+). "
-                        f"Activating tight trail on {remaining_qty} qty. No target cap."
+                        f"Activating 0.25R HYPER-TIGHT trail on {remaining_qty} qty. "
+                        f"Milking the parabolic top."
                     )
                     stage = 3
                     trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
@@ -694,9 +668,9 @@ class GammaBlastStrategy:
                 # Trail distance shrinks as profit grows so winners run further:
                 #   Stage 1 (1R–2R):  trail at 1.0R  — wide, avoids post-breakeven whipsaws
                 #   Stage 2 (2R–3R):  trail at 0.75R — tighter, profit locked, let it breathe
-                #   Stage 3 (3R+):    trail at 0.50R  — very tight, milk every point
+                #   Stage 3 (3R+):    trail at 0.25R  — hyper-tight, milk every point
                 if stage >= 1:
-                    trail_dist = risk * (1.0 if stage == 1 else 0.75 if stage == 2 else 0.5)
+                    trail_dist = risk * (1.0 if stage == 1 else 0.75 if stage == 2 else 0.25)
                     trail_dist = max(trail_dist, 3.0)   # never trail closer than ₹3 (bid/ask noise)
                     new_sl = round(ltp - trail_dist, 1)
                     if new_sl > sl:
