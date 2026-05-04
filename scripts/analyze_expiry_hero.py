@@ -48,7 +48,7 @@ def analyze_expiries(initial_capital=None):
             
             daily_stats.append({
                 "Date": t_date,
-                "Weekday": ["Mon", "Tue", "Wed", "Thu", "Fri"][t_date.weekday()],
+                "Weekday": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][t_date.weekday()],
                 "Strategy": name,
                 "Trades": 1,
                 "PnL": t["pnl"],

@@ -105,8 +105,8 @@ class DecisionEngine:
         available_cash = available_cash_early
         logger.info(f">>> [Brain] Current available capital: ₹{available_cash:,.2f} [{tier.name} tier]")
 
-        # MICRO tier = small account mode (focus on A+ setups only)
-        is_small_account = (tier.name == "MICRO")
+        # MICRO/SMALL tier = small account mode (focus on A+ setups only)
+        is_small_account = (tier.name in ["MICRO", "SMALL"])
         if is_small_account:
             logger.info(">>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)")
 
@@ -186,13 +186,11 @@ class DecisionEngine:
 
         # Map score to scaling factor (4 discrete tiers for clean lot arithmetic)
         if confluence_score >= 6:
-            scaling_factor = 1.0    # A+ setup — full size
-        elif confluence_score >= 4:
-            scaling_factor = 0.75   # Good setup — 3/4 size
-        elif confluence_score >= 2:
-            scaling_factor = 0.5    # Weak setup — half size
+            scaling_factor = 1.0    # A+ setup — full size (4-5 lots)
+        elif confluence_score >= 5:
+            scaling_factor = 0.5    # Good setup — half size (2-3 lots)
         else:
-            scaling_factor = 0.25   # Conflicting signals — minimal size
+            scaling_factor = 0.2    # Low Confidence — Minimum size (1 lot)
 
         logger.info(
             f">>> [Brain] 🎯 Confluence: {confluence_score}/7 | "

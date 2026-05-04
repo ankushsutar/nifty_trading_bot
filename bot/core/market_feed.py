@@ -344,15 +344,12 @@ class MarketFeedService:
             return None
 
         age = time.time() - data.get('timestamp', 0)
-        if age < 10:
+        if age < 5.0:
             return data.get('ltp')  # Fresh data — normal path
 
-        # Stale data (WebSocket likely disconnected) — return last known value
-        # Strategies use this for SL management during reconnect; better than None
-        logger.warning(
-            f">>> [MarketFeed] Stale LTP for token {token} ({age:.0f}s old). "
-            f"WebSocket may be disconnected. Using last known: {data.get('ltp')}"
-        )
+        # Stale data (WebSocket likely disconnected) — return None to force REST fallback
+        logger.warning(f">>> [MarketFeed] ⚠️ Stale data for {token} (age: {age:.1f}s). Forcing API fallback.")
+        return None
         return data.get('ltp')
 
     def get_ltp_safe(self, token):
