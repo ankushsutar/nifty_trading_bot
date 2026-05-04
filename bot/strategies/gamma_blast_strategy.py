@@ -234,13 +234,15 @@ class GammaBlastStrategy:
                 oi_bias = oi_data.get('bias', 'NEUTRAL')
                 oi_speed = 0.0
 
-            _is_squeeze = False
+            self._is_squeeze = False
             if leg == "CE" and oi_speed > 0.05:
-                _is_squeeze = True
+                self._is_squeeze = True
                 logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {oi_speed:.4f} (Short Covering). Permitting CE entry.")
             elif leg == "PE" and oi_speed < -0.05:
-                _is_squeeze = True
+                self._is_squeeze = True
                 logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
+            
+            _is_squeeze = self._is_squeeze
 
             if not _is_squeeze and ((leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH")):
                 logger.warning(
@@ -321,10 +323,12 @@ class GammaBlastStrategy:
                         # 2. If ADX > 35, allow small decline up to 0.2pts (noise).
                         # 3. Otherwise, require at least flat (diff > -0.05).
                         _is_declining = False
-                        if curr_adx_s > 50:
-                            _is_declining = False
+                        if self._is_squeeze:
+                            logger.info("🔥 Squeeze detected: Bypassing ADX Slope Filter.")
+                        elif curr_adx_s > 50:
+                            _is_declining = (curr_adx_s - prev_adx_s) < -3.0
                         elif curr_adx_s > 35:
-                            _is_declining = (curr_adx_s - prev_adx_s) < -0.2
+                            _is_declining = (curr_adx_s - prev_adx_s) < -1.5
                         else:
                             _is_declining = (curr_adx_s - prev_adx_s) < -0.05
 

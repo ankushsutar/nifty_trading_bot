@@ -114,7 +114,7 @@ class LadderedTrailingManager:
 
         # Update Broker SL
         sl_oid = active_position.get('sl_order_id')
-        if sl_oid and not Config.LIVE_TRADE_ENABLED: # Check if live trade is enabled
+        if sl_oid and not self.order_manager.dry_run: # Modification permitted in Live mode
              # Note: In momentum_strategy.py, it checked not self.dry_run
              # We'll use Config.LIVE_TRADE_ENABLED as a proxy or just rely on order_manager
              symbol = active_position['symbol']

@@ -26,7 +26,7 @@ class StraddleScalpStrategy:
     STRATEGY_NAME      = "STRADDLE_SCALP"
     PROFIT_TARGET_PCT  = 0.20   # Exit when combined premium rises 20%
     STOP_LOSS_PCT      = 0.15   # Exit when combined premium falls 15%
-    MAX_ADX_TO_ENTER   = 20.0   # Require ranging/sideways market
+    MAX_ADX_TO_ENTER   = 25.0   # Relaxed from 20.0 to capture more sideways days
     MAX_ENTRY_TIME     = datetime.time(11, 0)    # Normal days: no new entries after 11:00 AM
     MAX_ENTRY_EXPIRY   = datetime.time(12, 30)   # Expiry days: gamma stays high till noon
 

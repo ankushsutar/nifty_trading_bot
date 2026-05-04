@@ -273,7 +273,7 @@ class OrderManager:
             logger.error(f"Cancel Order Error: {e}")
             return False
 
-    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty):
+    def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, transaction_type="SELL"):
         """Modifies an existing SL Order."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Modification Rejected.")
@@ -286,8 +286,7 @@ class OrderManager:
             
             # Using same corridor logic as placement to maintain institutional quality
             # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
-            txn_type = "SELL" 
-            limit_price = round((price * 0.95) / 0.05) * 0.05 if txn_type == "SELL" else round((price * 1.05) / 0.05) * 0.05
+            limit_price = round((price * 0.95) / 0.05) * 0.05 if transaction_type == "SELL" else round((price * 1.05) / 0.05) * 0.05
             limit_price = round(limit_price, 2)
             
             orderparams = {
@@ -302,6 +301,7 @@ class OrderManager:
                 "tradingsymbol": symbol,
                 "symboltoken": token,
                 "exchange": "NFO",
+                "transactiontype": transaction_type,
                 "disclosedquantity": 0
             }
             if self.dry_run or not self.live_trade_enabled:

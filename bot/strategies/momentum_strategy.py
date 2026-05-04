@@ -875,16 +875,9 @@ class MomentumStrategy:
         # Apply Compounding (Exponential Scaling) using real estimated cost
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
         
-        # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
-        if 30000 <= capital <= 40000:
-            if quote_ltp <= 80:
-                lots = 2
-                logger.info(f"Sizing Optimization: Premium ₹{quote_ltp} <= ₹80 on ₹35k capital. Trading 2 lots.")
-            elif quote_ltp > 100:
-                lots = 1
-                logger.info(f"Sizing Optimization: Premium ₹{quote_ltp} > ₹100 on ₹35k capital. Restricting to 1 lot.")
-            else:
-                lots = 1 # Default for 80-100 range as per conservative logic
+        # Phase 3: Capital & Lot Sizing (Uses Gatekeeper's dynamic tier-based calculation)
+        # This allows for 4-5 lots on ₹35k capital, ensuring ₹1,500 profit is achievable.
+        # (Hardcoded 1-2 lot restriction removed for better capital efficiency)
 
         qty = lots * Config.NIFTY_LOT_SIZE
         

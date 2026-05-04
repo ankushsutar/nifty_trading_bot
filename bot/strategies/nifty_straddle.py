@@ -278,13 +278,13 @@ class NiftyStrategy:
         new_trigger = entry_price
         new_price = round(entry_price + 1.0, 1)
         
-        success = self.order_manager.modify_sl_order(sl_oid, new_price, symbol, token, quantity)
+        success = self.order_manager.modify_sl_order(sl_oid, new_price, symbol, token, quantity, transaction_type="BUY")
         if success:
              logger.info(f"    >>> Modified {leg_type} SL to {entry_price}")
         else:
              logger.error(f"    >>> Modification Failed. Cancelling and Replacing.")
              self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
-             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type)
+             new_id = self.order_manager.place_sl_order(symbol, token, quantity, new_price, leg_type, transaction_type="BUY")
              if new_id: self.sl_orders[leg_type] = new_id
 
     def exit_all_market(self, quantity, reason):
