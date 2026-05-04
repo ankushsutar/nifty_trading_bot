@@ -202,9 +202,10 @@ class Config:
     BLACKOUT_START_TIME      = (11, 30)   # (hour, minute)
     BLACKOUT_END_TIME        = (13, 0)
     EXPIRY_ENTRY_BLOCK_TIME  = (13, 30)
-    STRATEGY_EXIT_TIME       = (15, 15)
+    STRATEGY_EXIT_TIME       = (15, 10)
 
     # ── NIFTY constants ────────────────────────────────────────────────────
+    ACTIVE_SYMBOL = os.getenv("ACTIVE_SYMBOL", "NIFTY")
     NIFTY_LOT_SIZE = 65                   # Updated for 2026
     SCRIP_MASTER_URL = (
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"

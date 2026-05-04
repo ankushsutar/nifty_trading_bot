@@ -264,6 +264,16 @@ class MarketService:
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
                     levels_provider.data_fetcher.api = self.api # Keep sync
 
+                    # --- OPTIMIZATION: Check if another process already refreshed intelligence recently ---
+                    # Prevents double-fetching if the server reloaded or if multiple instances are running.
+                    state_file = "data/market_analysis.json"
+                    if os.path.exists(state_file):
+                        file_age = time.time() - os.path.getmtime(state_file)
+                        if file_age < 120: # If less than 2 mins old, skip this cycle
+                            logger.info(f"MarketService: Shared intelligence is fresh ({int(file_age)}s old). Skipping fetch.")
+                            time.sleep(120) 
+                            continue
+
                     # 0. Levels Analysis (S&R)
                     self.levels_data = levels_provider.get_levels() or {}
                     

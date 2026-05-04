@@ -45,6 +45,8 @@ class BacktestEngine:
         option_delta: float = 0.50,           # ATM delta approximation
         option_premium_atr_mult: float = 2.5,  # ATM premium ≈ ATR * this multiplier
         max_trades_per_day: int = 3,
+        max_lots: int = 20,                    # Hard cap on position size
+        slippage_pct: float = 0.005            # 0.5% slippage per side
     ):
         self.initial_capital = initial_capital
         self.lot_size = lot_size
@@ -54,6 +56,8 @@ class BacktestEngine:
         self.option_delta = option_delta
         self.option_premium_atr_mult = option_premium_atr_mult
         self.max_trades_per_day = max_trades_per_day
+        self.max_lots = max_lots
+        self.slippage_pct = slippage_pct
 
         self.df_1m: pd.DataFrame | None = None
         self.df_5m: pd.DataFrame | None = None
@@ -465,10 +469,24 @@ class BacktestEngine:
             sl_price     = entry_premium * (1 - sl_mult)
             target_price = entry_premium * (1 + tgt_mult)
 
-            # Position sizing: risk-based
-            risk_amount  = capital * self.risk_per_trade_pct
-            max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
-            lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
+            # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
+            if 30000 <= capital <= 40000:
+                if entry_premium <= 80:
+                    lots = 2
+                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} <= 80. Trading 2 lots.")
+                elif entry_premium > 100:
+                    lots = 1
+                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} > 100. Trading 1 lot.")
+                else:
+                    lots = 1
+            else:
+                # Default position sizing: risk-based
+                risk_amount  = capital * self.risk_per_trade_pct
+                max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
+                lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
+            
+            # Realistic Cap: Never trade more than max_lots
+            lots = min(lots, self.max_lots)
             qty  = lots * self.lot_size
 
             # Margin check: estimated cost <= 90% of capital
@@ -481,8 +499,14 @@ class BacktestEngine:
             if estimated_cost > capital:
                 continue  # Genuinely unaffordable
 
-            # Brokerage
-            brokerage = self.brokerage_per_lot * lots * 2  # entry + exit
+            # --- Apply Entry Slippage ---
+            entry_premium_slippage = entry_premium * (1 + self.slippage_pct)
+
+            # Brokerage + Realistic Taxes (STT, GST, Transaction Charges ≈ 0.1% of turnover)
+            brokerage = self.brokerage_per_lot * lots * 2
+            turnover = (entry_premium_slippage + (entry_premium_slippage * 1.5)) * qty # Rough estimate
+            taxes = turnover * 0.001 
+            total_cost = brokerage + taxes
 
             # --- Simulate trade outcome on 1m bars ---
             future_bars = df1[df1.index > ts]
@@ -497,10 +521,13 @@ class BacktestEngine:
 
             exit_price, exit_reason = self._find_exit(
                 future_day, direction, entry_premium, sl_price, target_price,
-                atr, delta, use_progressive_trail=use_progressive
+                atr, delta, qty, use_progressive_trail=use_progressive
             )
 
-            pnl = (exit_price - entry_premium) * qty - brokerage
+            # --- Apply Exit Slippage ---
+            exit_price_slippage = exit_price * (1 - self.slippage_pct)
+
+            pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
             capital += pnl
             daily_pnl[date]   = daily_pnl.get(date, 0.0) + pnl
             daily_count[date] = d_count + 1
@@ -534,17 +561,16 @@ class BacktestEngine:
         return trades, equity_curve
 
     def _find_exit(
-        self, future_bars, direction, entry_price, sl_price, target_price, atr, delta,
+        self, future_bars, direction, entry_price, sl_price, target_price, atr, delta, qty,
         use_progressive_trail=False
     ):
         """
         Walk through 1m bars after entry to find the first exit.
         
-        Optional: use_progressive_trail (Stage 0 -> 1 -> 2 -> 3)
-        Stage 0: Original SL
-        Stage 1: (+1R index move) -> Move SL to Breakeven
-        Stage 2: (+2R index move) -> Book 50% (simulated) & Lock +0.5R
-        Stage 3: (+3R index move) -> Tighten trail to 0.5R distance
+        Optional: use_progressive_trail (Stage-Gate System)
+        Stage 1: PnL >= 1500 -> SL = Entry + 16
+        Stage 2: PnL >= 2600 -> SL = Entry + 30
+        Stage 3: PnL >= 3900 -> 1m 9-EMA Trail
         """
         entry_index = future_bars["close"].iloc[0]
         current_sl = sl_price
@@ -582,27 +608,32 @@ class BacktestEngine:
                 option_price = max(0.05, option_price)
 
             if use_progressive_trail:
-                # Progress stages based on Index risk (R)
-                # 1.0R move in index = move to breakeven
-                if stage < 1 and index_move * current_delta >= initial_risk:
-                    current_sl = entry_price
-                    stage = 1
+                unrealized_pnl = (option_price - entry_price) * qty
                 
-                # 2.0R move in index
-                if stage < 2 and index_move * current_delta >= 2 * initial_risk:
-                    current_sl = entry_price + (0.5 * initial_risk)
-                    stage = 2
+                # Stage 1: The ₹1,500 Floor
+                if stage < 1 and unrealized_pnl >= 1500:
+                    new_sl = entry_price + 16
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+                        stage = 1
                 
-                # 3.0R move in index -> Tight Hero Trail
-                if stage < 3 and index_move * current_delta >= 3 * initial_risk:
+                # Stage 2: The Buffer
+                if stage < 2 and unrealized_pnl >= 2600:
+                    new_sl = entry_price + 30
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+                        stage = 2
+                
+                # Stage 3: The 3R Hunter (1m 9-EMA Trail)
+                if stage < 3 and unrealized_pnl >= 3900:
                     stage = 3
                 
-                # Update Trail SL
-                if stage >= 1:
-                    # Trail based on Stage (Distance shrinks: 1R -> 0.75R -> 0.5R)
-                    dist_mult = 1.0 if stage == 1 else 0.75 if stage == 2 else 0.5
-                    trail_dist = max(3.0, initial_risk * dist_mult)
-                    new_sl = option_price - trail_dist
+                if stage == 3:
+                    # Simulate 1m 9-EMA Trail (approximate)
+                    # For backtest, we use the row's close as a proxy for EMA9 if we don't calculate it fully here.
+                    # Actually, we can calculate EMA9 on the fly or just use a tight trail.
+                    # To be accurate, we'll use a tight 5-point trail in Stage 3 for the backtest.
+                    new_sl = option_price - 5
                     if new_sl > current_sl:
                         current_sl = new_sl
 

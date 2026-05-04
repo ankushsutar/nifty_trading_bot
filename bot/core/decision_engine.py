@@ -217,13 +217,16 @@ class DecisionEngine:
         # ── HARD ADX GATE ─────────────────────────────────────────────────────────
         # No trade unless trend is strong enough for the current capital tier.
         # Larger accounts tolerate lower ADX; small accounts need strong trends only.
+        # EXCEPTION: Sideways/Chop regimes skip this gate to allow Straddle Scalps.
         adx = regime_data.get('adx', 0)
-        if adx < tier.min_adx_to_trade + adx_boost:
+        is_trending_request = (regime == "TRENDING") or (adx > 20)
+        
+        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"]:
             logger.info(
                 f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
                 f"{tier.min_adx_to_trade + adx_boost} minimum"
                 + (f" (base {tier.min_adx_to_trade} + session boost {adx_boost})" if adx_boost else "")
-                + ". No trade — waiting for a strong trend."
+                + ". Skipping Trend strategy — waiting for momentum."
             )
             return None, 1.0
         # ──────────────────────────────────────────────────────────────────────────
@@ -276,7 +279,8 @@ class DecisionEngine:
 
         elif regime in ["SIDEWAYS", "CHOP"]:
             now = datetime.datetime.now().time()
-            _scalp_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(11, 0)
+            # Relaxed cutoff: 12:30 for Expiry, 12:00 for normal days (was 11:00)
+            _scalp_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(12, 0)
             if now < _scalp_cutoff and "STRADDLE_SCALP" in tier.allowed_strategies:
                 logger.info(
                     f">>> [Brain] 🎯 {regime} market (ADX={adx:.1f}) before 10:30. "

@@ -9,6 +9,7 @@ from bot.core.order_manager import OrderManager
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
+from bot.core.position_manager import LadderedTrailingManager
 
 class GammaBlastStrategy:
     """
@@ -26,6 +27,7 @@ class GammaBlastStrategy:
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.regime_classifier = RegimeClassifier()
+        self.trailing_manager = LadderedTrailingManager(self.order_manager, self.data_fetcher)
         self.running = True
         self.active_position = None
         self.last_sync_time = 0
@@ -629,90 +631,30 @@ class GammaBlastStrategy:
                     if trade_id:
                         trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
 
-                # ── Stage 1: Breakeven at 1R (or 0.5R for high qty) ───
-                be_trigger_mult = 0.5 if (qty >= 4 * Config.NIFTY_LOT_SIZE) else 1.0
-                if stage < 1 and ltp >= entry_price + (be_trigger_mult * risk):
-                    logger.info(f"Gamma Blast: 🛡️ Stage 1 ({be_trigger_mult}R). SL → Breakeven ({entry_price})")
-                    sl    = entry_price
-                    stage = 1
-                    trade_repo.update_sl(trade_id, sl)
-                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
-                    if sl_oid and not self.dry_run:
-                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
-
-                # ── Stage 2: Tighten Trail at 2R (No Partial Booking) ───
-                if stage < 2 and ltp >= entry_price + 2 * risk:
-                    logger.info(
-                        f"Gamma Blast: 💰 Stage 2 (2R). Full quantity ({remaining_qty}) running. "
-                        f"Activating 0.75R tight trail to lock in explosive profits."
-                    )
-                    # Raise SL floor to lock 1R profit instantly
-                    sl = round(entry_price + 1.0 * risk, 1)
-                    stage = 2
-                    trade_repo.update_sl(trade_id, sl)
-                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
-                    if sl_oid and not self.dry_run:
-                        self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
-
-                # ── Stage 3: Hyper-Tighten trail at 3R ──────────────────────────
-                if stage < 3 and ltp >= entry_price + 3 * risk:
-                    logger.info(
-                        f"Gamma Blast: 💎 Stage 3 (3R+). "
-                        f"Activating 0.25R HYPER-TIGHT trail on {remaining_qty} qty. "
-                        f"Milking the parabolic top."
-                    )
-                    stage = 3
-                    trade_repo.update_monitoring_state(trade_id, stage, remaining_qty)
-
-                # ── Progressive trailing SL ───────────────────────────────
-                # Trail distance shrinks as profit grows so winners run further:
-                #   Stage 1 (1R–2R):  trail at 1.0R  — wide, avoids post-breakeven whipsaws
-                #   Stage 2 (2R–3R):  trail at 0.75R — tighter, profit locked, let it breathe
-                #   Stage 3 (3R+):    trail at 0.25R  — hyper-tight, milk every point
-                if stage >= 1:
-                    trail_dist = risk * (1.0 if stage == 1 else 0.75 if stage == 2 else 0.25)
-                    trail_dist = max(trail_dist, 3.0)   # never trail closer than ₹3 (bid/ask noise)
-                    new_sl = round(ltp - trail_dist, 1)
-                    if new_sl > sl:
-                        logger.info(
-                            f"Gamma Blast: 📈 Trail SL {sl} → {new_sl} "
-                            f"(LTP={ltp:.1f}, dist={trail_dist:.1f}, stage={stage})"
-                        )
-                        sl = new_sl
-                        trade_repo.update_sl(trade_id, sl)
-                        if sl_oid and not self.dry_run:
-                            self.order_manager.modify_sl_order(sl_oid, sl, symbol, token, remaining_qty)
-
-                # ── SL hit → exit remaining ───────────────────────────────
-                if ltp <= sl:
-                    reason = "TRAIL_SL_HIT" if stage > 0 else "SL_HIT"
-                    logger.info(
-                        f"Gamma Blast: {reason} at ₹{ltp:.1f} (SL={sl:.1f}). "
-                        f"Exiting {remaining_qty} qty."
-                    )
-                    # Step 1: Cancel broker SL FIRST so it can't double-fire
-                    if sl_oid:
-                        self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                # ── Time killswitch (15:10) ────────────────────────────────────
+                if self.trailing_manager.is_killswitch_time():
+                    logger.info("⏰ Gamma Blast: Time Killswitch (15:10) triggered. Force exiting.")
+                    if self.exit_market(token, symbol, remaining_qty, "TIME_KILLSWITCH", trade_id, sl_oid):
                         sl_oid = None
-                    # Step 2: Send market exit and capture actual fill price
-                    actual_exit_price = ltp  # fallback
-                    if not self.dry_run:
-                        exit_params = {
-                            "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                            "transactiontype": "SELL", "exchange": "NFO",
-                            "ordertype": "MARKET", "price": 0,
-                            "producttype": "INTRADAY", "duration": "DAY", "quantity": remaining_qty,
-                        }
-                        exit_oid = self.order_manager.place_order(exit_params)
-                        if exit_oid:
-                            fill = self.wait_for_fill(exit_oid)
-                            if fill['status'] == 'FILLED' and fill.get('price', 0) > 0:
-                                actual_exit_price = fill['price']
-                    # Step 3: Close DB with real fill price (PnL auto-calculated)
-                    trade_repo.close_trade(trade_id=trade_id, exit_price=actual_exit_price, exit_reason=reason)
+                        self.active_position = None
+                        break
+
+                # ── Use LadderedTrailingManager ───────────────────────────────
+                should_close, exit_type = self.trailing_manager.update_trailing_sl("GAMMA_BLAST", self.active_position, ltp)
+
+                if should_close:
+                    logger.info(f"🛑 Gamma Blast: Laddered Exit Triggered ({exit_type})")
+                    self.exit_market(token, symbol, remaining_qty, f"LADDERED_SL_{exit_type}", trade_id, sl_oid, exit_type=exit_type)
+                    sl_oid = None
                     self.active_position = None
                     self._last_sl_hit_time = time.time()
                     break
+
+                # Update local sl for logging
+                sl = self.active_position.get('sl_price', sl)
+                stage = self.active_position.get('ladder_stage', stage)
+
+                # Time exit at 15:15 (Configurable)
 
                 # ── Time exit at 15:15 (Configurable) ────────────────────────────────────
                 if datetime.datetime.now().time() >= datetime.time(*Config.STRATEGY_EXIT_TIME):
@@ -725,15 +667,19 @@ class GammaBlastStrategy:
                 logger.error(f"Gamma Blast Monitor Error: {e}")
                 time.sleep(2)
 
-    def exit_market(self, token, symbol, qty, reason, trade_id, sl_oid):
-        """Institutional Exit: Use buffered LIMIT instead of MARKET for OTM safety."""
+    def exit_market(self, token, symbol, qty, reason, trade_id, sl_oid, exit_type="MARKET"):
+        """Institutional Exit: Use buffered LIMIT instead of MARKET for OTM safety if requested."""
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
             ltp = self.data_fetcher.get_ltp(token) or 0
-            # Set limit 2% below LTP to act as market but with a 'flash-crash' floor
-            # 10% was too wide and triggered AB1007 LPP. 2% is the exchange sweet spot.
-            limit_price = round(ltp * 0.98, 1) if ltp > 0 else 0
+            
+            # Smart-Exit logic: Use LIMIT at SL price if exit_type is LIMIT
+            if exit_type == "LIMIT":
+                limit_price = self.active_position.get('sl_price', ltp)
+            else:
+                # Default institutional behavior: 2% buffer limit
+                limit_price = round(ltp * 0.98, 1) if ltp > 0 else 0
             
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,

@@ -287,7 +287,8 @@ class OrderManager:
             # Using same corridor logic as placement to maintain institutional quality
             # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
             txn_type = "SELL" 
-            limit_price = round(price * 0.95, 2) if txn_type == "SELL" else round(price * 1.05, 2)
+            limit_price = round((price * 0.95) / 0.05) * 0.05 if txn_type == "SELL" else round((price * 1.05) / 0.05) * 0.05
+            limit_price = round(limit_price, 2)
             
             orderparams = {
                 "variety": "STOPLOSS",

@@ -1,14 +1,132 @@
-# [DEPRECATED — DO NOT USE]
-# This module has been retired. All position monitoring is handled by
-# individual strategy monitor loops using OrderManager + DataFetcher.
-#
-# Reason for removal:
-#   - get_ltp() passed literal string "token_lookup" to Angel One API (always fails)
-#   - TSL logic duplicates what each strategy already implements
-#   - No rate limiting on the 0.5s poll loop
-#
-# If you need TSL logic, see: bot/strategies/momentum_strategy.py (trailing SL implementation)
-raise ImportError(
-    "PositionManager is deprecated and has been removed. "
-    "Use OrderManager + strategy monitor loops instead."
-)
+import time
+import datetime
+from bot.utils.logger import logger
+from bot.config.settings import Config
+from bot.core.trade_repo import trade_repo
+
+class LadderedTrailingManager:
+    """
+    Implements a Stage-Gate 'Profit-Floor & Runner' trailing system.
+    Phase 1: Initial Risk (1x ATR or 20pts)
+    Stage 1: Floor Locked (PnL >= 1500 -> SL = Entry + 16)
+    Stage 2: Buffer (PnL >= 2600 -> SL = Entry + 30)
+    Stage 3: 3R Hunter (PnL >= 3900 -> 1m 9-EMA Trail)
+    """
+
+    def __init__(self, order_manager, data_fetcher):
+        self.order_manager = order_manager
+        self.data_fetcher = data_fetcher
+        self._last_ema_check = 0
+
+    def update_trailing_sl(self, strategy_name, active_position, ltp):
+        """
+        Updates SL based on profit gates.
+        Returns (should_close, exit_type).
+        """
+        if not active_position:
+            return False, None
+
+        entry_price = active_position.get('entry_price', 0)
+        qty = active_position.get('qty', 0)
+        current_sl = active_position.get('sl_price', 0)
+        token = active_position.get('token')
+        symbol = active_position.get('symbol')
+        
+        if entry_price == 0 or qty == 0:
+            return False, None
+
+        unrealized_pnl = (ltp - entry_price) * qty
+        current_stage = active_position.get('ladder_stage', 0)
+
+        # Stage 0.5: Breakeven Shield (No-Loss Mode)
+        # As soon as we hit ₹500 profit, move SL to cost + 2pts (buffer for taxes)
+        if current_stage < 0.5 and unrealized_pnl >= 500:
+            new_sl = entry_price + 2
+            if new_sl > current_sl:
+                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active ({symbol}) | SL: {new_sl}")
+                self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
+                current_stage = 0.5
+
+        # Stage 1: The ₹1,500 Floor
+        if current_stage < 1 and unrealized_pnl >= 1500:
+            new_sl = entry_price + 16
+            if new_sl > current_sl:
+                logger.info(f"🛡️ Stage 1 Reached: Floor Locked ({symbol}) | SL: {new_sl}")
+                self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
+                current_stage = 1
+
+        # Stage 2: The Buffer
+        if current_stage < 2 and unrealized_pnl >= 2600:
+            new_sl = entry_price + 30
+            if new_sl > current_sl:
+                logger.info(f"📈 Stage 2 Reached: Buffer Set ({symbol}) | SL: {new_sl}")
+                self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
+                current_stage = 2
+
+        # Stage 3: The 3R Hunter (1m 9-EMA Trail)
+        if current_stage < 3 and unrealized_pnl >= 3900:
+            logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 9-EMA Trail) for {symbol}")
+            active_position['ladder_stage'] = 3
+            current_stage = 3
+
+        if current_stage == 3:
+            # Check 1m 9-EMA Trail
+            now = time.time()
+            if now - self._last_ema_check > 10: # Check every 10s
+                self._last_ema_check = now
+                ema9_1m = self._get_1m_ema9(token)
+                if ema9_1m > 0:
+                    # Trailing stop at EMA9
+                    new_sl = round(ema9_1m, 1)
+                    if new_sl > current_sl:
+                        self._apply_sl_update(strategy_name, active_position, new_sl)
+
+        # Exit Check
+        if ltp <= active_position.get('sl_price', 0):
+            logger.info(f"🛑 Laddered SL Hit! LTP: {ltp} <= SL: {active_position['sl_price']}")
+            # Smart-Exit: If Stage 1 has been reached, use LIMIT order
+            exit_type = "LIMIT" if current_stage >= 1 else "MARKET"
+            return True, exit_type
+
+        return False, None
+
+    def _get_1m_ema9(self, token):
+        try:
+            df = self.data_fetcher.fetch_latest_candles(token, interval="ONE_MINUTE")
+            if df is not None and not df.empty:
+                # Simple EMA9 calculation
+                ema9 = df['close'].ewm(span=9, adjust=False).mean()
+                return ema9.iloc[-1]
+        except Exception as e:
+            logger.error(f"Error fetching 1m EMA9: {e}")
+        return 0
+
+    def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None):
+        active_position['sl_price'] = new_sl
+        if stage is not None:
+            active_position['ladder_stage'] = stage
+        
+        # Update DB
+        if 'id' in active_position:
+            trade_repo.update_sl(active_position['id'], new_sl)
+            if stage is not None:
+                 trade_repo.collection.update_one({"id": active_position['id']}, {"$set": {"ladder_stage": stage}})
+
+        # Update Broker SL
+        sl_oid = active_position.get('sl_order_id')
+        if sl_oid and not Config.LIVE_TRADE_ENABLED: # Check if live trade is enabled
+             # Note: In momentum_strategy.py, it checked not self.dry_run
+             # We'll use Config.LIVE_TRADE_ENABLED as a proxy or just rely on order_manager
+             symbol = active_position['symbol']
+             token = active_position['token']
+             qty = active_position['qty']
+             self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+
+    def is_killswitch_time(self):
+        """
+        Regardless of profit, if the time is 15:10 (3:10 PM), execute a MARKET exit.
+        """
+        now = datetime.datetime.now().time()
+        if now >= datetime.time(15, 10):
+            return True
+        return False

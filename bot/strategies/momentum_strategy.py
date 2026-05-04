@@ -19,6 +19,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.order_manager import OrderManager
 from bot.core.market_feed import market_feed
 from bot.utils.notifier import notifier
+from bot.core.position_manager import LadderedTrailingManager
 
 class MomentumStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -30,6 +31,7 @@ class MomentumStrategy:
         self.regime_classifier = RegimeClassifier()
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
+        self.trailing_manager = LadderedTrailingManager(self.order_manager, self.data_fetcher)
         
         self.data_failure_count = 0
         self.active_position = None
@@ -261,6 +263,12 @@ class MomentumStrategy:
                         self.last_trailing_check = time.time()
 
                 now_time = datetime.datetime.now().time()
+                if self.trailing_manager.is_killswitch_time():
+                    logger.info("⏰ Time Killswitch (15:10) triggered. Force exiting all positions.")
+                    if self.active_position:
+                        self.close_position("TIME_KILLSWITCH")
+                    break
+
                 if not self.dry_run and now_time >= datetime.time(*Config.STRATEGY_EXIT_TIME):
                     logger.info(f"Market Closed ({datetime.time(*Config.STRATEGY_EXIT_TIME).strftime('%H:%M')}). Stopping Strategy.")
                     if self.active_position:
@@ -602,20 +610,23 @@ class MomentumStrategy:
         atr = self.last_analysis.get('atr', 20.0)
         if atr == 0: atr = 20.0
 
-        # --- RSI OVEREXTENSION FILTER ---
-        # Block entries when the move is already exhausted.
-        # CE entry blocked if RSI > 68 (overbought); PE entry blocked if RSI < 32 (oversold).
-        # Note: not applied to GAMMA_BLAST — parabolic days are supposed to be "overbought".
+        # --- ADAPTIVE RSI OVEREXTENSION FILTER ---
+        # In TRENDING regimes, momentum often keeps RSI high/low for longer.
+        # We relax the cap to 72 (from 68) during strong trends to avoid missing the move.
+        _regime = self.last_analysis.get('regime', 'UNKNOWN')
+        _rsi_cap = 72 if _regime == "TRENDING" else 68
+        _rsi_floor = 28 if _regime == "TRENDING" else 32
+
         entry_rsi = self.last_analysis.get('rsi', 50.0)
-        if leg == "CE" and entry_rsi > 68:
+        if leg == "CE" and entry_rsi > _rsi_cap:
             logger.warning(
-                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} > 68 (overbought). "
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} > {_rsi_cap} (overbought). "
                 "Skipping CE entry — not chasing an exhausted move."
             )
             return
-        if leg == "PE" and entry_rsi < 32:
+        if leg == "PE" and entry_rsi < _rsi_floor:
             logger.warning(
-                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} < 32 (oversold). "
+                f"🛑 RSI Overextension Filter: RSI={entry_rsi:.1f} < {_rsi_floor} (oversold). "
                 "Skipping PE entry — not chasing an exhausted move."
             )
             return
@@ -641,10 +652,11 @@ class MomentumStrategy:
             _oi_speed = 0.0
 
         _is_squeeze = False
-        if leg == "CE" and _oi_speed > 0.05:
+        _squeeze_threshold = 0.03 if _regime == "TRENDING" else 0.05
+        if leg == "CE" and _oi_speed > _squeeze_threshold:
             _is_squeeze = True
             logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Short Covering). Permitting CE entry.")
-        elif leg == "PE" and _oi_speed < -0.05:
+        elif leg == "PE" and _oi_speed < -_squeeze_threshold:
             _is_squeeze = True
             logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
 
@@ -673,15 +685,26 @@ class MomentumStrategy:
                 _last3 = _df_entry.tail(3)
                 _bull_count = (_last3['close'] > _last3['open']).sum()
                 _bear_count = (_last3['close'] < _last3['open']).sum()
-                if leg == "CE" and _bull_count < 2:
+                
+                # In strong TRENDING regimes with HTF (15m) alignment, we relax confirmation.
+                _htf_trend = self.calculate_htf_trend()
+                _htf_aligned = (_htf_trend == ("BULLISH" if leg == "CE" else "BEARISH"))
+                
+                # SQUEEZE BYPASS: If a squeeze is detected, we enter regardless of candle confirmation.
+                if _is_squeeze:
+                    _min_candles = 0
+                else:
+                    _min_candles = 1 if (_regime == "TRENDING" and _htf_aligned) else 2
+
+                if leg == "CE" and _bull_count < _min_candles:
                     logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bull_count}/3 bullish candles — "
+                        f"🛑 Candle Momentum Filter: {_bull_count}/{_min_candles} bullish candles — "
                         "weak confirmation for CE entry. Skipping."
                     )
                     return
-                if leg == "PE" and _bear_count < 2:
+                if leg == "PE" and _bear_count < _min_candles:
                     logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bear_count}/3 bearish candles — "
+                        f"🛑 Candle Momentum Filter: {_bear_count}/{_min_candles} bearish candles — "
                         "weak confirmation for PE entry. Skipping."
                     )
                     return
@@ -702,13 +725,16 @@ class MomentumStrategy:
                     _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
                     _vwap = (_typical * _vol).sum() / _vol.sum()
                     logger.info(f"📏 VWAP={_vwap:.1f} | NIFTY={nifty_ltp:.1f} | Leg={leg}")
-                    if leg == "CE" and nifty_ltp < _vwap:
+                    # SQUEEZE BYPASS: Squeezes often happen when price is on the "wrong" side of VWAP before flipping it.
+                    if _is_squeeze:
+                        logger.info("🔥 Squeeze detected: Bypassing VWAP Filter.")
+                    elif leg == "CE" and nifty_ltp < _vwap:
                         logger.warning(
                             f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} < VWAP {_vwap:.0f} — "
                             "CE blocked. Price trading below institutional anchor."
                         )
                         return
-                    if leg == "PE" and nifty_ltp > _vwap:
+                    elif leg == "PE" and nifty_ltp > _vwap:
                         logger.warning(
                             f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} > VWAP {_vwap:.0f} — "
                             "PE blocked. Price trading above institutional anchor."
@@ -729,15 +755,21 @@ class MomentumStrategy:
                     prev_adx_m = _adx_s.iloc[-2]
 
                     # NOISE TOLERANCE: On parabolic days, minor ADX dips are expected noise.
-                    # 1. If ADX > 50, ignore slope (extreme trend regime).
-                    # 2. If ADX > 35, allow a small decline up to 0.2pts.
-                    # 3. Otherwise, require at least flat (diff > -0.05).
                     _is_declining_m = False
-                    if curr_adx_m > 50:
-                        _is_declining_m = False
+                    
+                    if _is_squeeze:
+                         logger.info("🔥 Squeeze detected: Bypassing ADX Slope Filter.")
+                    elif curr_adx_m > 45:
+                        # Extreme trend: Allow significant cooling off (-3.0)
+                        _is_declining_m = (curr_adx_m - prev_adx_m) < -3.0
                     elif curr_adx_m > 35:
-                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.2
+                        # Strong trend: Allow moderate cooling off (-1.5)
+                        _is_declining_m = (curr_adx_m - prev_adx_m) < -1.5
+                    elif curr_adx_m > 25:
+                        # Moderate trend: Allow small cooling off (-0.5)
+                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.5
                     else:
+                        # Developing trend: Require rising momentum (positive slope)
                         _is_declining_m = (curr_adx_m - prev_adx_m) < -0.05
 
                     if _is_declining_m:
@@ -842,6 +874,18 @@ class MomentumStrategy:
         
         # Apply Compounding (Exponential Scaling) using real estimated cost
         lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
+        
+        # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
+        if 30000 <= capital <= 40000:
+            if quote_ltp <= 80:
+                lots = 2
+                logger.info(f"Sizing Optimization: Premium ₹{quote_ltp} <= ₹80 on ₹35k capital. Trading 2 lots.")
+            elif quote_ltp > 100:
+                lots = 1
+                logger.info(f"Sizing Optimization: Premium ₹{quote_ltp} > ₹100 on ₹35k capital. Restricting to 1 lot.")
+            else:
+                lots = 1 # Default for 80-100 range as per conservative logic
+
         qty = lots * Config.NIFTY_LOT_SIZE
         
         logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
@@ -1022,7 +1066,7 @@ class MomentumStrategy:
         
         return result
 
-    def close_position(self, reason, override_qty=None):
+    def close_position(self, reason, override_qty=None, exit_type="MARKET"):
         if not self.active_position: return
         
         symbol = self.active_position['symbol']
@@ -1031,7 +1075,7 @@ class MomentumStrategy:
         
         is_partial = override_qty is not None and override_qty < self.active_position['qty']
         
-        logger.info(f"Exit: Closing {qty} shares of {symbol} (Reason: {reason})")
+        logger.info(f"Exit: Closing {qty} shares of {symbol} (Reason: {reason}) | Type: {exit_type}")
         
         exit_price = 0
         try:
@@ -1052,7 +1096,9 @@ class MomentumStrategy:
             try:
                 orderparams = {
                     "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO", "ordertype": "MARKET",
+                    "transactiontype": "SELL", "exchange": "NFO", 
+                    "ordertype": exit_type,
+                    "price": self.active_position.get('sl_price', 0) if exit_type == "LIMIT" else 0,
                     "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
                 }
                 oid = self.order_manager.place_order(orderparams)
@@ -1159,48 +1205,25 @@ class MomentumStrategy:
                      pass
         except Exception as e:
             logger.error(f"DB Update Error: {e}")
+        
+        # FINAL CLEAR: If we reached here, the broker exit attempt has been made.
+        # We must clear the state to prevent infinite exit loops.
+        self.active_position = None
+        logger.info("✅ Strategy State: Internal Memory Cleared.")
 
     def check_trailing_stop(self):
         """
-        Phase 3: Dynamic RR Trailing Stop.
-
-        TRENDING  (5:1 target) regime:
-          Stage 1: @ 1.0 ATR profit → move SL to breakeven immediately (fast pivot).
-          Stage 2: @ 2.5 ATR profit → close 50% and trail the rest.
-          Target  : honour target_price from active_position.
-
-        RANGEBOUND (1.5:1 target) regime:
-          Stage 1: @ 0.75 ATR profit → breakeven.
-          Exit early on any sign of structural reversal (trend fade).
-          Stage 2: @ 1.5 ATR → full exit.
+        Refactored to use LadderedTrailingManager (Stage-Gate system).
         """
         if not self.active_position: return False
 
-        token        = self.active_position['token']
-        symbol       = self.active_position['symbol']
-        entry_price  = self.active_position.get('entry_price', 0.0)
-        current_sl   = self.active_position.get('sl_price', 0.0)
-        atr_at_entry = self.active_position.get('atr', 20.0)
-        is_partial   = self.active_position.get('partially_booked', False)
-        target_price = self.active_position.get('target_price', 0.0)
-        dynamic_rr   = self.active_position.get('dynamic_rr', 'RANGEBOUND_1.5:1')
-        is_trending  = dynamic_rr.startswith('TRENDING')
-
-        if entry_price == 0: return False
+        token = self.active_position['token']
+        symbol = self.active_position['symbol']
+        entry_price = self.active_position.get('entry_price', 0.0)
 
         ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
-        if not ltp:
-            try:
-                from bot.utils.rate_limiter import rate_limiter
-                rate_limiter.wait()
-                q_resp = self.api.ltpData("NFO", symbol, token)
-                if q_resp and q_resp.get('status'):
-                    ltp = float(q_resp['data']['ltp'])
-            except Exception as e:
-                logger.warning(f"Trailing Stop LTP fetch error: {e}")
-                return False
-
-        if not ltp or ltp == 0: return False
+        if not ltp or ltp == 0:
+            return False
 
         # ── 30s status heartbeat ──────────────────────────────────────────────
         if time.time() - self._last_status_log > 30:
@@ -1208,115 +1231,29 @@ class MomentumStrategy:
             _qty     = self.active_position.get('qty', 0)
             _pnl     = round((ltp - entry_price) * _qty, 2)
             _pnl_pct = round((_pnl / (entry_price * _qty)) * 100, 2) if entry_price > 0 and _qty > 0 else 0
-            _tgt     = self.active_position.get('target_price', 0)
-            _rr      = self.active_position.get('dynamic_rr', '?')
-            _is_part = self.active_position.get('partially_booked', False)
-
-            _sl_dist  = round(ltp - current_sl, 1)  if current_sl > 0 else 0
-            _tgt_dist = round(_tgt - ltp, 1)        if _tgt > 0 else 0
-            _tgt_str  = (
-                f"Target=₹{_tgt:.1f} ({_tgt_dist:+.1f}pts)"
-                if _tgt > 0 else "No fixed target (trailing)"
-            )
-            _partial_str = " [50% BOOKED]" if _is_part else ""
+            _current_sl = self.active_position.get('sl_price', 0.0)
+            _stage = self.active_position.get('ladder_stage', 0)
 
             logger.info(
                 f"Momentum: 📊 MONITOR | LTP=₹{ltp:.1f} | Entry=₹{entry_price:.1f} | "
-                f"SL=₹{current_sl:.1f} ({_sl_dist:.1f}pts below) | {_tgt_str} | "
-                f"Qty={_qty}{_partial_str} | P&L=₹{_pnl:+,.0f} ({_pnl_pct:+.1f}%) | RR={_rr}"
+                f"SL=₹{_current_sl:.1f} | Qty={_qty} | P&L=₹{_pnl:+,.0f} ({_pnl_pct:+.1f}%) | Stage={_stage}"
             )
 
-        # 0. Hard Stop Loss Check
-        if current_sl > 0 and ltp <= current_sl:
-            logger.info(f"🛑 Stop Hit! Price: {ltp} <= SL: {current_sl}")
-            self.close_position("STOPLOSS_HIT")
-            self._last_sl_hit_time = time.time()  # Gate re-entry for 5 min
+        # Use the LadderedTrailingManager
+        should_close, exit_type = self.trailing_manager.update_trailing_sl("MOMENTUM", self.active_position, ltp)
+
+        if should_close:
+            logger.info(f"🛑 Laddered Exit Triggered ({exit_type})")
+            self.close_position(f"LADDERED_SL_{exit_type}", exit_type=exit_type)
+            self._last_sl_hit_time = time.time()
             return True
 
-        profit_points = ltp - entry_price
-        trail_atr = max(5.0, atr_at_entry * 0.5)
-
-        # 0b. Target Hit Check (Dynamic RR Target)
-        # In TRENDING mode, once 50% is already booked (is_partial=True) we skip
-        # the fixed target and let the trailing SL run the remainder indefinitely.
-        # This turns a capped 2.5R trade into an open-ended runner.
-        if target_price > 0 and ltp >= target_price:
-            if is_trending and is_partial:
-                # 50% already locked — tighten trail aggressively, don't exit
-                new_sl = round(ltp - (trail_atr * 0.4), 1)
-                if new_sl > current_sl:
-                    logger.info(
-                        f"🎯 TRENDING Target Passed ({ltp:.1f} ≥ {target_price:.1f}). "
-                        f"50% booked. Tightening trail: SL → {new_sl:.1f} and letting it run."
-                    )
-                    self.update_sl(new_sl, ltp)
-                # fall through — no return, trailing continues
-            else:
-                logger.info(f"🎯 Target Hit! Price: {ltp} >= Target: {target_price} ({dynamic_rr})")
-                self.close_position("TARGET_HIT")
-                return True
-
-        if is_trending:
-            # TRENDING regime: fast breakeven, let winners run to 5:1
-            # SAFETY UPGRADE: If lots >= 4, move to BE even earlier (0.6x instead of 1.0x)
-            be_mult = 1.0 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.5
-            be_trigger  = be_mult * trail_atr  # Move to breakeven at 1.5:1 (or 1.0:1 for high qty)
-            book_trigger = 2.5 * trail_atr  # Book 50% at 2.5:1
-
-            if profit_points > be_trigger and current_sl < entry_price:
-                new_sl = entry_price + 1.0
-                logger.info("🎯 TRENDING Stage 1 (1:1 ATR). Moving SL to Break-Even (fast pivot).")
-                self.update_sl(new_sl, ltp)
-                return False
-
-            if profit_points > book_trigger and not is_partial:
-                qty_to_close = self.active_position['qty'] // 2
-                if qty_to_close >= Config.NIFTY_LOT_SIZE:
-                    logger.info(f"💰 TRENDING Stage 2 (2.5x ATR). Booking 50% ({qty_to_close} qty).")
-                    self.close_position("PARTIAL_PROFIT", override_qty=qty_to_close)
-                    return False
-        else:
-            # RANGEBOUND regime: tighter stages, early reversal exit
-            be_mult = 0.8 if (self.active_position.get('qty', 0) >= 4 * Config.NIFTY_LOT_SIZE) else 1.2
-            be_trigger   = be_mult  * trail_atr
-            book_trigger = 1.5   * trail_atr
-
-            if profit_points > be_trigger and current_sl < entry_price:
-                new_sl = entry_price + 1.0
-                logger.info("🎯 RANGEBOUND Stage 1 (0.75 ATR). Moving SL to Break-Even.")
-                self.update_sl(new_sl, ltp)
-                return False
-
-            if profit_points > book_trigger and not is_partial:
-                qty_to_close = self.active_position['qty'] // 2
-                if qty_to_close >= Config.NIFTY_LOT_SIZE:
-                    logger.info(f"💰 RANGEBOUND Stage 2 (1.5 ATR). Full exit (range target reached).")
-                    self.close_position("RANGEBOUND_TARGET")
-                    return True
-
-        # Stage 3: Aggressive trailing for TRENDING remainder after partial booking
-
-        if profit_points > (2.0 * trail_atr):
-            target_sl = ltp - trail_atr
-            if target_sl > current_sl:
-                self.update_sl(target_sl, ltp)
-                
         return False
 
+
     def update_sl(self, new_sl, ltp):
-        new_sl = round(new_sl, 1)
-        self.active_position['sl_price'] = new_sl
-        logger.info(f"📈 SL Moved Up to {new_sl} (LTP: {ltp})")
-        
-        if 'id' in self.active_position:
-            trade_repo.update_sl(self.active_position['id'], new_sl)
-            
-        sl_oid = self.active_position.get('sl_order_id')
-        if sl_oid and not self.dry_run:
-            token = self.active_position['token']
-            symbol = self.active_position['symbol']
-            qty = self.active_position['qty']
-            self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+        """Proxy to trailing_manager for manual SL updates if needed."""
+        self.trailing_manager._apply_sl_update("MOMENTUM", self.active_position, new_sl)
 
     def get_nifty_ltp(self):
         try:
