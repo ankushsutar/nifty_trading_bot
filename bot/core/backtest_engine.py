@@ -519,7 +519,7 @@ class BacktestEngine:
             # Enable progressive trail for GAMMA_BLAST and MOMENTUM
             use_progressive = (strategy_name in ["GAMMA_BLAST", "MOMENTUM"])
 
-            exit_price, exit_reason = self._find_exit(
+            exit_price, exit_reason, exit_time = self._find_exit(
                 future_day, direction, entry_premium, sl_price, target_price,
                 atr, delta, qty, use_progressive_trail=use_progressive
             )
@@ -545,6 +545,7 @@ class BacktestEngine:
                 "lots":         lots,
                 "pnl":          round(pnl, 2),
                 "exit_reason":  exit_reason,
+                "exit_time":    str(exit_time),
                 "capital_after":round(capital, 2),
                 "atr":          round(atr, 2),
                 "delta":        delta,
@@ -552,11 +553,12 @@ class BacktestEngine:
             trades.append(trade_record)
             equity_curve.append({"ts": ts, "capital": capital})
 
-            logger.debug(
-                f"[Backtest] {strategy_name} {direction} | "
-                f"Entry={entry_premium:.1f} Exit={exit_price:.1f} "
-                f"PnL={pnl:+.0f} | {exit_reason}"
-            )
+            entry_raw = trade_record['timestamp']
+            exit_raw = trade_record['exit_time']
+            entry_t = entry_raw.split(' ')[1][:5] if ' ' in entry_raw else entry_raw[:5]
+            exit_t = exit_raw.split(' ')[1][:5] if ' ' in exit_raw else exit_raw[:5]
+            icon = "📈" if pnl > 0 else "📉"
+            logger.debug(f"      {icon} {entry_t} -> {exit_t} | PnL: ₹{trade_record['pnl']:,.0f} ({trade_record['exit_reason']})")
 
         return trades, equity_curve
 
@@ -639,25 +641,25 @@ class BacktestEngine:
 
             # Exits
             if ts.time() >= dtime(15, 15):
-                return option_price, "TIME_EXIT"
+                return option_price, "TIME_EXIT", ts
 
             if option_price <= current_sl:
                 reason = "STOPLOSS" if stage == 0 else f"TRAIL_HIT_S{stage}"
-                return current_sl, reason
+                return current_sl, reason, ts
 
             # Fixed Target Exit (only if progressive trail is OFF)
             if not use_progressive_trail and option_price >= target_price:
-                return target_price, "TARGET"
+                return target_price, "TARGET", ts
             
             # Dream Target (10:1) for Progressive strategies
             if use_progressive_trail and option_price >= entry_price + (10 * initial_risk):
-                return option_price, "DREAM_TARGET"
+                return option_price, "DREAM_TARGET", ts
 
         # End of data = time exit at last price
         last_idx  = future_bars["close"].iloc[-1]
         idx_move  = last_idx - entry_index
         final_opt = max(0.05, entry_price + (idx_move * delta if direction == "CE" else -idx_move * delta))
-        return final_opt, "TIME_EXIT"
+        return final_opt, "TIME_EXIT", future_bars.index[-1]
 
     # ------------------------------------------------------------------ #
     #  Performance Metrics                                                 #
