@@ -14,3 +14,4 @@ logzero
 websocket-client
 numba          # Phase 4: JIT-compiled indicator calculations (EMA, RSI, ADX)
 prometheus-client  # Phase 5: optional Prometheus endpoint (metrics_exporter uses JSON by default)
+scipy          # For Black-Scholes delta calculations in Selling Engine

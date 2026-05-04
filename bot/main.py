@@ -16,6 +16,7 @@ from bot.strategies.ohl_strategy import OHLStrategy
 from bot.strategies.inside_bar_strategy import InsideBarStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
+from bot.strategies.selling_strategy import SellingStrategy
 from bot.core.decision_engine import DecisionEngine
 from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
@@ -61,7 +62,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR", "GAMMA_BLAST", "STRADDLE_SCALP"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -160,6 +161,9 @@ def run_bot():
         logger.info(f"\n>>> [Strategy] Selected: Straddle Scalp (ATM CE+PE Ranging) 🎯")
         bot = StraddleScalpStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
+    elif args.strategy == "SELLING":
+        logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
+        bot = SellingStrategy(api, loader, dry_run=args.dry_run)
     else:
         logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
@@ -183,7 +187,7 @@ def run_bot():
     # 6. Execute Strategy
     if args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
         bot.execute(expiry=expiry, action="BUY")
-    elif args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP"]:
+    elif args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"]:
         bot.execute(expiry=expiry)
     else:
         bot.execute(expiry=expiry, action="SELL")

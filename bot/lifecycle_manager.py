@@ -4,16 +4,19 @@ import datetime
 import sys
 import os
 import threading
+import argparse
 from bot.utils.logger import logger
 from bot.utils.expiry_calculator import is_trading_day
 
 class LifecycleManager:
-    def __init__(self, dry_run=False, test_mode=False):
+    def __init__(self, dry_run=False, test_mode=False, with_selling=False):
         self.dry_run = dry_run
         self.test_mode = test_mode
+        self.with_selling = with_selling
         self.current_process = None
         self.ohl_attempted = False
-        self._current_date = None   # Track date for day-change reset
+        self.selling_process = None
+        self._current_date = None
         self.running = False
         self.thread = None
         self.output_thread = None
@@ -121,6 +124,13 @@ class LifecycleManager:
                 self.current_process.wait()
                 self.log("Child Process Force Killed.")
             self.current_process = None
+        
+        if self.selling_process:
+            self.log("Stopping Selling Engine Process...")
+            self.selling_process.terminate()
+            self.selling_process.wait()
+            self.selling_process = None
+
         if self.thread:
             self.thread.join(timeout=2)
 
@@ -158,6 +168,11 @@ class LifecycleManager:
                         self.log(f"Strategy process finished with code {return_code}.")
                         self.current_process = None
                 
+                if self.selling_process:
+                    if self.selling_process.poll() is not None:
+                        self.log("Selling engine process finished. Restarting in 60s...")
+                        self.selling_process = None
+
                 # 2. SCHEDULE LOGIC
                 
                 # A. PRE-MARKET
@@ -179,6 +194,11 @@ class LifecycleManager:
                         self.current_process = self.run_strategy(auto=True)
                         # Throttle: Wait at least 60s before checking again to prevent rapid restarts
                         time.sleep(60)
+
+                    # START SELLING ENGINE (Background - OPTIONAL)
+                    if self.with_selling and not self.selling_process:
+                        self.log("⏰ Starting Selling Engine in background...")
+                        self.selling_process = self.run_strategy(strategy_name="SELLING")
                 
                 # D. MARKET CLOSE (> 15:15)
                 elif now >= datetime.time(15, 15):
@@ -199,11 +219,13 @@ class LifecycleManager:
 
 
 def main():
-    # Parse Args manually since we are in main
-    dry_run = "--dry-run" in sys.argv
-    test_mode = "--test" in sys.argv
+    parser = argparse.ArgumentParser(description="Lifecycle Manager")
+    parser.add_argument("--dry-run", action="store_true", help="Run in dry run mode")
+    parser.add_argument("--test", action="store_true", help="Run in test mode")
+    parser.add_argument("--selling", action="store_true", help="Enable Selling Engine in background")
+    args = parser.parse_args()
     
-    manager = LifecycleManager(dry_run, test_mode)
+    manager = LifecycleManager(dry_run=args.dry_run, test_mode=args.test, with_selling=args.selling)
     manager.start_lifecycle()
     
     try:
