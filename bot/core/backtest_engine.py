@@ -210,11 +210,21 @@ class BacktestEngine:
         htf = df15["htf_bull"].reindex(df5.index, method="ffill").fillna(0)
 
         # Signal: BUY CE when 5m bullish AND 15m bullish AND RSI not overbought
+        # PLUS PRO-TRADER: Volume Confirmation (Fallback to ATR if Volume is 0)
+        if df5["volume"].max() > 0:
+            avg_vol = df5["volume"].rolling(window=5).mean().shift(1)
+            vol_ok = df5["volume"] > (avg_vol * 1.1)
+        else:
+            # Fallback: ATR must be expanding (Volatility surge)
+            avg_atr = df5["atr"].rolling(window=5).mean().shift(1)
+            vol_ok = df5["atr"] > avg_atr
+
         bullish = (
             (df5["ema9"] > df5["ema21"]) &
             (df5["ema9"].shift(1) <= df5["ema21"].shift(1)) &  # fresh crossover
             (df5["rsi"] < 70) &
             (htf == 1) &
+            vol_ok &
             self._in_session(df5) &
             ~self._in_blackout(df5)
         )
@@ -225,6 +235,7 @@ class BacktestEngine:
             (df5["ema9"].shift(1) >= df5["ema21"].shift(1)) &
             (df5["rsi"] > 30) &
             htf_bear &
+            vol_ok &
             self._in_session(df5) &
             ~self._in_blackout(df5)
         )
@@ -638,6 +649,25 @@ class BacktestEngine:
                     new_sl = option_price - 5
                     if new_sl > current_sl:
                         current_sl = new_sl
+
+                # --- STAGE 4: MOONSHOT MODE (X-FACTOR) ---
+                if stage < 4 and unrealized_pnl >= 5000:
+                    # In backtest, we simulate partial sell by adjusting current_sl
+                    # to a 'Deep-Safe' zone and reducing future pnl impact.
+                    # We lock in 50 points profit immediately.
+                    new_sl = entry_price + 50
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+                        stage = 4
+                        # Note: We don't reduce qty in vectorized backtest for simplicity,
+                        # but locking the SL at +50 mimics the 'Safe Capital' effect.
+
+                if stage >= 3:
+                    # Trailing Stop: 1m 9-EMA or tight trail
+                    # Use a 10% of premium trailing stop in runner mode
+                    trail_sl = option_price * 0.90
+                    if trail_sl > current_sl:
+                        current_sl = trail_sl
 
             # Exits
             if ts.time() >= dtime(15, 15):

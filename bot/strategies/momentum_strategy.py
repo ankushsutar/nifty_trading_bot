@@ -386,6 +386,18 @@ class MomentumStrategy:
                             else:
                                 rsi_ok = rsi > 30
                                 checks.append(("RSI Limit", rsi_ok, f"{rsi:.1f} > 30" if rsi_ok else f"{rsi:.1f} < 30"))
+                            
+                            # 7. PRO-TRADER: Volume Confirmation
+                            # Fetch fresh 5m candles for volume analysis
+                            _df_vol = self.data_fetcher.get_candles(self.symbol_token, "FIVE_MINUTE", 10)
+                            if _df_vol is not None and not _df_vol.empty:
+                                avg_vol = _df_vol['volume'].tail(6).iloc[:-1].mean()
+                                curr_vol = _df_vol['volume'].iloc[-1]
+                                vol_ok = curr_vol > (avg_vol * 1.1)
+                            else:
+                                vol_ok = False # Fail-safe: No data = No volume confirmation
+                                
+                            checks.append(("Volume Confirmation", vol_ok, f"Confirmed" if vol_ok else "Low Volume/No Data"))
 
                         # Calculate Confluence Score
                         passed_names = [c[0] for c in checks if c[1]]
@@ -399,15 +411,15 @@ class MomentumStrategy:
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic: 5/6 score AND Mandatory Alignment
-                        if score >= 5 and mtf_aligned and signal_valid:
-                            logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF Alignment. Firing Entry.")
+                        # Execution Logic: 6/7 score AND Mandatory Alignment
+                        if score >= 6 and mtf_aligned and signal_valid:
+                            logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Volume. Firing Entry.")
                             if trend == "BULLISH":
                                 self.enter_position(expiry, "CE")
                             elif trend == "BEARISH":
                                 self.enter_position(expiry, "PE")
                         elif trend != "NEUTRAL":
-                            reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/5)"
+                            reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
                             logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
                     else:

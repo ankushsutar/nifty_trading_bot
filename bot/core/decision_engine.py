@@ -261,19 +261,21 @@ class DecisionEngine:
             risk_multiplier *= 0.5
 
         if panic_data.get('panic_score', 50) >= 80:
-            # INSTITUTIONAL PANIC DETECTED -> Prioritize MOMENTUM/GAMMA regardless of time
+            # INSTITUTIONAL PANIC DETECTED -> Prioritize GAMMA regardless of day
             logger.info(f"🔥 [X-FACTOR] PANIC DETECTED ({panic_data.get('reason')}). Launching Alpha Strike.")
-            selected_strategy = "GAMMA_BLAST" if is_expiry_day else "MOMENTUM"
+            selected_strategy = "GAMMA_BLAST"
         
+        elif adx >= tier.adx_gamma_blast:
+            # PARABOLIC TREND -> Use Gamma Blast on ANY day
+            logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
+            selected_strategy = "GAMMA_BLAST"
+
         elif adx > 25:
-            # Trending Regime
-            if is_expiry_day and is_afternoon:
-                selected_strategy = "GAMMA_BLAST"
-            else:
-                selected_strategy = "MOMENTUM"
+            # NORMAL TRENDING
+            selected_strategy = "MOMENTUM"
         
         elif is_morning and adx < 20:
-            # Morning Sideways -> Straddle Scalp (Theta collection)
+            # Morning Sideways -> Straddle Scalp
             selected_strategy = "STRADDLE_SCALP"
             
         elif adx < 18:
