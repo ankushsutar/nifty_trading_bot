@@ -1,21 +1,29 @@
 #!/bin/bash
+# autostart.sh: Morning launch script for Nifty Trading Bot
+# Designed for 09:10 AM IST Cron Job
 
-# Configuration
-API_URL="http://localhost:8000"
-STRATEGY="AUTO"
-DRY_RUN=true # Change to false for live trading
+PROJECT_DIR="/home/cwd/ankush/agent/nifty_trading_bot"
+LOG_FILE="$PROJECT_DIR/logs/automation.log"
 
-echo "$(date): Attempting to start Nifty Bot (Strategy: $STRATEGY, DryRun: $DRY_RUN)..."
+echo "$(date): --- 🚀 Starting Morning Auto-Launch ---" >> $LOG_FILE
 
-# Send POST request to start bot
-response=$(curl -s -X POST "$API_URL/api/start" \
-     -H "Content-Type: application/json" \
-     -d "{\"strategy\":\"$STRATEGY\", \"dry_run\":$DRY_RUN}")
+# 1. Navigate to directory
+cd $PROJECT_DIR
 
-if [[ $response == *"success"* ]]; then
-    echo "✅ Bot started successfully!"
-    echo "Response: $response"
-else
-    echo "❌ Failed to start bot."
-    echo "Response: $response"
+# 2. Cleanup old signals
+rm -f "$PROJECT_DIR/.kill_trading_bot"
+
+# 2. Check if already running
+if pgrep -f "python3 bot/main.py" > /dev/null; then
+    echo "$(date): ⚠️ Bot is already running. Skipping." >> $LOG_FILE
+    exit 0
 fi
+
+# 3. Pull latest code (Optional - keep commented out for stability)
+# git pull >> $LOG_FILE 2>&1
+
+# 4. Activate Venv and Launch
+export PYTHONPATH=$PYTHONPATH:.
+nohup ./venv/bin/python3 bot/main.py --auto >> $PROJECT_DIR/logs/trading_bot.log 2>&1 &
+
+echo "$(date): ✅ Bot launched successfully in background." >> $LOG_FILE

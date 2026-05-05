@@ -116,6 +116,12 @@ def run_bot():
         engine = DecisionEngine(api, loader, dry_run=args.dry_run)
         
         while True:
+            # --- GRACEFUL STOP CHECK ---
+            if os.path.exists(".kill_trading_bot"):
+                logger.info(">>> [Auto] 🛑 Stop Signal Detected (.kill_trading_bot). Exiting gracefully.")
+                os.remove(".kill_trading_bot")
+                return
+
             selected_strategy, risk_multiplier = engine.analyze_and_select()
             
             if selected_strategy:
