@@ -227,74 +227,41 @@ class DecisionEngine:
                 + ". Skipping Trend strategy — waiting for momentum."
             )
             return None, 1.0
-        # ──────────────────────────────────────────────────────────────────────────
-
-        # 6. Strategy selection
+        # 6. Hybrid Strategy Switcher (The "At Any Cost" Logic)
         today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
         expiry_calc = get_next_weekly_expiry()
         is_expiry_day = (expiry_calc == today_str)
-        is_afternoon = (now >= datetime.time(13, 0))
-
-        if regime == "VOLATILE":
-            logger.warning(">>> [Brain] ⚠️ Market is VOLATILE. Staying in CASH.")
-            return None, 1.0
-
-        if regime == "TRENDING":
-            # --- PROXIMITY FILTER (THE WALL CHECK) ---
-            levels    = market_data.get('levels', {})
-            nifty_ltp = market_data.get('nifty', 0)
-
-            if levels and nifty_ltp > 0:
-                proximity_threshold = nifty_ltp * 0.0015
-                if trend == "BULLISH":
-                    resistances = [levels.get('pdh'), levels.get('cam_h3'), levels.get('cam_h4')]
-                    resistances = [r for r in resistances if r and r > nifty_ltp]
-                    for r in resistances:
-                        if (r - nifty_ltp) < proximity_threshold:
-                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Resistance ₹{r:.0f}. Deferred.")
-                            return None, 1.0
-                elif trend == "BEARISH":
-                    supports = [levels.get('pdl'), levels.get('cam_l3'), levels.get('cam_l4')]
-                    supports = [s for s in supports if s and s < nifty_ltp]
-                    for s in supports:
-                        if (nifty_ltp - s) < proximity_threshold:
-                            logger.warning(f">>> [Brain] 🛑 PROXIMITY ALERT: Too close to Support ₹{s:.0f}. Deferred.")
-                            return None, 1.0
-
-            # --- STRATEGY SELECTION ---
-            # Rule: On Expiry after 1 PM, we force Gamma Blast for "Zero-to-Hero"
-            if is_expiry_day and is_afternoon:
-                logger.info(f">>> [Brain] 🚀 EXPIRY AFTERNOON: Forcing GAMMA_BLAST (ADX: {adx:.1f})")
-                selected_strategy = "GAMMA_BLAST"
-            
-            # Normal Selection Logic
-            elif adx > tier.adx_gamma_blast:
-                logger.info(f">>> [Brain] 💎 PARABOLIC DAY (ADX={adx:.1f} > {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
-                selected_strategy = "GAMMA_BLAST"
-            else:
-                logger.info(f">>> [Brain] ⚡ STRONG TREND (ADX={adx:.1f}). Selected: MOMENTUM")
-                selected_strategy = "MOMENTUM"
-
-        elif regime in ["SIDEWAYS", "CHOP"]:
-            now = datetime.datetime.now().time()
-            # Relaxed cutoff: 12:30 for Expiry, 12:00 for normal days (was 11:00)
-            _scalp_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(12, 0)
-            if now < _scalp_cutoff and "STRADDLE_SCALP" in tier.allowed_strategies:
-                logger.info(
-                    f">>> [Brain] 🎯 {regime} market (ADX={adx:.1f}) before 10:30. "
-                    "Selected: STRADDLE_SCALP"
-                )
-                selected_strategy = "STRADDLE_SCALP"
-            else:
-                logger.info(
-                    f">>> [Brain] ⏸️ {regime} market with ADX={adx:.1f}. "
-                    "No applicable strategy. Staying in CASH."
-                )
-                return None, 1.0
+        is_afternoon = (datetime.datetime.now().time() >= datetime.time(13, 0))
         
+        adx = regime_data.get('adx', 0)
+        atr_15 = regime_data.get('atr_15', 0) # Needs to be passed from market_service
+        
+        # RECOVERY MODE: If we have losses today, reduce risk for next trade.
+        if adx_boost > 0:
+            logger.warning(">>> [Brain] 🛡️ RECOVERY MODE ACTIVE: Reducing risk multiplier by 50%.")
+            risk_multiplier *= 0.5
+
+        if adx > 25:
+            # Trending Regime: SWITCH TO BUYING (Institutional Edge)
+            logger.info(f">>> [Brain] 🚨 HIGH MOMENTUM (ADX: {adx:.1f} > 25). Switching to BUYING for explosive profit.")
+            if is_expiry_day and is_afternoon:
+                selected_strategy = "GAMMA_BLAST"
+            else:
+                selected_strategy = "MOMENTUM"
+        elif adx < 18:
+            # Range-Bound Regime: SWITCH TO SELLING (Passive Income)
+            logger.info(f">>> [Brain] 📉 CALM MARKET (ADX: {adx:.1f} < 18). Switching to SELLING for Theta collection.")
+            selected_strategy = "SELLING"
         else:
-            logger.warning(f">>> [Brain] ⏸️ Unknown/Incompatible Regime: {regime}. Staying in CASH.")
-            return None, 1.0
+            # Transition Phase (Grey Area)
+            # ONLY trade if Volatility is expanding (ATR check)
+            # If ATR is too low, we stay in CASH to avoid "Chop Whipsaw"
+            if atr_15 < 15: # 15 points ATR on 15m is a good threshold for Nifty
+                logger.info(f">>> [Brain] 💤 CHOP ZONE: ADX {adx:.1f} and Low ATR {atr_15:.1f}. Staying in CASH to avoid whipsaw.")
+                return None, 1.0
+            
+            logger.info(f">>> [Brain] ⚖️ Transition Market (ADX: {adx:.1f}). Selected: STRADDLE_SCALP")
+            selected_strategy = "STRADDLE_SCALP"
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

@@ -23,7 +23,7 @@ class VIXGate:
         vmax = self.config["vix_max"]
         vhigh = self.config["vix_high_threshold"]
 
-        logger.info(f">>> [VIX Gate] Checking VIX: {vix} (Min: {vmin}, Max: {vmax}, High: {vhigh})")
+        logger.info(f">>> [VIX Gate] Checking VIX: {vix}, ADX: {adx} (Min: {vmin}, Max: {vmax}, High: {vhigh})")
 
         if vix < vmin:
             return {
@@ -39,7 +39,19 @@ class VIXGate:
                 "reason": f"VIX {vix} above maximum {vmax}. Extreme tail risk. Sit out.",
                 "recommended_strategy": None
             }
-        elif vix > vhigh:
+        
+        # 2. ADX Check (Trend Danger)
+        adx_limit = self.config.get("adx_max_for_selling", 25.0)
+        if adx > adx_limit:
+            return {
+                "allowed": False,
+                "size_multiplier": 0.0,
+                "reason": f"ADX {adx:.1f} exceeds limit {adx_limit}. Trend detected, selling neutral spreads is unsafe.",
+                "recommended_strategy": None
+            }
+
+        # 3. Sizing and Recommendation
+        if vix > vhigh:
             return {
                 "allowed": True,
                 "size_multiplier": 0.5,

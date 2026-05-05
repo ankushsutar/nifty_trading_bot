@@ -9,26 +9,32 @@ class PositionSizer:
 
     def calculate_lots(
         self,
-        strategy: str,        # "iron_condor", "short_strangle", "iron_fly"
-        vix_multiplier: float # From VIXGate: 1.0 or 0.5
+        strategy: str,
+        vix_multiplier: float,
+        current_capital: float = None
     ) -> dict:
-        capital = self.config["total_capital"]
+        # Use live capital for compounding
+        capital = current_capital or self.config["total_capital"]
         deploy_pct = self.config["max_deploy_pct"] / 100
         lot_size = self.config["lot_size"]
 
-        # Approximate margin requirements per lot (INR)
-        # These are conservative estimates. Broker API should be used for exact numbers.
+        # Institutional Margin Buffer (conservative)
         margin_map = {
-            "iron_condor": 45000,    # Defined risk = lower margin
-            "short_strangle": 95000, # Naked = higher margin
-            "iron_fly": 60000        # Defined risk, expiry day
+            "iron_condor": 55000,    # Increased for extra safety
+            "short_strangle": 110000,
+            "iron_fly": 70000
         }
 
-        margin_per_lot = margin_map.get(strategy, 50000)
+        margin_per_lot = margin_map.get(strategy, 60000)
         deployable = capital * deploy_pct * vix_multiplier
-        lots = max(1, int(deployable / margin_per_lot))
+        
+        # Compounding Logic: 1 Lot per every ₹Margin Required
+        # This ensures we don't over-leverage early on
+        lots = int(deployable / margin_per_lot)
+        if lots < 1:
+            lots = 1 if capital >= margin_per_lot else 0 # Prevent trading if account is too small
 
-        logger.info(f">>> [PositionSizer] Strategy: {strategy}, Capital: {capital}, Deployable: {deployable}, Lots: {lots}")
+        logger.info(f">>> [PositionSizer] COMPOUNDING: Capital ₹{capital:,.0f} -> Strategy: {strategy} -> Lots: {lots}")
 
         return {
             "lots": lots,

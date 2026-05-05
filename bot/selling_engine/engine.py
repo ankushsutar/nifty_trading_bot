@@ -87,7 +87,23 @@ class NiftySellingEngine:
 
         # Iron Condor Check
         if self.ic_strat.is_entry_window(current_time, day_name, dte):
+            # TREND-AWARE SKEW (Institutional Logic)
+            # Fetch Trend (e.g. Price vs EMA20)
+            trend = market_data.get("trend", "SIDEWAYS")
+            
             strikes = self.strike_selector.select_iron_condor_strikes(spot, vix, dte, max_pain)
+            
+            if trend == "BEARISH":
+                # Market is dropping. Don't sell Puts! Sell only Call Spread.
+                logger.info(">>> [Selling] Regime: BEARISH. Switching to Bear Call Spread.")
+                strikes["short_put"] = 0 # Disable Put side
+                strikes["long_put"] = 0
+            elif trend == "BULLISH":
+                # Market is rising. Don't sell Calls! Sell only Put Spread.
+                logger.info(">>> [Selling] Regime: BULLISH. Switching to Bull Put Spread.")
+                strikes["short_call"] = 0 # Disable Call side
+                strikes["long_call"] = 0
+            
             sizing = self.position_sizer.calculate_lots("iron_condor", vix_result["size_multiplier"])
             return {
                 "action": "enter_trade",
@@ -95,7 +111,7 @@ class NiftySellingEngine:
                 "strikes": strikes,
                 "sizing": sizing,
                 "vix_status": vix_result,
-                "reason": "Iron condor entry conditions met."
+                "reason": f"Adaptive {trend} entry conditions met."
             }
 
         # Short Strangle Check

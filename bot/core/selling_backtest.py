@@ -27,14 +27,100 @@ class SellingBacktest:
         if not isinstance(df_1m.index, pd.DatetimeIndex):
             df_1m.index = pd.to_datetime(df_1m.index)
         
-        # Group by week (Monday to Thursday)
-        df_1m['week'] = df_1m.index.to_period('W-THU')
+        # Group by week (Wednesday to Tuesday Expiry cycle)
+        df_1m['week'] = df_1m.index.to_period('W-TUE')
         weeks = df_1m.groupby('week')
         
         for week_period, week_data in weeks:
+            # Mode A: Weekly Strategy (Monday - Thursday)
             self._simulate_weekly_cycle(week_data, week_period)
             
+            # Mode B: High-Alpha Expiry Strategy (Thursday 09:20 - 15:10)
+            self._simulate_expiry_day(week_data)
+            
         return self._generate_report()
+
+    def _simulate_expiry_day(self, df):
+        """Simulates high-alpha Iron Fly on Thursday."""
+        expiry_day = SELLING_CONFIG["if_entry_day"] # Thursday
+        thursday_data = df[df.index.strftime('%A') == expiry_day]
+        if thursday_data.empty:
+            return
+
+        # Entry Window: 09:20 - 10:30
+        entry_window = thursday_data.between_time("09:20", "10:30")
+        if entry_window.empty:
+            return
+            
+        entry_bar = entry_window.iloc[0]
+        spot_at_entry = entry_bar['close']
+        
+        # ATM Iron Fly
+        # Entry Premium: ATM Straddle is roughly 0.6% on expiry morning
+        entry_price = spot_at_entry * 0.006 
+        current_credit = entry_price
+        
+        # Sizing (2 lots per 1L because of margin benefit on flies)
+        lots = int(self.capital * 0.8 / 65000)
+        lots = max(1, lots)
+        qty = lots * self.lot_size
+        
+        # Monitoring
+        future_data = thursday_data[thursday_data.index > entry_bar.name]
+        tp_price = entry_price * (1 - (SELLING_CONFIG["if_take_profit_pct"]/100))
+        sl_points = SELLING_CONFIG["if_stop_loss_pts"]
+        
+        exit_bar = None
+        exit_reason = "EXPIRY"
+        final_premium = 0.0
+        
+        for ts, row in future_data.iterrows():
+            spot_now = row['close']
+            move = abs(spot_now - spot_at_entry)
+            
+            # Pricing: Premium increases as spot moves away from ATM
+            # On expiry, Delta of ATM straddle moves quickly
+            current_premium = max(5.0, (entry_price * 0.2) + (move * 0.8)) # Rapid decay vs Gamma
+            
+            # Time Decay (Aggressive on Thursday)
+            elapsed = (ts - entry_bar.name).total_seconds()
+            total = (thursday_data.index[-1] - entry_bar.name).total_seconds()
+            decay_pct = 0.85 * (elapsed / total)
+            current_premium *= (1 - decay_pct)
+            
+            if current_premium <= tp_price:
+                exit_bar = row
+                exit_reason = "FLY_TAKE_PROFIT"
+                final_premium = tp_price
+                break
+                
+            if (current_premium - entry_price) >= sl_points:
+                exit_bar = row
+                exit_reason = "FLY_STOP_LOSS"
+                final_premium = entry_price + sl_points
+                break
+                
+            if ts.time() >= time(15, 10):
+                exit_bar = row
+                exit_reason = "FLY_TIME_EXIT"
+                final_premium = current_premium
+                break
+
+        if exit_bar is None:
+            exit_bar = thursday_data.iloc[-1]
+            final_premium = current_premium
+
+        net_pnl = (entry_price - final_premium) * qty
+        self.capital += net_pnl
+        
+        self.trade_log.append({
+            "week": "EXPIRY_FLY",
+            "entry_time": entry_bar.name,
+            "exit_time": exit_bar.name,
+            "pnl": round(net_pnl, 2),
+            "reason": exit_reason,
+            "capital": round(self.capital, 2)
+        })
 
     def _simulate_weekly_cycle(self, df, week_period):
         """Simulates one weekly expiry cycle (Monday entry, Wednesday/Thursday exit)."""
@@ -54,15 +140,34 @@ class SellingBacktest:
         vix = 15.0 # Proxy if not in data
         
         # 2. Strike Selection
-        # We need DTE for the selector
+        df['ema20'] = df['close'].ewm(span=20, adjust=False).mean()
+        # Prepare market data for engine
         expiry_date = df.index[-1].date()
         dte = (expiry_date - entry_bar.name.date()).days
+        last_ema = df.loc[entry_bar.name, 'ema20']
+        trend = "BEARISH" if spot_at_entry < last_ema else "BULLISH"
         
-        strikes = self.selector.select_iron_condor_strikes(spot_at_entry, vix, dte)
+        decision = self.selector.select_iron_condor_strikes(spot_at_entry, 15.0, dte)
         
-        # 3. Premium Estimation (Initial)
-        # For a 100-point gap IC at 0.15 Delta, net credit is usually ~100-110 points on Monday
-        entry_price = 100.0 
+        if trend == "BEARISH":
+            # SELL ONLY CALL SPREAD (Bear Call)
+            strikes = {
+                "short_call": decision["short_call"],
+                "long_call": decision["long_call"],
+                "short_put": 0,
+                "long_put": 0
+            }
+            entry_price = 50.0 
+        else:
+            # SELL ONLY PUT SPREAD (Bull Put)
+            strikes = {
+                "short_call": 0,
+                "long_call": 0,
+                "short_put": decision["short_put"],
+                "long_put": decision["long_put"]
+            }
+            entry_price = 50.0
+            
         current_credit = entry_price
         
         # Sizing
@@ -124,9 +229,9 @@ class SellingBacktest:
             
             # Intrinsic Risk (Gamma)
             intrinsic_risk = 0.0
-            if spot_now > active_strikes['short_call']:
+            if active_strikes['short_call'] > 0 and spot_now > active_strikes['short_call']:
                 intrinsic_risk = (spot_now - active_strikes['short_call']) * 1.8 
-            elif spot_now < active_strikes['short_put']:
+            elif active_strikes['short_put'] > 0 and spot_now < active_strikes['short_put']:
                 intrinsic_risk = (active_strikes['short_put'] - spot_now) * 1.8
             
             current_premium = max(1.0, current_credit - theta_decay + intrinsic_risk)
@@ -143,8 +248,8 @@ class SellingBacktest:
                 exit_reason = "TAKE_PROFIT"
                 final_premium = tp_price
                 break
-                
-            if ts.strftime('%A') == "Wednesday" and ts.time() >= time(14, 0):
+            # Time Exit (Tuesday 15:10 - Expiry)
+            if ts.strftime('%A') == "Tuesday" and ts.time() >= time(15, 10):
                 exit_bar = row
                 exit_reason = "TIME_EXIT"
                 final_premium = current_premium
