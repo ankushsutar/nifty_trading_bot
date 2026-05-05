@@ -178,13 +178,58 @@ class SafetyGatekeeper:
             logger.error(f"Error fetching daily realized P&L: {e}")
             return 0.0
 
+    def track_peak_profit(self, current_total_pnl):
+        """Tracks the highest realized+unrealized profit reached today."""
+        try:
+            stats_file = os.path.join(os.getcwd(), "data", "session_stats.json")
+            today = datetime.date.today().isoformat()
+            stats = {}
+            if os.path.exists(stats_file):
+                with open(stats_file, "r") as f:
+                    stats = json.load(f)
+            
+            day_stats = stats.get(today, {"peak_profit": 0.0, "last_updated": 0})
+            if current_total_pnl > day_stats["peak_profit"]:
+                day_stats["peak_profit"] = round(current_total_pnl, 2)
+                day_stats["last_updated"] = time.time()
+                stats[today] = day_stats
+                with open(stats_file, "w") as f:
+                    json.dump(stats, f)
+                logger.info(f">>> [Gatekeeper] 🏆 New Peak Profit Reached: ₹{day_stats['peak_profit']:.2f}")
+            
+            return day_stats["peak_profit"]
+        except Exception as e:
+            logger.error(f"Error tracking peak profit: {e}")
+            return 0.0
+
+    def check_profit_protection(self, active_unrealized_pnl=0.0):
+        """
+        Elite Rule: Protects realized profits from being wiped out.
+        If Peak Profit > ₹1,000, and current PnL falls below 50% of peak, stop for the day.
+        """
+        from bot.config.settings import Config
+        realized_pnl = self.get_daily_realized_pnl()
+        total_pnl = realized_pnl + active_unrealized_pnl
+        
+        peak = self.track_peak_profit(total_pnl)
+        
+        # Only activate protection if peak was significant (> ₹1000)
+        PROTECTION_THRESHOLD = 1000.0 
+        DRAWDOWN_ALLOWED = 0.5 # 50% of peak
+        
+        if peak >= PROTECTION_THRESHOLD:
+            min_allowed_pnl = peak * (1 - DRAWDOWN_ALLOWED)
+            if total_pnl < min_allowed_pnl:
+                logger.critical(f">>> [Gatekeeper] 🛡️ PROFIT PROTECTION TRIGGERED!")
+                logger.critical(f"    Peak Profit: ₹{peak:.2f} | Current: ₹{total_pnl:.2f} | Floor: ₹{min_allowed_pnl:.2f}")
+                logger.critical("    Stopping to preserve remaining gains. Pro-Trader Mode: Locked.")
+                return False
+        return True
+
     def check_max_daily_loss(self, active_unrealized_pnl=0.0):
         """
         Rule: Stop trading if (Realized + Unrealized) loss exceeds tier daily loss limit.
         Limit is a percentage of current capital — scales automatically with account size.
-        Returns:
-          - True:  Safe to continue.
-          - False: Limit reached. Kill trades.
         """
         from bot.config.settings import Config
         capital  = self.get_current_capital()
@@ -193,6 +238,10 @@ class SafetyGatekeeper:
 
         realized_pnl = self.get_daily_realized_pnl()
         total_pnl    = realized_pnl + active_unrealized_pnl
+
+        # First check profit protection
+        if not self.check_profit_protection(active_unrealized_pnl):
+            return False
 
         if total_pnl <= max_loss:
             logger.critical(f">>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT! [{tier.name} tier]")
@@ -204,7 +253,44 @@ class SafetyGatekeeper:
             return False
         return True
 
+
+    def check_instrument_cooldown(self, symbol):
+        """
+        Rule: If an instrument was just closed with a loss, wait 60 minutes before re-entry.
+        Prevents "Revenge Trading" or "Averaging Down" on a losing contract.
+        """
+        try:
+            from bot.core.trade_repo import trade_repo
+            mode = "PAPER" if self.dry_run else "LIVE"
+            today_trades = trade_repo.get_today_trades(mode=mode)
+            
+            # Find the last closed trade for this symbol
+            symbol_trades = [t for t in today_trades if t.get('symbol') == symbol and t.get('status') == 'CLOSED']
+            if not symbol_trades:
+                return True
+                
+            last_trade = symbol_trades[-1]
+            if last_trade.get('pnl', 0) < 0:
+                # Check time since close
+                exit_time_str = last_trade.get('exit_time')
+                if not exit_time_str: return True
+                
+                exit_time = datetime.datetime.fromisoformat(exit_time_str)
+                diff = (datetime.datetime.now() - exit_time).total_seconds()
+                
+                if diff < 3600: # 60 minutes
+                    logger.warning(
+                        f">>> [Gatekeeper] 🛡️ INSTRUMENT COOLDOWN: {symbol} just lost. "
+                        f"Wait {int((3600 - diff)/60)}m more to avoid revenge trading."
+                    )
+                    return False
+            return True
+        except Exception as e:
+            logger.error(f"Instrument Cooldown Error: {e}")
+            return True
+
     def is_blackout_period(self):
+
         """
         Rule: No new trades between 11:30 AM - 01:00 PM (Configurable).
         """

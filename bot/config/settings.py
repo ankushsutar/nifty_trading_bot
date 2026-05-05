@@ -42,6 +42,7 @@ class CapitalTier:
     margin_buffer_pct: float              # Buffer on top of raw margin for lot calculation
     gamma_blast_lot_pct: float            # Fraction of compounded lots used by Gamma Blast
     sl_pct: float                         # Stop-loss as fraction of fill price
+    min_sl_points: float                  # Floor to prevent "choking" on low premiums
 
     # ── Session rules ──────────────────────────────────────────────────────
     max_trades_per_day: int
@@ -86,6 +87,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         margin_buffer_pct=0.10,
         gamma_blast_lot_pct=0.50,
         sl_pct=0.15,                      # Tightened from 0.20
+        min_sl_points=6.0,                 # Ensure at least 6 points SL for micro accounts
         max_trades_per_day=2,
         max_consecutive_losses=2,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST"],
@@ -113,7 +115,8 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         max_lots=4,                        # Capped at 4 lots for safety
         margin_buffer_pct=0.12,
         gamma_blast_lot_pct=0.60,
-        sl_pct=0.12,                       # Tightened from 0.15 for faster exits
+        sl_pct=0.20,                       # Relaxed from 0.12 to give trades room
+        min_sl_points=7.0,                 # Ensure at least 7 points SL
         max_trades_per_day=3,
         max_consecutive_losses=2,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP"],
@@ -142,6 +145,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         margin_buffer_pct=0.15,
         gamma_blast_lot_pct=0.70,
         sl_pct=0.18,
+        min_sl_points=8.0,                 # 8 points for medium accounts
         max_trades_per_day=4,
         max_consecutive_losses=3,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP", "STRADDLE_SCALP"],
@@ -170,6 +174,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         margin_buffer_pct=0.20,
         gamma_blast_lot_pct=0.75,
         sl_pct=0.15,
+        min_sl_points=10.0,                # 10 points for large accounts
         max_trades_per_day=5,
         max_consecutive_losses=3,
         allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP", "INSIDE_BAR", "OHL", "STRADDLE_SCALP"],

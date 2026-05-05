@@ -93,59 +93,83 @@ class MomentumStrategy:
             return
         
         try:
-             from bot.utils.rate_limiter import rate_limiter
-             wait_time = rate_limiter.check_circuit_breaker()
-             if wait_time > 0:
-                 logger.warning(f"⚠️ Sync Skipped due to Circuit Breaker (Wait {wait_time:.1f}s)")
-                 return
+            from bot.utils.rate_limiter import rate_limiter
+            wait_time = rate_limiter.check_circuit_breaker()
+            if wait_time > 0:
+                logger.warning(f"⚠️ Sync Skipped due to Circuit Breaker (Wait {wait_time:.1f}s)")
+                return
 
-             pos_resp = self.order_manager.get_positions()
-             
-             # transients (DNS, timeout) return None or False status
-             if pos_resp is None or not pos_resp.get('status'):
-                 logger.warning("⚠️ Sync State: API failure. Skipping sync to preserve local state.")
-                 if pos_resp and ("Access denied" in str(pos_resp.get('message', '')) or "AB1004" in str(pos_resp.get('message', ''))):
-                     rate_limiter.trigger_circuit_breaker()
-                 return
+            pos_resp = self.order_manager.get_positions()
+            
+            # transients (DNS, timeout) return None or False status
+            if pos_resp is None or not pos_resp.get('status'):
+                logger.warning("⚠️ Sync State: API failure. Skipping sync to preserve local state.")
+                if pos_resp and ("Access denied" in str(pos_resp.get('message', '')) or "AB1004" in str(pos_resp.get('message', ''))):
+                    rate_limiter.trigger_circuit_breaker()
+                return
 
-             # If we reach here, the API call was successful
-             found_active = None
-             pos_data = pos_resp.get('data') or []
-             
-             for pos in pos_data:
-                 if (pos.get('symbolname') == 'NIFTY' and 
-                     pos.get('producttype') == 'INTRADAY' and 
-                     int(pos.get('netqty', 0)) != 0):
-                     
-                     qty = int(pos['netqty'])
-                     
-                     found_active = {
-                         'leg': "CE" if "CE" in pos.get('tradingsymbol', '') else "PE", 
-                         'symbol': pos['tradingsymbol'],
-                         'token': pos['symboltoken'],
-                         'qty': abs(qty),
-                         'entry_price': float(pos['avgnetprice']),
-                         'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
-                     }
-                     if self.active_position is None:
-                         logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
-                     
-                     break 
-             
-             if found_active:
-                 self.active_position = found_active
-             elif self.active_position is not None:
-                 logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
-                 trade_repo.close_trade(symbol=self.active_position['symbol'])
-                 self.active_position = None
-             
-             if self.active_position and 'id' not in self.active_position:
-                 db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
-                 if db_trade and db_trade['symbol'] == self.active_position['symbol']:
-                     self.active_position['id'] = db_trade['id']
-                     self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
-                     self.active_position['sl_order_id'] = db_trade.get('sl_order_id')
-                     logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} | SL-OID: {self.active_position['sl_order_id']} | Partial: {self.active_position['partially_booked']}")
+            # If we reach here, the API call was successful
+            found_active = None
+            pos_data = pos_resp.get('data') or []
+            
+            for pos in pos_data:
+                if (pos.get('symbolname') == 'NIFTY' and 
+                    pos.get('producttype') == 'INTRADAY' and 
+                    int(pos.get('netqty', 0)) != 0):
+                    
+                    qty = int(pos['netqty'])
+                    
+                    found_active = {
+                        'leg': "CE" if "CE" in pos.get('tradingsymbol', '') else "PE", 
+                        'symbol': pos['tradingsymbol'],
+                        'token': pos['symboltoken'],
+                        'qty': abs(qty),
+                        'entry_price': float(pos['avgnetprice']),
+                        'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
+                    }
+                    if self.active_position is None:
+                        logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                    
+                    break
+            
+            if found_active:
+                if self.active_position is None:
+                    self.active_position = found_active
+                    logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                else:
+                    # Maintain local source of truth for entry price
+                    pass
+            
+            elif self.active_position is not None:
+                # Check for broker-side SL hit
+                sl_oid = self.active_position.get('sl_order_id')
+                if sl_oid:
+                    status_info = self.order_manager.get_order_status(sl_oid)
+                    if status_info and status_info.get('status') == 'COMPLETE':
+                        fill_price = status_info.get('price', self.active_position['sl_price'])
+                        logger.info(f"🛡️ SYNC: Broker-Side SL Hit detected for {self.active_position['symbol']} @ ₹{fill_price}")
+                        self._last_sl_hit_time = time.time()
+                        
+                        trade_id = self.active_position.get('id')
+                        entry_p = self.active_position['entry_price']
+                        qty = self.active_position['qty']
+                        pnl = (fill_price - entry_p) * qty
+                        
+                        trade_repo.close_trade(trade_id=trade_id, symbol=self.active_position['symbol'], exit_price=fill_price, pnl=round(pnl, 2), exit_reason="BROKER_SL_HIT")
+                        self.active_position = None
+                        return
+
+                logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
+                trade_repo.close_trade(symbol=self.active_position['symbol'], exit_reason="EXTERNAL_SYNC_RESET")
+                self.active_position = None
+            
+            if self.active_position and 'id' not in self.active_position:
+                db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
+                if db_trade and db_trade['symbol'] == self.active_position['symbol']:
+                    self.active_position['id'] = db_trade['id']
+                    self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
+                    self.active_position['sl_order_id'] = db_trade.get('sl_order_id')
+                    logger.info(f"Sync: Linked to DB Trade ID {db_trade['id']} | SL-OID: {self.active_position['sl_order_id']} | Partial: {self.active_position['partially_booked']}")
                      
         except Exception as e:
             logger.error(f"Sync State Error: {e}")
@@ -364,22 +388,27 @@ class MomentumStrategy:
                                 checks.append(("RSI Limit", rsi_ok, f"{rsi:.1f} > 30" if rsi_ok else f"{rsi:.1f} < 30"))
 
                         # Calculate Confluence Score
-                        passed = [c for c in checks if c[1]]
-                        failed = [c for c in checks if not c[1]]
-                        score = len(passed)
+                        passed_names = [c[0] for c in checks if c[1]]
+                        score = len(passed_names)
                         total = len(checks)
-
-                        if failed:
-                            logger.info(f"🔍 Confluence Score: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic based on Confluence
-                        if score >= 4 and total >= 4:
+                        # --- MANDATORY CHECKS ---
+                        mtf_aligned = "MTF Alignment" in passed_names
+                        signal_valid = "Signal Presence" in passed_names
+                        
+                        if failed:
+                            logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
+                        
+                        # Execution Logic: 5/6 score AND Mandatory Alignment
+                        if score >= 5 and mtf_aligned and signal_valid:
+                            logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF Alignment. Firing Entry.")
                             if trend == "BULLISH":
                                 self.enter_position(expiry, "CE")
                             elif trend == "BEARISH":
                                 self.enter_position(expiry, "PE")
                         elif trend != "NEUTRAL":
-                            logger.info(f"⏸️ Trade Opportunity Paused — waiting for full confluence.")
+                            reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/5)"
+                            logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
                     else:
                         current_leg = self.active_position['leg']
@@ -896,7 +925,12 @@ class MomentumStrategy:
                  logger.warning(f"Risk: Insufficient Funds (Cost: {estimated_cost})")
                  return
         
-        logger.info(f"Trade: Entering {leg} ({symbol}) Qty: {qty} Price: {quote_ltp} Cost: {estimated_cost}")
+        # 3. SAFETY GATE: Instrument Cooldown (Anti-Revenge Trading)
+        if not self.gatekeeper.check_instrument_cooldown(symbol):
+            return
+            
+        # 4. Ready to place order
+        logger.info(f">>> [Momentum] Entry Signal Confirmed for {symbol} @ ₹{quote_ltp}")
         
         trade_context = {
             'entry_ema9': self.last_analysis.get('ema9', 0),
@@ -933,14 +967,20 @@ class MomentumStrategy:
 
         actual_sl_points = sl_option_pts
         
-        # --- HARD SL FLOOR (20% safety cap) ---
+        # --- HARD SL FLOOR (Tier-based safety cap) ---
+        # We cap the SL to protect capital, but we also ensure a MINIMUM floor
+        # so the trade has room to breathe on low premiums.
         max_allowed_sl_pts = quote_ltp * tier.sl_pct
+        sl_floor = min(tier.min_sl_points, quote_ltp * 0.5) # Never floor > 50% of premium
+        
         if actual_sl_points > max_allowed_sl_pts:
+            # Truncate to the cap, but never below the floor
+            new_sl = max(max_allowed_sl_pts, sl_floor)
             logger.warning(
                 f"🛡️ Hard SL Triggered: Truncating {actual_sl_points:.1f}pts "
-                f"to {max_allowed_sl_pts:.1f}pts ({tier.sl_pct*100}% cap)"
+                f"to {new_sl:.1f}pts (Cap: {tier.sl_pct*100}% | Floor: {sl_floor}pts)"
             )
-            actual_sl_points = max_allowed_sl_pts
+            actual_sl_points = new_sl
 
         sl_price = max(0.1, quote_ltp - actual_sl_points)
         target_price = quote_ltp + tgt_option_pts

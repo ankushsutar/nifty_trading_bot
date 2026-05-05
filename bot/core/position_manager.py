@@ -11,6 +11,7 @@ class LadderedTrailingManager:
     Stage 1: Floor Locked (PnL >= 1500 -> SL = Entry + 16)
     Stage 2: Buffer (PnL >= 2600 -> SL = Entry + 30)
     Stage 3: 3R Hunter (PnL >= 3900 -> 1m 9-EMA Trail)
+    Stage 4: Moonshot Mode (PnL >= 5000 -> Book 75% profit, 1 Lot Runner)
     """
 
     def __init__(self, order_manager, data_fetcher):
@@ -80,6 +81,39 @@ class LadderedTrailingManager:
                     new_sl = round(ema9_1m, 1)
                     if new_sl > current_sl:
                         self._apply_sl_update(strategy_name, active_position, new_sl)
+            
+            # --- STAGE 4: MOONSHOT MODE (The X-Factor) ---
+            # If profit is huge, sell 75% of lots and let 1 lot run for "100x" gains.
+            if current_stage < 4 and unrealized_pnl >= 5000:
+                total_qty = active_position.get('qty', 0)
+                
+                if total_qty > Config.NIFTY_LOT_SIZE:
+                    total_lots = total_qty // Config.NIFTY_LOT_SIZE
+                    lots_to_sell = max(1, int(total_lots * 0.75))
+                    qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
+                    
+                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Selling {lots_to_sell} lots. Keeping 1 lot Runner.")
+                    
+                    # Execute partial sell
+                    oid = self.order_manager.place_smart_limit(
+                        symbol, token, qty_to_sell, ltp, "SELL",
+                        strategy_name=strategy_name
+                    )
+                    
+                    if oid:
+                        # Update DB and Active Position
+                        pnl_booked = (ltp - entry_price) * qty_to_sell
+                        trade_repo.reduce_position(
+                            active_position['id'], qty_to_sell, ltp, pnl_booked, "MOONSHOT_PARTIAL"
+                        )
+                        active_position['qty'] = total_qty - qty_to_sell
+                else:
+                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! (1-Lot Position) Moving SL to Safe Zone.")
+
+                # ALWAYS update SL and Stage for the remaining runner (or the original 1 lot)
+                active_position['ladder_stage'] = 4
+                new_sl = entry_price + 50 # Secure 50 points (₹3,250) on the runner
+                self._apply_sl_update(strategy_name, active_position, new_sl)
 
         # Exit Check
         if ltp <= active_position.get('sl_price', 0):
@@ -120,7 +154,15 @@ class LadderedTrailingManager:
              symbol = active_position['symbol']
              token = active_position['token']
              qty = active_position['qty']
+             
+             # Fetch current LTP to see if we are already at the new SL
+             current_ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
+             if current_ltp and current_ltp <= new_sl:
+                 logger.warning(f"⚠️ DANGER: Modifying SL to {new_sl} while LTP is {current_ltp}! This will trigger immediate exit.")
+             
              self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+
+
 
     def is_killswitch_time(self):
         """

@@ -103,11 +103,37 @@ class GammaBlastStrategy:
                     break 
             
             if found_active:
-                self.active_position = found_active
+                if self.active_position is None:
+                    self.active_position = found_active
+                    logger.info(f"♻️ [Gamma Blast] RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
+                else:
+                    # Maintain local source of truth for entry price
+                    pass
+            
             elif self.active_position is not None:
+                # Local says we have a position, but Broker says we don't.
+                # Check if it was a broker-side SL hit.
+                sl_oid = self.active_position.get('sl_order_id')
+                if sl_oid:
+                    status_info = self.order_manager.get_order_status(sl_oid)
+                    if status_info and status_info.get('status') == 'COMPLETE':
+                        fill_price = status_info.get('price', self.active_position['sl_price'])
+                        logger.info(f"🛡️ [Gamma Blast] SYNC: Broker-Side SL Hit detected for {self.active_position['symbol']} @ ₹{fill_price}")
+                        self._last_sl_hit_time = time.time()
+                        
+                        trade_id = self.active_position.get('id')
+                        entry_p = self.active_position['entry_price']
+                        qty = self.active_position['qty']
+                        pnl = (fill_price - entry_p) * qty
+                        
+                        trade_repo.close_trade(trade_id=trade_id, symbol=self.active_position['symbol'], exit_price=fill_price, pnl=round(pnl, 2), exit_reason="BROKER_SL_HIT")
+                        self.active_position = None
+                        return
+
                 logger.warning("⚠️ [Gamma Blast] SYNC: Active Position closed externally! Resetting State.")
-                trade_repo.close_trade(symbol=self.active_position['symbol'])
+                trade_repo.close_trade(symbol=self.active_position['symbol'], exit_reason="EXTERNAL_SYNC_RESET")
                 self.active_position = None
+
                     
         except Exception as e:
             logger.error(f"[Gamma Blast] Sync State Error: {e}")
@@ -408,14 +434,19 @@ class GammaBlastStrategy:
             qty = lots * Config.NIFTY_LOT_SIZE
 
             # --- TRADE VIABILITY CHECK ---
-            # Ensure brokerage (₹60 round-trip) doesn't exceed 15% of trade value.
-            # Catches cheap deep-OTM options where costs eat the profit.
             if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
-                logger.warning("Gamma Blast: ❌ Trade viability check failed (brokerage ratio too high). Skipping.")
+                logger.warning("Gamma Blast: ❌ Trade viability check failed. Skipping.")
+                time.sleep(60)
+                continue
+
+            # --- SAFETY GATE: Instrument Cooldown (Anti-Revenge Trading) ---
+            if not self.gatekeeper.check_instrument_cooldown(symbol):
                 time.sleep(60)
                 continue
 
             self.place_entry(expiry, strike, leg, qty, quote_ltp)
+
+
 
             # If we didn't enter or monitoring finished, loop again after sleep
             time.sleep(30) # Throttle loop
@@ -495,10 +526,20 @@ class GammaBlastStrategy:
             logger.warning(f"Gamma Blast: fill_price is 0 — using limit_price {limit_price} as fallback.")
             fill_price = limit_price
 
-        # 3. Update Trade with Actual Fill & Mark OPEN — SL% from capital tier
+        # Update Trade with Actual Fill & Mark OPEN — SL% from capital tier
         from bot.config.settings import Config as _Cfg
         _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
-        sl_price = round(fill_price * (1 - _tier.sl_pct), 1)
+        
+        # Calculate SL points based on percentage
+        sl_points = fill_price * _tier.sl_pct
+        
+        # Apply Floor (Minimum SL points)
+        sl_floor = min(_tier.min_sl_points, fill_price * 0.5)
+        if sl_points < sl_floor:
+            logger.info(f"🛡️ [Gamma Blast] SL Floor Triggered: Increasing {sl_points:.1f}pts to {sl_floor:.1f}pts floor.")
+            sl_points = sl_floor
+            
+        sl_price = round(fill_price - sl_points, 1)
 
         # Link and Update DB Record
         trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)

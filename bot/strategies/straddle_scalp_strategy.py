@@ -29,6 +29,7 @@ class StraddleScalpStrategy:
     MAX_ADX_TO_ENTER   = 25.0   # Relaxed from 20.0 to capture more sideways days
     MAX_ENTRY_TIME     = datetime.time(11, 0)    # Normal days: no new entries after 11:00 AM
     MAX_ENTRY_EXPIRY   = datetime.time(12, 30)   # Expiry days: gamma stays high till noon
+    TREND_KILL_ADX     = 30.0                    # Exit if market starts trending
 
     def __init__(self, api, token_loader, dry_run=False):
         self.api            = api
@@ -41,6 +42,7 @@ class StraddleScalpStrategy:
         self.running        = True
         self.risk_multiplier = 1.0
         self._last_log_ts   = 0.0
+        self._last_trend_check = 0.0
 
         # Two separate leg positions — both None until entered
         self.ce_position = None  # dict: symbol, token, qty, entry_price, id
@@ -180,6 +182,12 @@ class StraddleScalpStrategy:
             logger.error(f"Straddle Scalp: Token lookup failed for {atm_strike} CE/PE.")
             return
 
+        # --- SAFETY GATE: Instrument Cooldown (Anti-Revenge Trading) ---
+        if not self.gatekeeper.check_instrument_cooldown(ce_symbol) or \
+           not self.gatekeeper.check_instrument_cooldown(pe_symbol):
+            return
+
+
         ce_ltp = self.data_fetcher.get_ltp(ce_token, exchange="NFO") or 0.0
         pe_ltp = self.data_fetcher.get_ltp(pe_token, exchange="NFO") or 0.0
 
@@ -311,6 +319,21 @@ class StraddleScalpStrategy:
             logger.info("Straddle Scalp: ⏰ Time exit triggered.")
             self._close_both("TIME")
             return "TIME"
+
+        # Trend-Kill Switch (Throttled every 60 seconds)
+        if time.time() - self._last_trend_check >= 60:
+            self._last_trend_check = time.time()
+            df = market_feed.get_5min_candles("99926000")
+            if df is not None and len(df) >= 20:
+                analysis = self.classifier.classify(df)
+                curr_adx = analysis.get('adx', 0)
+                if curr_adx >= self.TREND_KILL_ADX:
+                    logger.warning(
+                        f"Straddle Scalp: 🛡️ TREND-KILL TRIGGERED! ADX={curr_adx:.1f} ≥ {self.TREND_KILL_ADX}. "
+                        "Market is no longer sideways. Exiting for safety."
+                    )
+                    self._close_both("TREND_KILL")
+                    return "TREND_KILL"
 
         return "CONTINUE"
 

@@ -19,6 +19,10 @@ class DecisionEngine:
         self.dry_run = dry_run
         self.loader = token_loader
         self.gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        
+        # --- THE X-FACTOR: AlphaEngine ---
+        from bot.core.alpha_engine import AlphaEngine
+        self.alpha_engine = AlphaEngine(self.api, self.loader)
         # MAX_TRADES_PER_DAY is now tier-driven — fetched live in analyze_and_select()
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
@@ -231,36 +235,52 @@ class DecisionEngine:
         today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
         expiry_calc = get_next_weekly_expiry()
         is_expiry_day = (expiry_calc == today_str)
-        is_afternoon = (datetime.datetime.now().time() >= datetime.time(13, 0))
+        is_afternoon  = (datetime.datetime.now().time() >= datetime.time(13, 0))
+        is_morning    = (datetime.datetime.now().time() < datetime.time(10, 30))
+        is_power_hour = (datetime.time(13, 15) <= datetime.datetime.now().time() <= datetime.time(15, 0))
         
+        # --- X-FACTOR: Institutional Panic Check (AlphaEngine) ---
+        # Fetch ATM strike for NIFTY to check OI Velocity
+        nifty_ltp = self.gatekeeper.data_fetcher.get_ltp("99926000", exchange="NSE")
+        panic_data = {"panic_score": 50, "confidence": "NEUTRAL"}
+        if nifty_ltp:
+            atm_strike = round(nifty_ltp / 50) * 50
+            panic_data = self.alpha_engine.analyze_panic(expiry_calc, atm_strike)
+            
+            # Confidence multiplier from AlphaEngine
+            alpha_multiplier = self.alpha_engine.get_confidence_multiplier(panic_data)
+            risk_multiplier *= alpha_multiplier
+            logger.info(f">>> [Brain] AlphaEngine Multiplier: {alpha_multiplier}x (Confidence: {panic_data.get('confidence')})")
+
+        # 6. Hybrid Strategy Switcher (Time + Regime + Panic)
         adx = regime_data.get('adx', 0)
-        atr_15 = regime_data.get('atr_15', 0) # Needs to be passed from market_service
         
-        # RECOVERY MODE: If we have losses today, reduce risk for next trade.
+        # RECOVERY MODE
         if adx_boost > 0:
             logger.warning(">>> [Brain] 🛡️ RECOVERY MODE ACTIVE: Reducing risk multiplier by 50%.")
             risk_multiplier *= 0.5
 
-        if adx > 25:
-            # Trending Regime: SWITCH TO BUYING (Institutional Edge)
-            logger.info(f">>> [Brain] 🚨 HIGH MOMENTUM (ADX: {adx:.1f} > 25). Switching to BUYING for explosive profit.")
+        if panic_data.get('panic_score', 50) >= 80:
+            # INSTITUTIONAL PANIC DETECTED -> Prioritize MOMENTUM/GAMMA regardless of time
+            logger.info(f"🔥 [X-FACTOR] PANIC DETECTED ({panic_data.get('reason')}). Launching Alpha Strike.")
+            selected_strategy = "GAMMA_BLAST" if is_expiry_day else "MOMENTUM"
+        
+        elif adx > 25:
+            # Trending Regime
             if is_expiry_day and is_afternoon:
                 selected_strategy = "GAMMA_BLAST"
             else:
                 selected_strategy = "MOMENTUM"
+        
+        elif is_morning and adx < 20:
+            # Morning Sideways -> Straddle Scalp (Theta collection)
+            selected_strategy = "STRADDLE_SCALP"
+            
         elif adx < 18:
-            # Range-Bound Regime: SWITCH TO SELLING (Passive Income)
-            logger.info(f">>> [Brain] 📉 CALM MARKET (ADX: {adx:.1f} < 18). Switching to SELLING for Theta collection.")
+            # Range-Bound Regime
             selected_strategy = "SELLING"
         else:
-            # Transition Phase (Grey Area)
-            # ONLY trade if Volatility is expanding (ATR check)
-            # If ATR is too low, we stay in CASH to avoid "Chop Whipsaw"
-            if atr_15 < 15: # 15 points ATR on 15m is a good threshold for Nifty
-                logger.info(f">>> [Brain] 💤 CHOP ZONE: ADX {adx:.1f} and Low ATR {atr_15:.1f}. Staying in CASH to avoid whipsaw.")
-                return None, 1.0
-            
-            logger.info(f">>> [Brain] ⚖️ Transition Market (ADX: {adx:.1f}). Selected: STRADDLE_SCALP")
+            # Transition Phase
             selected_strategy = "STRADDLE_SCALP"
 
         # Whitelist guard — strategy must be enabled for this tier

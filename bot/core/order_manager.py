@@ -380,3 +380,24 @@ class OrderManager:
         except Exception as e:
             logger.error(f"update_trade_fill Error: {e}")
             return None
+
+    def get_order_status(self, order_id):
+        """
+        Queries the broker for the status of a specific order ID.
+        """
+        try:
+            if self.dry_run: return {"status": "FILLED", "price": 0.0}
+            
+            res = self.get_order_book()
+            if res and res.get('status') == True:
+                orders = res.get('data', [])
+                for order in orders:
+                    if order.get('orderid') == str(order_id):
+                        status = order.get('status', '').lower()
+                        price = float(order.get('averageprice', 0))
+                        return {"status": status.upper(), "price": price}
+            return None
+        except Exception as e:
+            logger.error(f"get_order_status Error: {e}")
+            return None
+

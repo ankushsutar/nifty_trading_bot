@@ -215,6 +215,11 @@ class VWAPStrategy:
             logger.error(">>> [Error] Token not found")
             return
 
+        # --- SAFETY GATE: Instrument Cooldown (Anti-Revenge Trading) ---
+        if not self.gatekeeper.check_instrument_cooldown(symbol):
+            return
+
+
         # Viability Check: Option Premium vs Brokerage
         quote_ltp = self.data_fetcher.get_ltp(token) or 100.0
         
