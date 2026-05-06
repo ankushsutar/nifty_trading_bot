@@ -313,17 +313,25 @@ class DecisionEngine:
             )
             return None, 1.0
         
-        # CONFIDENCE GATE (Phase 2): Only proceed if strategy score ≥ 70%
+        # CONFIDENCE GATE (Phase 2): Only proceed if strategy score ≥ 60%
         confidence = self.get_strategy_confidence(selected_strategy)
         if confidence < MIN_CONFIDENCE_SCORE:
             logger.warning(
                 f">>> [Brain] ⏸️ Confidence Gate: {selected_strategy} score "
                 f"{confidence:.1f} < {MIN_CONFIDENCE_SCORE}. Skipping."
             )
-            # Try the 4H regime classifier as secondary validation
+            
+            # 1. Extreme Trend Override (ADX > 35)
+            if adx >= 35.0:
+                 logger.info(f">>> [Brain] 🚀 Confidence Override: ADX is extreme ({adx:.1f}). Proceeding at reduced size.")
+                 risk_multiplier *= 0.5
+                 return selected_strategy, risk_multiplier
+
+            # 2. Try the 4H regime classifier as secondary validation
             regime_4h = self._classify_4h_regime()
             if regime_4h.get("regime") == "UNKNOWN":
                 return None, 1.0
+            
             # If 4H regime still aligns with the strategy, override the gate
             strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP", "STRADDLE_SCALP")
             regime_4h_trending   = regime_4h.get("regime") == "TRENDING"

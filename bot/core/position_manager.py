@@ -40,45 +40,45 @@ class LadderedTrailingManager:
         current_stage = active_position.get('ladder_stage', 0)
 
         # Stage 0.5: Breakeven Shield (No-Loss Mode)
-        # As soon as we hit ₹500 profit, move SL to cost + 2pts (buffer for taxes)
-        if current_stage < 0.5 and unrealized_pnl >= 500:
-            new_sl = entry_price + 2
+        # As soon as we hit ₹1,000 profit, move SL to cost + 5pts (generous buffer for taxes + wiggles)
+        if current_stage < 0.5 and unrealized_pnl >= 1000:
+            new_sl = entry_price + 5
             if new_sl > current_sl:
                 logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
                 current_stage = 0.5
 
-        # Stage 1: The ₹1,500 Floor
-        if current_stage < 1 and unrealized_pnl >= 1500:
-            new_sl = entry_price + 16
+        # Stage 1: The ₹2,000 Floor
+        if current_stage < 1 and unrealized_pnl >= 2000:
+            new_sl = entry_price + 18
             if new_sl > current_sl:
                 logger.info(f"🛡️ Stage 1 Reached: Floor Locked ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
 
         # Stage 2: The Buffer
-        if current_stage < 2 and unrealized_pnl >= 2600:
-            new_sl = entry_price + 30
+        if current_stage < 2 and unrealized_pnl >= 3200:
+            new_sl = entry_price + 35
             if new_sl > current_sl:
                 logger.info(f"📈 Stage 2 Reached: Buffer Set ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 current_stage = 2
 
-        # Stage 3: The 3R Hunter (1m 9-EMA Trail)
-        if current_stage < 3 and unrealized_pnl >= 3900:
-            logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 9-EMA Trail) for {symbol}")
+        # Stage 3: The 3R Hunter (1m 21-EMA Trail)
+        if current_stage < 3 and unrealized_pnl >= 4200:
+            logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 21-EMA Trail) for {symbol}")
             active_position['ladder_stage'] = 3
             current_stage = 3
 
         if current_stage == 3:
-            # Check 1m 9-EMA Trail
+            # Check 1m 21-EMA Trail
             now = time.time()
             if now - self._last_ema_check > 10: # Check every 10s
                 self._last_ema_check = now
-                ema9_1m = self._get_1m_ema9(token)
-                if ema9_1m > 0:
-                    # Trailing stop at EMA9
-                    new_sl = round(ema9_1m, 1)
+                ema21_1m = self._get_1m_ema21(token)
+                if ema21_1m > 0:
+                    # Trailing stop at EMA21
+                    new_sl = round(ema21_1m, 1)
                     if new_sl > current_sl:
                         self._apply_sl_update(strategy_name, active_position, new_sl)
             
@@ -124,15 +124,15 @@ class LadderedTrailingManager:
 
         return False, None
 
-    def _get_1m_ema9(self, token):
+    def _get_1m_ema21(self, token):
         try:
             df = self.data_fetcher.fetch_latest_candles(token, interval="ONE_MINUTE")
             if df is not None and not df.empty:
-                # Simple EMA9 calculation
-                ema9 = df['close'].ewm(span=9, adjust=False).mean()
-                return ema9.iloc[-1]
+                # Simple EMA21 calculation for wide breathing room
+                ema21 = df['close'].ewm(span=21, adjust=False).mean()
+                return ema21.iloc[-1]
         except Exception as e:
-            logger.error(f"Error fetching 1m EMA9: {e}")
+            logger.error(f"Error fetching 1m EMA21: {e}")
         return 0
 
     def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None):

@@ -389,7 +389,7 @@ class MomentumStrategy:
                             
                             # 7. PRO-TRADER: Volume Confirmation
                             # Fetch fresh 5m candles for volume analysis
-                            _df_vol = self.data_fetcher.get_candles(self.symbol_token, "FIVE_MINUTE", 10)
+                            _df_vol = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=1)
                             if _df_vol is not None and not _df_vol.empty:
                                 avg_vol = _df_vol['volume'].tail(6).iloc[:-1].mean()
                                 curr_vol = _df_vol['volume'].iloc[-1]
@@ -408,6 +408,7 @@ class MomentumStrategy:
                         mtf_aligned = "MTF Alignment" in passed_names
                         signal_valid = "Signal Presence" in passed_names
                         
+                        failed = [c for c in checks if not c[1]]
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
@@ -826,7 +827,9 @@ class MomentumStrategy:
         sl_points = 2 * atr
 
         direction = "LONG" if leg == "CE" else "SHORT"
-        if not self.gatekeeper.check_sentiment_risk(direction):
+        if _is_squeeze:
+             logger.info("🔥 Squeeze detected: Bypassing Sentiment Risk Check.")
+        elif not self.gatekeeper.check_sentiment_risk(direction):
              logger.warning(f"Trade Skipped due to Sentiment Risk.")
              return
 
@@ -962,10 +965,10 @@ class MomentumStrategy:
         # RANGEBOUND: Fixed 1.5:1 target; exit at first sign of reversal.
         current_regime = self.last_analysis.get("regime", "UNKNOWN")
         if current_regime == "TRENDING":
-            # Aggressive: tight SL (1x ATR), big target (5x ATR in index → ~2.5x in option)
-            sl_option_pts  = option_sl_points          # 1 ATR on option space
-            tgt_option_pts = option_sl_points * 2.5    # 5:1 index → ~2.5x option leverage
-            dynamic_rr     = "TRENDING_5:1"
+            # Professional: robust SL (1.5x ATR), big target (7x ATR in index → ~3.5x in option)
+            sl_option_pts  = option_sl_points * 1.5    # 1.5x ATR on option space for noise cushion
+            tgt_option_pts = option_sl_points * 3.5    # ~3.5x option leverage for massive trend riding
+            dynamic_rr     = "TRENDING_3.5:1.5"
         else:
             # Conservative: 1.5:1 in option space
             sl_option_pts  = option_sl_points
