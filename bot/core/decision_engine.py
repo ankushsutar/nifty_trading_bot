@@ -202,19 +202,30 @@ class DecisionEngine:
         )
         risk_multiplier = scaling_factor * vix_multiplier
 
-        # 6. Small Account "A+ Filter" (MICRO tier only)
+        # 6. Small Account "A+ Filter" (MICRO/SMALL tier only)
         if is_small_account:
-            # Only take trades if Regime is TRENDING and Trend aligns with Sentiment OR ADX is strong
             adx = regime_data.get('adx', 0)
+            is_misaligned = (trend == "BULLISH" and bias == "BEARISH") or (trend == "BEARISH" and bias == "BULLISH")
+            
             if not confidence_high and adx <= tier.min_adx_to_trade + adx_boost:
-                reasons = [
-                    f"Trend-OI Misalignment ({trend} trend vs {bias} OI)",
-                    f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade + adx_boost} [{tier.name}])",
-                ]
-                logger.warning(f">>> [Brain] ⏸️ Skipping — {' + '.join(reasons)}. Waiting for A+ Setup.")
-                return None, 1.0
+                # EXCEPTION: Allow low-ADX chop regimes through so Straddle Scalp can be evaluated
+                if regime in ["SIDEWAYS", "CHOP"] and adx < 24:
+                    logger.info(">>> [Brain] Small Account: Allowing sideways/chop setup through A+ filter for potential Scalp/Selling.")
+                else:
+                    reasons = []
+                    if is_misaligned:
+                        reasons.append(f"Trend-OI Misalignment ({trend} trend vs {bias} OI)")
+                    else:
+                        reasons.append(f"Low Confluence ({confluence_score}/7)")
+                    
+                    reasons.append(f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade + adx_boost} [{tier.name}])")
+                    logger.warning(f">>> [Brain] ⏸️ Skipping — {' + '.join(reasons)}. Waiting for A+ Setup.")
+                    return None, 1.0
             elif not confidence_high and adx > tier.min_adx_to_trade + adx_boost:
-                logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
+                if is_misaligned:
+                    logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Bias misalignment.")
+                else:
+                    logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Confluence.")
 
         # ── HARD ADX GATE ─────────────────────────────────────────────────────────
         # No trade unless trend is strong enough for the current capital tier.
@@ -241,9 +252,9 @@ class DecisionEngine:
         
         # --- X-FACTOR: Institutional Panic Check (AlphaEngine) ---
         # Fetch ATM strike for NIFTY to check OI Velocity
-        nifty_ltp = self.gatekeeper.data_fetcher.get_ltp("99926000", exchange="NSE")
+        nifty_ltp = market_data.get('nifty', 0)
         panic_data = {"panic_score": 50, "confidence": "NEUTRAL"}
-        if nifty_ltp:
+        if nifty_ltp > 0:
             atm_strike = round(nifty_ltp / 50) * 50
             panic_data = self.alpha_engine.analyze_panic(expiry_calc, atm_strike)
             
