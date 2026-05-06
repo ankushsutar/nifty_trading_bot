@@ -126,7 +126,7 @@ class LadderedTrailingManager:
 
     def _get_1m_ema21(self, token):
         try:
-            df = self.data_fetcher.fetch_latest_candles(token, interval="ONE_MINUTE")
+            df = self.data_fetcher.fetch_latest_candles(token, interval="ONE_MINUTE", exchange="NFO")
             if df is not None and not df.empty:
                 # Simple EMA21 calculation for wide breathing room
                 ema21 = df['close'].ewm(span=21, adjust=False).mean()

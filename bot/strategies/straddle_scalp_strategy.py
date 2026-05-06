@@ -213,6 +213,12 @@ class StraddleScalpStrategy:
             logger.warning("Straddle Scalp: Viability check failed — brokerage too high vs premium.")
             return
 
+        # Margin Check before placing orders
+        total_estimated_cost = (ce_ltp + pe_ltp) * qty_units
+        if not self.dry_run and not self.gatekeeper.check_trade_margin(total_estimated_cost):
+            logger.warning(f"Straddle Scalp: ❌ Insufficient Funds for Straddle. Required: ₹{total_estimated_cost:,.2f}")
+            return
+
         logger.info(
             f"Straddle Scalp: 🎯 {qty_lots} lot(s) | "
             f"CE={ce_symbol}@₹{ce_ltp} | PE={pe_symbol}@₹{pe_ltp} | "
@@ -234,13 +240,33 @@ class StraddleScalpStrategy:
         if not ce_oid or not pe_oid:
             logger.error("Straddle Scalp: Order placement failed for one or both legs. Rolling back.")
             if ce_oid:
-                self.order_manager.place_smart_limit(ce_symbol, ce_token, qty_units, ce_ltp * 0.95, "SELL", mode=mode)
+                self.order_manager.cancel_order(ce_oid, variety="NORMAL")
             if pe_oid:
-                self.order_manager.place_smart_limit(pe_symbol, pe_token, qty_units, pe_ltp * 0.95, "SELL", mode=mode)
+                self.order_manager.cancel_order(pe_oid, variety="NORMAL")
             return
 
         ce_fill = self._wait_fill(ce_oid, fallback=ce_ltp)
         pe_fill = self._wait_fill(pe_oid, fallback=pe_ltp)
+
+        # Handle Timeout/Failure on fill for either leg to prevent orphan positions
+        if ce_fill['status'] != 'FILLED' or pe_fill['status'] != 'FILLED':
+            logger.warning(
+                f"Straddle Scalp: ⚠️ One or both legs failed to fill. "
+                f"CE Status: {ce_fill['status']} | PE Status: {pe_fill['status']}. Rolling back."
+            )
+            # Cancel both orders
+            self.order_manager.cancel_order(ce_oid, variety="NORMAL")
+            self.order_manager.cancel_order(pe_oid, variety="NORMAL")
+
+            # Emergency Sell if one leg filled but the other didn't
+            if ce_fill['status'] == 'FILLED' and pe_fill['status'] != 'FILLED':
+                logger.critical(f"Straddle Scalp: 🚨 CE Leg filled but PE Leg failed. Emergency exiting CE Leg!")
+                self.order_manager.place_smart_limit(ce_symbol, ce_token, qty_units, ce_fill['price'] * 0.95, "SELL", mode=mode)
+            elif pe_fill['status'] == 'FILLED' and ce_fill['status'] != 'FILLED':
+                logger.critical(f"Straddle Scalp: 🚨 PE Leg filled but CE Leg failed. Emergency exiting PE Leg!")
+                self.order_manager.place_smart_limit(pe_symbol, pe_token, qty_units, pe_fill['price'] * 0.95, "SELL", mode=mode)
+            return
+
         ce_entry = ce_fill.get('price', ce_ltp)
         pe_entry = pe_fill.get('price', pe_ltp)
 

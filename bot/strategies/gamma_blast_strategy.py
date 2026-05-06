@@ -717,7 +717,7 @@ class GammaBlastStrategy:
         try:
             if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
             
-            ltp = self.data_fetcher.get_ltp(token) or 0
+            ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 0
             
             # Smart-Exit logic: Use LIMIT at SL price if exit_type is LIMIT
             if exit_type == "LIMIT":
