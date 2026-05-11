@@ -129,16 +129,6 @@ class DecisionEngine:
         now = datetime.datetime.now().time()
         logger.info(f">>> [Brain] Current Time: {now}")
 
-        # Rule A: Market Opening (09:15 - 09:20) -> OHL Scalp (only if tier allows it)
-        if datetime.time(9, 15) <= now < datetime.time(9, 20):
-            if "OHL" in tier.allowed_strategies:
-                logger.info(">>> [Brain] 🌅 Market Opening Phase. Selected: OHL Scalp")
-                return "OHL", 1.0
-            else:
-                logger.info(
-                    f">>> [Brain] 🌅 Market Opening Phase, but OHL not in [{tier.name}] whitelist "
-                    f"{tier.allowed_strategies}. Skipping."
-                )
 
         # 3. Market Regime Analysis
         logger.info(">>> [Brain] 📊 Fetching Market Data from Service Layer...")
@@ -356,7 +346,7 @@ class DecisionEngine:
                 return None, 1.0
             
             # If 4H regime still aligns with the strategy, override the gate
-            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "ORB", "VWAP", "STRADDLE_SCALP")
+            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP")
             regime_4h_trending   = regime_4h.get("regime") == "TRENDING"
             if strategy_is_trending == regime_4h_trending:
                 logger.info(

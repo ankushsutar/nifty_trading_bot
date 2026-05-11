@@ -17,7 +17,6 @@ Usage:
 """
 
 import pandas as pd
-import numpy as np
 from datetime import time as dtime
 from bot.utils.logger import logger
 
@@ -25,7 +24,7 @@ from bot.utils.logger import logger
 class BacktestEngine:
     """Vectorized backtesting engine that mirrors live strategy logic."""
 
-    STRATEGIES = ["MOMENTUM", "VWAP", "ORB", "INSIDE_BAR", "OHL", "GAMMA_BLAST", "STRADDLE_SCALP"]
+    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP"]
 
     # Market session constants
     SESSION_START = dtime(9, 15)
@@ -178,10 +177,6 @@ class BacktestEngine:
         """Dispatch to per-strategy signal generator."""
         dispatch = {
             "MOMENTUM":   self._momentum_signals,
-            "VWAP":       self._vwap_signals,
-            "ORB":        self._orb_signals,
-            "INSIDE_BAR": self._inside_bar_signals,
-            "OHL":        self._ohl_signals,
             "GAMMA_BLAST":self._gamma_blast_signals,
             "STRADDLE_SCALP": self._straddle_scalp_signals,
         }
@@ -253,115 +248,6 @@ class BacktestEngine:
             
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
-    # ---- VWAP (Price vs VWAP + EMA20) ---- #
-
-    def _vwap_signals(self) -> pd.DataFrame:
-        df5 = self.df_5m.copy()
-        df5["vwap"] = self._rolling_vwap(df5)
-        df5["ema20"] = df5["close"].ewm(span=20, adjust=False).mean()
-        df5["atr"]   = self._atr(df5, 14)
-
-        bullish = (
-            (df5["close"] > df5["vwap"]) &
-            (df5["close"].shift(1) <= df5["vwap"].shift(1)) &   # cross above
-            (df5["close"] > df5["ema20"]) &
-            self._in_session(df5) & ~self._in_blackout(df5)
-        )
-        bearish = (
-            (df5["close"] < df5["vwap"]) &
-            (df5["close"].shift(1) >= df5["vwap"].shift(1)) &
-            (df5["close"] < df5["ema20"]) &
-            self._in_session(df5) & ~self._in_blackout(df5)
-        )
-
-        rows = []
-        for ts in bullish[bullish].index:
-            rows.append({"timestamp": ts, "direction": "CE", "atr": df5.loc[ts, "atr"]})
-        for ts in bearish[bearish].index:
-            rows.append({"timestamp": ts, "direction": "PE", "atr": df5.loc[ts, "atr"]})
-            
-        if not rows:
-            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
-            
-        return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
-
-    # ---- ORB (Opening Range Breakout 09:15-09:45) ---- #
-
-    def _orb_signals(self) -> pd.DataFrame:
-        df1 = self.df_1m.copy()
-        df1["atr"] = self._atr(df1, 14)
-
-        rows = []
-        for date, day_df in df1.groupby(df1.index.date):
-            opening = day_df.between_time("09:15", "09:45")
-            if opening.empty:
-                continue
-            orb_high = opening["high"].max()
-            orb_low  = opening["low"].min()
-
-            post_orb = day_df.between_time("09:46", "10:30")
-            if post_orb.empty:
-                continue
-
-            broken_up   = post_orb[post_orb["close"] > orb_high]
-            broken_down = post_orb[post_orb["close"] < orb_low]
-
-            if not broken_up.empty:
-                ts = broken_up.index[0]
-                rows.append({"timestamp": ts, "direction": "CE", "atr": day_df.loc[ts, "atr"]})
-            elif not broken_down.empty:
-                ts = broken_down.index[0]
-                rows.append({"timestamp": ts, "direction": "PE", "atr": day_df.loc[ts, "atr"]})
-
-        return pd.DataFrame(rows).reset_index(drop=True)
-
-    # ---- INSIDE BAR (15m Mother-Baby pattern) ---- #
-
-    def _inside_bar_signals(self) -> pd.DataFrame:
-        df15 = self.df_15m.copy()
-        df15["atr"] = self._atr(df15, 14)
-
-        mother_high = df15["high"].shift(1)
-        mother_low  = df15["low"].shift(1)
-        is_inside   = (df15["high"] < mother_high) & (df15["low"] > mother_low)
-
-        rows = []
-        for date, day_df in df15.groupby(df15.index.date):
-            inside_bars = day_df[is_inside.reindex(day_df.index, fill_value=False)]
-            if inside_bars.empty:
-                continue
-
-            for ts, row in inside_bars.iterrows():
-                bar_t = ts.time()
-                if bar_t < dtime(9, 30) or bar_t > dtime(14, 0):
-                    continue
-                # Breakout direction determined by close vs mother midpoint
-                mid = (mother_high[ts] + mother_low[ts]) / 2
-                direction = "CE" if row["close"] > mid else "PE"
-                rows.append({"timestamp": ts, "direction": direction, "atr": row["atr"]})
-
-        return pd.DataFrame(rows).reset_index(drop=True)
-
-    # ---- OHL SCALP (09:15 candle: Open==High → bear, Open==Low → bull) ---- #
-
-    def _ohl_signals(self) -> pd.DataFrame:
-        df1 = self.df_1m.copy()
-        rows = []
-        for date, day_df in df1.groupby(df1.index.date):
-            opening_candles = day_df.between_time("09:15", "09:16")
-            if opening_candles.empty:
-                continue
-            c = opening_candles.iloc[0]
-            atr = self._atr(day_df, 14).iloc[-1] if len(day_df) >= 14 else 20.0
-
-            # Open ≈ High → strong sellers → buy PE
-            if abs(c["open"] - c["high"]) <= 1:
-                rows.append({"timestamp": opening_candles.index[0], "direction": "PE", "atr": atr})
-            # Open ≈ Low  → strong buyers → buy CE
-            elif abs(c["open"] - c["low"]) <= 1:
-                rows.append({"timestamp": opening_candles.index[0], "direction": "CE", "atr": atr})
-
-        return pd.DataFrame(rows).reset_index(drop=True)
 
     # ---- GAMMA BLAST (ADX > 45 parabolic trending) ---- #
 
@@ -373,12 +259,12 @@ class BacktestEngine:
         df5["ema21"] = df5["close"].ewm(span=21, adjust=False).mean()
 
         bullish = (
-            (df5["adx"] > 45) &
+            (df5["adx"] > 40) &
             (df5["ema9"] > df5["ema21"]) &
             self._in_session(df5) & ~self._in_blackout(df5)
         )
         bearish = (
-            (df5["adx"] > 45) &
+            (df5["adx"] > 40) &
             (df5["ema9"] < df5["ema21"]) &
             self._in_session(df5) & ~self._in_blackout(df5)
         )
@@ -511,16 +397,27 @@ class BacktestEngine:
                 continue  # Genuinely unaffordable
 
             # --- Apply Entry Slippage ---
-            entry_premium_slippage = entry_premium * (1 + self.slippage_pct)
+            # Straddles trade TWO instruments, effectively doubling bid-ask friction
+            slip_mult = 2.0 if direction == "STRADDLE" else 1.0
+            entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
 
             # Brokerage + Realistic Taxes (STT, GST, Transaction Charges ≈ 0.1% of turnover)
-            brokerage = self.brokerage_per_lot * lots * 2
+            # Straddles involve two legs, doubling the total transaction instances
+            brokerage = self.brokerage_per_lot * lots * 2 * slip_mult
             turnover = (entry_premium_slippage + (entry_premium_slippage * 1.5)) * qty # Rough estimate
             taxes = turnover * 0.001 
             total_cost = brokerage + taxes
 
+            # --- FIX: Lookahead Bias Prevention ---
+            # Signals are emitted at bar-start. We MUST wait for the bar to CLOSE before executing.
+            # Our core trinity (GAMMA_BLAST, MOMENTUM, STRADDLE_SCALP) all use 5-min timeframes.
+            timeframe_delay = 5  # Wait for 5m bar to complete
+
+            execution_ts = ts + pd.Timedelta(minutes=timeframe_delay)
+
             # --- Simulate trade outcome on 1m bars ---
-            future_bars = df1[df1.index > ts]
+            # Get all 1m bars AFTER confirmed completion of the signaling bar
+            future_bars = df1[df1.index >= execution_ts]
             future_day  = future_bars[future_bars.index.date == date]
             future_day  = future_day[future_day.index.time <= dtime(15, 15)]
 
@@ -536,7 +433,7 @@ class BacktestEngine:
             )
 
             # --- Apply Exit Slippage ---
-            exit_price_slippage = exit_price * (1 - self.slippage_pct)
+            exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
 
             pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
             capital += pnl
@@ -594,6 +491,8 @@ class BacktestEngine:
         # 0.005 increase per 1pt index move is a common OTM gamma proxy
         gamma_factor = 0.005 
         current_delta = delta
+        start_ts = future_bars.index[0]
+        option_price = entry_price  # Initialize in case loop context fails
 
         for ts, row in future_bars.iterrows():
             if direction == "STRADDLE":
@@ -619,6 +518,14 @@ class BacktestEngine:
                 avg_delta = (current_delta + adj_delta) / 2
                 option_price = entry_price + (index_move * avg_delta)
                 option_price = max(0.05, option_price)
+
+            # --- INSTITUTIONAL PRICING: Synthetic Theta Decay ---
+            # Approximating daily decay based on holding minutes (375 min market day)
+            # Double decay factor for straddles as two premiums are melting simultaneously.
+            elapsed_min = (ts - start_ts).total_seconds() / 60
+            daily_decay_rate = 0.18 if direction == "STRADDLE" else 0.12
+            decayed_premium = entry_price * (daily_decay_rate * (elapsed_min / 375.0))
+            option_price = max(0.01, option_price - decayed_premium)
 
             if use_progressive_trail:
                 unrealized_pnl = (option_price - entry_price) * qty
@@ -685,11 +592,8 @@ class BacktestEngine:
             if use_progressive_trail and option_price >= entry_price + (10 * initial_risk):
                 return option_price, "DREAM_TARGET", ts
 
-        # End of data = time exit at last price
-        last_idx  = future_bars["close"].iloc[-1]
-        idx_move  = last_idx - entry_index
-        final_opt = max(0.05, entry_price + (idx_move * delta if direction == "CE" else -idx_move * delta))
-        return final_opt, "TIME_EXIT", future_bars.index[-1]
+        # End of data = time exit at last known price
+        return option_price, "TIME_EXIT", future_bars.index[-1]
 
     # ------------------------------------------------------------------ #
     #  Performance Metrics                                                 #
@@ -711,8 +615,10 @@ class BacktestEngine:
 
         # CAGR: annualise over trading days (252/year)
         trading_years = trading_days / 252
-        if trading_years > 0 and self.initial_capital > 0:
+        if trading_years > 0 and self.initial_capital > 0 and final_capital > 0:
             cagr = ((final_capital / self.initial_capital) ** (1 / trading_years) - 1) * 100
+        elif final_capital <= 0:
+            cagr = -100.0
         else:
             cagr = 0.0
 

@@ -14,7 +14,6 @@ class LifecycleManager:
         self.test_mode = test_mode
         self.with_selling = with_selling
         self.current_process = None
-        self.ohl_attempted = False
         self.selling_process = None
         self._current_date = None
         self.running = False
@@ -139,9 +138,8 @@ class LifecycleManager:
         print("\n-------------------------------------------")
         print("   NIFTY BOT LIFECYCLE MANAGER 🤖⏰")
         print("-------------------------------------------")
-        print("1. 09:15 AM -> Attempt OHL Scalp")
-        print("2. 09:20 AM -> Switch to Smart Auto Mode")
-        print("3. 15:30 PM -> Auto Shutdown")
+        print("1. 09:16 AM -> Switch to Smart Auto Mode")
+        print("2. 15:30 PM -> Auto Shutdown")
         print("-------------------------------------------\n")
 
         try:
@@ -152,7 +150,6 @@ class LifecycleManager:
                 # DAY-CHANGE RESET: reset ohl_attempted when a new trading day starts
                 if self._current_date != today:
                     self._current_date = today
-                    self.ohl_attempted = False
                     self.log(f"📅 New trading day detected: {today}. State reset.")
 
                 # WEEKEND / HOLIDAY GUARD: don't trade on non-trading days
@@ -180,19 +177,11 @@ class LifecycleManager:
                     # Heartbeat?
                     pass
 
-                # B. MARKET OPEN (09:16 - 09:20) -> OHL SCALP
-                elif datetime.time(9, 16) <= now < datetime.time(9, 20):
-                    if not self.ohl_attempted and not self.current_process:
-                        self.log("⏰ Time 09:16 Noticed. Attempting OHL Scalp...")
-                        self.current_process = self.run_strategy(strategy_name="OHL")
-                        self.ohl_attempted = True
-
-                # C. MAIN SESSION (09:20 - 15:15) -> AUTO MODE
-                elif datetime.time(9, 20) <= now < datetime.time(15, 15):
+                # B. MAIN SESSION (09:16 - 15:15) -> AUTO MODE
+                elif datetime.time(9, 16) <= now < datetime.time(15, 15):
                     if not self.current_process:
-                        self.log("⏰ Time 09:20+ Detected. Switching to Main Auto-Strategy...")
+                        self.log("⏰ Time 09:16+ Detected. Activating Main Auto-Strategy Cycle...")
                         self.current_process = self.run_strategy(auto=True)
-                        # Throttle: Wait at least 60s before checking again to prevent rapid restarts
                         time.sleep(60)
 
                     # START SELLING ENGINE (Background - OPTIONAL)

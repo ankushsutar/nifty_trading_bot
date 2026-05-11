@@ -9,11 +9,7 @@ from bot.utils.token_lookup import TokenLookup
 from bot.strategies.nifty_straddle import NiftyStrategy
 from bot.core.mock_connect import MockSmartConnect, MockTokenLookup
 from bot.utils.expiry_calculator import get_next_weekly_expiry
-from bot.strategies.orb_strategy import ORBStrategy
 from bot.strategies.momentum_strategy import MomentumStrategy
-from bot.strategies.vwap_strategy import VWAPStrategy
-from bot.strategies.ohl_strategy import OHLStrategy
-from bot.strategies.inside_bar_strategy import InsideBarStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 from bot.strategies.selling_strategy import SellingStrategy
@@ -62,7 +58,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "ORB", "MOMENTUM", "VWAP", "OHL", "INSIDE_BAR", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -142,23 +138,10 @@ def run_bot():
                 time.sleep(60)
 
     # 4. Initialize Strategy
-    if args.strategy == "ORB":
-        logger.info(f"\n>>> [Strategy] Selected: Open Range Breakout (ORB)")
-        bot = ORBStrategy(api, loader, dry_run=args.dry_run)
-    elif args.strategy == "MOMENTUM":
+    if args.strategy == "MOMENTUM":
         logger.info(f"\n>>> [Strategy] Selected: Momentum (EMA Crossover) ⚡")
         bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
-    elif args.strategy == "VWAP":
-        logger.info(f"\n>>> [Strategy] Selected: VWAP Institutional Trend (Pro Mode) 🚀")
-        bot = VWAPStrategy(api, loader, dry_run=args.dry_run)
-        bot.risk_multiplier = risk_multiplier
-    elif args.strategy == "OHL":
-        logger.info(f"\n>>> [Strategy] Selected: Open High Low (OHL) Scalp 🎯")
-        bot = OHLStrategy(api, loader, dry_run=args.dry_run)
-    elif args.strategy == "INSIDE_BAR":
-        logger.info(f"\n>>> [Strategy] Selected: Inside Bar Breakout 🔥")
-        bot = InsideBarStrategy(api, loader, dry_run=args.dry_run)
     elif args.strategy == "GAMMA_BLAST":
         logger.info(f"\n>>> [Strategy] Selected: Gamma Blast (OTM Momentum) 🚀💎")
         bot = GammaBlastStrategy(api, loader, dry_run=args.dry_run)
@@ -191,9 +174,7 @@ def run_bot():
         logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
     # 6. Execute Strategy
-    if args.strategy in ["ORB", "OHL", "INSIDE_BAR"]:
-        bot.execute(expiry=expiry, action="BUY")
-    elif args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"]:
+    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"]:
         bot.execute(expiry=expiry)
     else:
         bot.execute(expiry=expiry, action="SELL")

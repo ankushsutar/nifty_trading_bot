@@ -818,8 +818,8 @@ class GammaBlastStrategy:
             if exit_type == "LIMIT":
                 limit_price = self.active_position.get('sl_price', ltp)
             else:
-                # Default institutional behavior: 2% buffer limit
-                limit_price = round(ltp * 0.98, 1) if ltp > 0 else 0
+                # Deep Institutional Fallback: 15% buffer limit (forces match against lowest resting bid)
+                limit_price = round(ltp * 0.85, 1) if ltp > 0 else 0.05
             
             orderparams = {
                 "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,

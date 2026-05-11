@@ -122,8 +122,9 @@ class LadderedTrailingManager:
         # Exit Check
         if ltp <= active_position.get('sl_price', 0):
             logger.info(f"🛑 Laddered SL Hit! LTP: {ltp} <= SL: {active_position['sl_price']}")
-            # Smart-Exit: If Stage 1 has been reached, use LIMIT order
-            exit_type = "LIMIT" if current_stage >= 1 else "MARKET"
+            # Emergency Patch: Force MARKET execution for all survival exits.
+            # Never play price optimization games during a Stop Loss cascade.
+            exit_type = "MARKET" 
             return True, exit_type
 
         return False, None
