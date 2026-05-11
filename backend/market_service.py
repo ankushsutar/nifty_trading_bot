@@ -13,6 +13,7 @@ from bot.utils.logger import logger
 import json
 import os
 import tempfile
+import pandas as pd
 
 class MarketService:
     _instance = None
@@ -299,8 +300,18 @@ class MarketService:
                         # 1b. Intraday High/Low (HOD/LOD) Extraction for Sniper Logic
                         try:
                             now_dt = datetime.datetime.now()
+                            
                             # Select only candles from today
-                            today_df = df[df.index.date == now_dt.date()] if not df.empty else None
+                            # Armored Fix: Check for 'timestamp' column before defaulting to index.date
+                            # preventing 'RangeIndex has no attribute date' failures.
+                            if 'timestamp' in df.columns:
+                                dates = pd.to_datetime(df['timestamp']).dt.date
+                            else:
+                                # Fallback assuming index might be DatetimeIndex
+                                dates = pd.Series(df.index).dt.date if not isinstance(df.index, pd.DatetimeIndex) else df.index.date
+                            
+                            mask = (dates == now_dt.date())
+                            today_df = df[mask] if not df.empty else None
                             
                             if today_df is not None and not today_df.empty:
                                 # Exclude the current active/most-recent candle to get the 
