@@ -134,9 +134,15 @@ class OrderManager:
 
             from bot.core.order_feed import order_feed
             
+            # ⚡ Dynamic Pursuit Tuning ⚡
+            # Momentum/Gamma events demand rapid execution. Slow stocks need minimal slippage.
+            is_fast_strategy = strategy_name in ["GAMMA_BLAST", "MOMENTUM"]
+            wait_per_walk = 1.0 if is_fast_strategy else 3.0
+            walk_step = 0.5 if is_fast_strategy else 0.05  # 10x larger steps for explosive moves
+            
             for attempt in range(max_walk_ticks):
-                # Wait for fill with shorter timeout per walk
-                result = order_feed.wait_for_fill(oid, timeout=3)
+                # Wait for fill with dynamic timeout
+                result = order_feed.wait_for_fill(oid, timeout=wait_per_walk)
                 
                 if result['status'] == 'FILLED':
                     logger.info(f"✨ Smart-Limit Filled: {symbol} @ {result['price']} (Attempt {attempt+1})")
@@ -147,13 +153,13 @@ class OrderManager:
                     return None
 
                 # If TIMEOUT, walk the price one tick
-                tick_size = 0.05
                 if transaction_type == "BUY":
-                    current_price += tick_size 
+                    current_price += walk_step 
                 else:
-                    current_price -= tick_size
+                    current_price -= walk_step
                 
-                logger.info(f"🚶 Walking Smart-Limit: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
+                speed_label = "RAPID" if is_fast_strategy else "SLOW"
+                logger.info(f"🚶 Walking Smart-Limit [{speed_label}]: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
                 
                 # Modify existing order
                 success = self.modify_order_price(oid, current_price, symbol, token, qty)

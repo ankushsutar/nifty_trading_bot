@@ -296,6 +296,31 @@ class MarketService:
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)
                         
+                        # 1b. Intraday High/Low (HOD/LOD) Extraction for Sniper Logic
+                        try:
+                            now_dt = datetime.datetime.now()
+                            # Select only candles from today
+                            today_df = df[df.index.date == now_dt.date()] if not df.empty else None
+                            
+                            if today_df is not None and not today_df.empty:
+                                # Exclude the current active/most-recent candle to get the 
+                                # reference CEILING/FLOOR we are testing a breakout against.
+                                if len(today_df) > 1:
+                                    ref_df = today_df.iloc[:-1]
+                                else:
+                                    ref_df = today_df
+                                
+                                self.analysis_data['hod'] = float(ref_df['high'].max())
+                                self.analysis_data['lod'] = float(ref_df['low'].min())
+                                logger.debug(f"MarketService: Updated Reference Range [LOD: {self.analysis_data['lod']:.1f} | HOD: {self.analysis_data['hod']:.1f}]")
+                            else:
+                                self.analysis_data['hod'] = 0.0
+                                self.analysis_data['lod'] = 0.0
+                        except Exception as re_err:
+                            logger.warning(f"MarketService: Failed to calculate HOD/LOD reference: {re_err}")
+                            self.analysis_data['hod'] = 0.0
+                            self.analysis_data['lod'] = 0.0
+                        
                         # 2. OI & Panic Sentiment Analysis
                         ltp = df.iloc[-1]['close']
                         base_atm = int(round(ltp / 50) * 50)

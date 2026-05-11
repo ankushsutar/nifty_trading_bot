@@ -271,11 +271,34 @@ class DecisionEngine:
             logger.warning(">>> [Brain] 🛡️ RECOVERY MODE ACTIVE: Reducing risk multiplier by 50%.")
             risk_multiplier *= 0.5
 
+        # ── SNIPER OVERRIDE: GEOMETRIC BREAKOUT DETECTION ─────────────────────
+        # If in the Afternoon Power Hour, and price pierces previous HOD/LOD
+        # with an explicit Institutional Volume Spike, trigger GammaBlast 
+        # IMMEDIATELY, bypassing the 15-30 minute ADX lag.
+        hod = regime_data.get('hod', 0)
+        lod = regime_data.get('lod', 0)
+        volume_spike = regime_data.get('volume_spike', False)
+        is_breakout = False
+        
+        if is_afternoon and volume_spike and nifty_ltp > 0:
+            if hod > 0 and nifty_ltp > hod:
+                is_breakout = True
+                logger.info(f"🎯 [SNIPER] HOD BREAKOUT DETECTED! (Spot {nifty_ltp:.1f} > Ceiling {hod:.1f} with Volume Spike)")
+            elif lod > 0 and nifty_ltp < lod:
+                is_breakout = True
+                logger.info(f"🎯 [SNIPER] LOD BREAKDOWN DETECTED! (Spot {nifty_ltp:.1f} < Floor {lod:.1f} with Volume Spike)")
+
+        # ── STRATEGY SELECTION MATRIX ────────────────────────────────────────
         if panic_data.get('panic_score', 50) >= 80:
             # INSTITUTIONAL PANIC DETECTED -> Prioritize GAMMA regardless of day
             logger.info(f"🔥 [X-FACTOR] PANIC DETECTED ({panic_data.get('reason')}). Launching Alpha Strike.")
             selected_strategy = "GAMMA_BLAST"
         
+        elif is_breakout:
+            # GEOMETRIC VOLUME BREAKOUT DETECTED -> Enter immediately on explosion
+            logger.info(f"🚀 [SNIPER ACTIVATE] Explosive Volume Breakout confirmed. Overriding ADX Lag -> Selecting GAMMA_BLAST")
+            selected_strategy = "GAMMA_BLAST"
+
         elif adx >= tier.adx_gamma_blast:
             # PARABOLIC TREND -> Use Gamma Blast on ANY day
             logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")

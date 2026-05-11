@@ -340,10 +340,10 @@ class StraddleScalpStrategy:
             self._close_both("STOPLOSS")
             return "LOSS"
 
-        # Time exit
-        if datetime.datetime.now().time() >= datetime.time(*Config.STRATEGY_EXIT_TIME):
-            logger.info("Straddle Scalp: ⏰ Time exit triggered.")
-            self._close_both("TIME")
+        # Time exit (Forced 1:15 PM Liquidity Flush to free margin for Power Hour)
+        if datetime.datetime.now().time() >= datetime.time(13, 15):
+            logger.info("Straddle Scalp: ⏰ 1:15 PM Power-Hour Limit Reached. Performing Mandatory Liquidity Flush.")
+            self._close_both("TIME_FLUSH")
             return "TIME"
 
         # Trend-Kill Switch (Throttled every 60 seconds)

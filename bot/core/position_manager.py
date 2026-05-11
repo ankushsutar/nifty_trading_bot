@@ -37,35 +37,38 @@ class LadderedTrailingManager:
             return False, None
 
         unrealized_pnl = (ltp - entry_price) * qty
+        points_up = ltp - entry_price
         current_stage = active_position.get('ladder_stage', 0)
 
         # Stage 0.5: Breakeven Shield (No-Loss Mode)
-        # As soon as we hit ₹1,000 profit, move SL to cost + 5pts (generous buffer for taxes + wiggles)
-        if current_stage < 0.5 and unrealized_pnl >= 1000:
+        # Trigger when option jumps 15 points from entry. Move SL to cost + 5pts.
+        if current_stage < 0.5 and points_up >= 15:
             new_sl = entry_price + 5
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active (+15pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
                 current_stage = 0.5
 
-        # Stage 1: The ₹2,000 Floor
-        if current_stage < 1 and unrealized_pnl >= 2000:
-            new_sl = entry_price + 18
+        # Stage 1: The Base Floor
+        # Trigger when option jumps 25 points. Move SL to cost + 15pts.
+        if current_stage < 1 and points_up >= 25:
+            new_sl = entry_price + 15
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 1 Reached: Floor Locked ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 1 Reached: Floor Locked (+25pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
 
         # Stage 2: The Buffer
-        if current_stage < 2 and unrealized_pnl >= 3200:
-            new_sl = entry_price + 35
+        # Trigger when option jumps 40 points. Move SL to cost + 25pts.
+        if current_stage < 2 and points_up >= 40:
+            new_sl = entry_price + 25
             if new_sl > current_sl:
-                logger.info(f"📈 Stage 2 Reached: Buffer Set ({symbol}) | SL: {new_sl}")
+                logger.info(f"📈 Stage 2 Reached: Buffer Set (+40pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 current_stage = 2
 
         # Stage 3: The 3R Hunter (1m 21-EMA Trail)
-        if current_stage < 3 and unrealized_pnl >= 4200:
+        if current_stage < 3 and points_up >= 55:
             logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 21-EMA Trail) for {symbol}")
             active_position['ladder_stage'] = 3
             current_stage = 3
@@ -79,12 +82,12 @@ class LadderedTrailingManager:
                 if ema21_1m > 0:
                     # Trailing stop at EMA21
                     new_sl = round(ema21_1m, 1)
-                    if new_sl > current_sl:
+                    if new_sl > current_sl and new_sl < ltp - 5: # Ensure at least 5 pts wiggle from current LTP
                         self._apply_sl_update(strategy_name, active_position, new_sl)
             
             # --- STAGE 4: MOONSHOT MODE (The X-Factor) ---
-            # If profit is huge, sell 75% of lots and let 1 lot run for "100x" gains.
-            if current_stage < 4 and unrealized_pnl >= 5000:
+            # Trigger when option jumps a massive 75 points. Sell 75% and trail the final runner.
+            if current_stage < 4 and points_up >= 75:
                 total_qty = active_position.get('qty', 0)
                 
                 if total_qty > Config.NIFTY_LOT_SIZE:
@@ -92,7 +95,7 @@ class LadderedTrailingManager:
                     lots_to_sell = max(1, int(total_lots * 0.75))
                     qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
                     
-                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Selling {lots_to_sell} lots. Keeping 1 lot Runner.")
+                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Points Up: {points_up:.1f}. Selling {lots_to_sell} lots.")
                     
                     # Execute partial sell
                     oid = self.order_manager.place_smart_limit(
@@ -108,11 +111,12 @@ class LadderedTrailingManager:
                         )
                         active_position['qty'] = total_qty - qty_to_sell
                 else:
-                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! (1-Lot Position) Moving SL to Safe Zone.")
+                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! (1-Lot Position) Locking Safe Zone.")
 
-                # ALWAYS update SL and Stage for the remaining runner (or the original 1 lot)
+                # Secure 45 points on the remaining runner. 
+                # (Since points_up >= 75, securing 45 yields a 30-point stop distance. Safe.)
                 active_position['ladder_stage'] = 4
-                new_sl = entry_price + 50 # Secure 50 points (₹3,250) on the runner
+                new_sl = entry_price + 45 
                 self._apply_sl_update(strategy_name, active_position, new_sl)
 
         # Exit Check
