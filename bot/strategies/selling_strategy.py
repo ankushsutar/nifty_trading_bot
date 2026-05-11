@@ -25,9 +25,21 @@ class SellingStrategy:
         if not expiry:
             expiry = get_next_weekly_expiry()
             
+        from bot.core.safety_checks import SafetyGatekeeper
+        gatekeeper = SafetyGatekeeper(self.api, dry_run=self.dry_run)
+        
         while self.running:
             try:
-                # 1. Fetch current market data (Spot & VIX)
+                # 1. Fetch dynamic broker capital to prevent multi-process collisions
+                live_capital = gatekeeper.get_current_capital()
+                if live_capital > 0:
+                    # Dynamically inject REAL current available cash into sizing engine config
+                    # This forces compounding calculations to adapt to actual funds right now.
+                    self.engine.config["total_capital"] = live_capital
+                else:
+                    logger.warning(">>> [Selling] Dynamic capital read was 0. Falling back to static config.")
+                
+                # 2. Fetch current market data (Spot & VIX)
                 market_data = market_service.get_market_data()
                 spot = market_data.get('nifty', 0)
                 vix = market_data.get('vix', 0)

@@ -167,9 +167,19 @@ class OrderManager:
                 logger.info(f"✨ Smart-Limit Filled on final attempt: {symbol} @ {result['price']}")
                 return oid
             
-            # If still not filled, we should probably cancel it to avoid ghost entries
-            logger.warning(f"⚠️ Smart-Limit timed out after walking. Status: {result.get('status')}. Cancelling order {oid} for safety.")
-            self.cancel_order(oid, variety="NORMAL")
+            # If still not filled, we attempt cancellation.
+            logger.warning(f"⚠️ Smart-Limit timed out after walking. Status: {result.get('status')}. Attempting cancellation of order {oid}...")
+            
+            # --- SAFETY FALLBACK (Fixes Fill-on-Cancel Trap) ---
+            cancel_status = self.cancel_order(oid, variety="NORMAL")
+            
+            if not cancel_status:
+                logger.warning(f"⚠️ Cancel rejected for {oid}. Checking for last-microsecond fill before aborting.")
+                verify_status = self.get_order_status(oid)
+                if verify_status and verify_status.get('status') in ['COMPLETE', 'FILLED']:
+                    logger.critical(f"🚨 FILL-ON-CANCEL DETECTED! Order {oid} filled despite timeout. Transitioning to trade.")
+                    return oid
+            
             return None
 
         except Exception as e:

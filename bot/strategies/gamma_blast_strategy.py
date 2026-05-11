@@ -34,6 +34,8 @@ class GammaBlastStrategy:
         self.risk_multiplier = 1.0        # Set by DecisionEngine before execute()
         self.last_trend_fade_check = 0    # Throttle market_service calls in monitor
         self._last_sl_hit_time = 0        # Timestamp of last SL hit — gates re-entry
+        self._last_sl_nifty_spot = 0      # Nifty Spot price when last SL triggered
+        self._last_sl_leg = None          # "CE" or "PE" of the SL'd trade
         self._last_status_log  = 0        # Throttle for periodic monitor heartbeat
 
     def sync_state(self):
@@ -78,11 +80,19 @@ class GammaBlastStrategy:
                     pos.get('producttype') == 'INTRADAY' and 
                     int(pos.get('netqty', 0)) != 0):
                     
+                    symbol = pos['tradingsymbol']
+                    
+                    # 🛡️ STRATEGY FILTER GUARD: Does this position belong to another strategy in DB?
+                    existing_trade = trade_repo.get_active_trade(symbol=symbol, mode="LIVE")
+                    if existing_trade and existing_trade.get('strategy') not in ["GAMMA_BLAST"]:
+                        logger.info(f"⏩ [Gamma Blast] Skipping {symbol} (Belongs to Strategy: {existing_trade.get('strategy')})")
+                        continue
+                        
                     qty = int(pos['netqty'])
                     
                     found_active = {
-                        'leg': "CE" if "CE" in pos['tradingsymbol'] else "PE", 
-                        'symbol': pos['tradingsymbol'],
+                        'leg': "CE" if "CE" in symbol else "PE", 
+                        'symbol': symbol,
                         'token': pos['symboltoken'],
                         'qty': abs(qty),
                         'entry_price': float(pos['avgnetprice']),
@@ -91,7 +101,9 @@ class GammaBlastStrategy:
                     }
                     
                     # Match with DB record to get correct sl_price if available
-                    db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
+                    db_trade = existing_trade if existing_trade and existing_trade.get('strategy') == "GAMMA_BLAST" else \
+                               trade_repo.get_active_trade(mode="LIVE", strategy="GAMMA_BLAST", symbol=found_active['symbol'])
+                               
                     if db_trade:
                         found_active['id'] = db_trade['id']
                         found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
@@ -252,6 +264,32 @@ class GammaBlastStrategy:
 
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"
+            
+            # --- STRUCTURAL RESET GATE (PRO-TRADER MODE) ---
+            # If the last trade was an SL, and we're attempting to re-enter in SAME direction:
+            # Mandate that price has decisively cleared the 'shakeout zone' (+/- 5 pts).
+            # Prevents 'Revenge Averaging' into the same failing consolidation structure.
+            if self._last_sl_nifty_spot > 0 and self._last_sl_leg == leg:
+                _buffer = 5.0
+                if leg == "CE" and ltp < (self._last_sl_nifty_spot + _buffer):
+                    logger.warning(
+                        f"🛡️ Structural Block (CE): Spot {ltp:.1f} hasn't cleared "
+                        f"last SL anchor ({self._last_sl_nifty_spot:.1f} + {_buffer}). Waiting for breakout."
+                    )
+                    time.sleep(30)
+                    continue
+                elif leg == "PE" and ltp > (self._last_sl_nifty_spot - _buffer):
+                    logger.warning(
+                        f"🛡️ Structural Block (PE): Spot {ltp:.1f} hasn't cleared "
+                        f"last SL anchor ({self._last_sl_nifty_spot:.1f} - {_buffer}). Waiting for breakdown."
+                    )
+                    time.sleep(30)
+                    continue
+                else:
+                     # Structure cleared! Reset anchor to allow entry
+                     logger.info(f"🚀 Structural Clear: Price has cleanly cleared previous SL anchor. Resuming operations.")
+                     self._last_sl_nifty_spot = 0 
+                     self._last_sl_leg = None
 
             # --- OI BIAS CONFIRMATION (fresh fetch, not market_service cache) ---
             # Force-fetch current OI at entry — market_service oi_data can be up to
@@ -393,14 +431,16 @@ class GammaBlastStrategy:
             except Exception as _ae:
                 logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
-            # 4. Strike Selection — Goldman Squeeze Logic (Delta Shift)
+            # 4. Strike Selection — Dynamic Volatility Adjustment
             atm_strike = round(ltp / 50) * 50
+            vix = market_data.get('vix', 0)
+
             if getattr(self, '_is_squeeze', False):
-                # SQUEEZE DETECTED: Shift to ATM (0 depth) for maximum absolute rupee profit.
+                # SQUEEZE DETECTED: Force ATM (0 depth) for max delta acceleration
                 otm_depth = 0
-                logger.info("🔥 SQUEEZE DELTA SHIFT: Upgrading strike selection to ATM for maximum absolute profit.")
+                logger.info("🔥 SQUEEZE OVERRIDE: Lock strike at ATM to catch parabolic delta surge.")
             else:
-                # Standard ADX scale
+                # A. Base Depth from ADX Scale
                 if adx < 50:
                     otm_depth = 1
                 elif adx < 55:
@@ -408,17 +448,24 @@ class GammaBlastStrategy:
                 else:
                     otm_depth = 3
 
-                # --- IV RANK: OTM DEPTH CAP ---
-                # When options are expensive (IV Rank > 70%), avoid going too deep OTM —
-                # a fat premium on a low-delta strike needs a huge move to break even.
-                # Floor at 1 OTM (never go ATM for gamma blast — it's a leverage strategy).
+                # B. Dynamic Volatility Capping (Institutional Guard)
+                # VIX > 20 signifies explosive extrinsic premium (high theta risk).
+                # Never buy >1 OTM depth when VIX is elevated; options are too rich.
+                if vix > 20 and otm_depth > 1:
+                    logger.warning(f"📉 Volatility Risk: VIX={vix:.1f} > 20. Hard-capping OTM depth to 1 to avoid Vega trap.")
+                    otm_depth = 1
+                
+                # C. IV Rank Convergence
+                # If IV Rank is extremely high, bias strictly towards ATM as mean-reversion crushes OTM faster.
                 iv_rank = self.gatekeeper.get_iv_rank()
-                if iv_rank > 0.70 and otm_depth > 1:
-                    otm_depth = max(1, otm_depth - 1)
-                    logger.info(
-                        f"📉 IV Rank={iv_rank:.0%}: Options expensive, "
-                        f"capping OTM depth to {otm_depth} strike(s) to avoid premium trap."
-                    )
+                if iv_rank > 0.75:
+                    original_depth = otm_depth
+                    otm_depth = min(1, otm_depth)
+                    if original_depth != otm_depth:
+                        logger.info(f"🛡️ IV Rank Critical ({iv_rank:.0%}): Compressing OTM depth {original_depth} -> {otm_depth}.")
+                elif iv_rank > 0.60 and otm_depth > 1:
+                     otm_depth = otm_depth - 1
+                     logger.info(f"🛡️ IV Rank Elevated ({iv_rank:.0%}): Lowering depth to {otm_depth} strikes.")
 
             strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
 
@@ -727,8 +774,20 @@ class GammaBlastStrategy:
                     logger.info(f"🛑 Gamma Blast: Laddered Exit Triggered ({exit_type})")
                     self.exit_market(token, symbol, remaining_qty, f"LADDERED_SL_{exit_type}", trade_id, sl_oid, exit_type=exit_type)
                     sl_oid = None
+                    
+                    # --- STRUCTURAL RESET RECORDING ---
+                    from backend.market_service import market_service
+                    md = market_service.get_market_data()
+                    
                     self.active_position = None
                     self._last_sl_hit_time = time.time()
+                    self._last_sl_nifty_spot = md.get('nifty', 0)
+                    self._last_sl_leg = leg # Captured from parameter scope
+                    
+                    logger.warning(
+                        f"🛡️ Captured Structural Reset Anchor: Leg={leg} | Spot={self._last_sl_nifty_spot:.1f}. "
+                        "Blocking same-direction re-entries until structural resolution."
+                    )
                     break
 
                 # Update local sl for logging

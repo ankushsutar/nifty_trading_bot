@@ -5,12 +5,14 @@ import datetime
 from bot.core.angel_connect import get_angel_session
 from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
+from bot.core.alpha_engine import AlphaEngine
 from bot.core.data_fetcher import DataFetcher
 from bot.utils.token_lookup import TokenLookup
 from bot.core.levels_provider import levels_provider
 from bot.utils.logger import logger
 import json
 import os
+import tempfile
 
 class MarketService:
     _instance = None
@@ -262,6 +264,8 @@ class MarketService:
                 if self.api:
                     if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
+                    if not hasattr(self, 'alpha_engine') or self.alpha_engine is None:
+                        self.alpha_engine = AlphaEngine(self.api, self.token_lookup)
                     levels_provider.data_fetcher.api = self.api # Keep sync
 
                     # --- OPTIMIZATION: Check if another process already refreshed intelligence recently ---
@@ -292,9 +296,9 @@ class MarketService:
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)
                         
-                        # 2. OI Sentiment Analysis
+                        # 2. OI & Panic Sentiment Analysis
                         ltp = df.iloc[-1]['close']
-                        strike = int(round(ltp / 50) * 50)
+                        base_atm = int(round(ltp / 50) * 50)
                         from bot.utils.expiry_calculator import get_next_weekly_expiry
                         expiry = get_next_weekly_expiry()
                         
@@ -305,9 +309,17 @@ class MarketService:
                         except: pass
 
                         if ltp > 0:
-                            analysis = self.oi_engine.get_market_sentiment(expiry, ltp)
-                            self.oi_data = analysis # Update oi_data with the full analysis dict
+                            # Use get_oi_velocity to capture centralized history / ROC
+                            analysis = self.oi_engine.get_oi_velocity(expiry, ltp)
+                            self.oi_data = analysis
                             
+                            # Generate Institutional Panic Metric
+                            panic_analysis = {}
+                            try:
+                                panic_analysis = self.alpha_engine.analyze_panic(expiry, base_atm)
+                            except Exception as alpha_err:
+                                logger.warning(f"Centralized Panic Analysis Failed: {alpha_err}")
+
                             # 3. Save Shared Intelligence for Child Processes
                             state = {
                                 "timestamp": datetime.datetime.now().isoformat(),
@@ -317,19 +329,33 @@ class MarketService:
                                 "oi_data": {
                                     "bias": analysis.get("bias", "NEUTRAL"),
                                     "pcr": analysis.get("pcr", 1.0),
+                                    "pcr_velocity": analysis.get("pcr_velocity", 0.0),
                                     "delta_ratio": analysis.get("delta_ratio", 1.0),
                                     "total_ce_oi": analysis.get("total_ce_oi", 0),
                                     "total_pe_oi": analysis.get("total_pe_oi", 0),
                                 },
+                                "panic_data": panic_analysis,
                                 "levels": self.levels_data,
-                                # Keep legacy flat keys for any other consumers
+                                # Keep legacy flat keys for compatibility
                                 "sentiment": analysis.get("bias", "NEUTRAL"),
                                 "pcr": analysis.get("pcr", 1.0),
                                 "oi_delta_ratio": analysis.get("delta_ratio", 1.0)
                             }
                             if not os.path.exists("data"): os.makedirs("data")
-                            with open("data/market_analysis.json", "w") as f:
-                                json.dump(state, f, default=str)
+                            
+                            # --- ATOMIC FILE SWAP (Fixes Race Truncation Condition) ---
+                            target_path = "data/market_analysis.json"
+                            temp_path = None
+                            try:
+                                with tempfile.NamedTemporaryFile('w', dir="data", delete=False) as tf:
+                                    json.dump(state, tf, default=str)
+                                    temp_path = tf.name
+                                os.replace(temp_path, target_path) # Atomic swap at OS level
+                            except Exception as iox:
+                                logger.error(f"Atomic File Refresh Failed: {iox}")
+                                if temp_path and os.path.exists(temp_path):
+                                    try: os.remove(temp_path)
+                                    except: pass
 
                             
                             logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")

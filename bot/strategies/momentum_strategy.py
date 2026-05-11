@@ -117,16 +117,31 @@ class MomentumStrategy:
                     pos.get('producttype') == 'INTRADAY' and 
                     int(pos.get('netqty', 0)) != 0):
                     
+                    symbol = pos['tradingsymbol']
+                    
+                    # 🛡️ STRATEGY FILTER GUARD: Does this position belong to another strategy in DB?
+                    existing_trade = trade_repo.get_active_trade(symbol=symbol, mode="LIVE")
+                    if existing_trade and existing_trade.get('strategy') not in ["MOMENTUM"]:
+                        logger.info(f"⏩ [Momentum] Skipping {symbol} (Belongs to Strategy: {existing_trade.get('strategy')})")
+                        continue
+                    
                     qty = int(pos['netqty'])
                     
                     found_active = {
                         'leg': "CE" if "CE" in pos.get('tradingsymbol', '') else "PE", 
-                        'symbol': pos['tradingsymbol'],
+                        'symbol': symbol,
                         'token': pos['symboltoken'],
                         'qty': abs(qty),
                         'entry_price': float(pos['avgnetprice']),
                         'sl_price': float(pos['avgnetprice']) - min(20, float(pos['avgnetprice']) * 0.2) if self.active_position is None else self.active_position.get('sl_price', 0)
                     }
+                    
+                    # Sync internal trackers with found active to preserve pre-existing DB mapping
+                    if existing_trade and existing_trade.get('strategy') == "MOMENTUM":
+                        found_active['id'] = existing_trade['id']
+                        found_active['sl_price'] = existing_trade.get('sl_price', found_active['sl_price'])
+                        found_active['sl_order_id'] = existing_trade.get('sl_order_id')
+                    
                     if self.active_position is None:
                         logger.info(f"♻️ RECOVERY: Found Active Trade on Broker! {found_active['symbol']}")
                     

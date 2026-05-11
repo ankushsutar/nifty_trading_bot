@@ -11,6 +11,35 @@ class OIAnalyzer:
         self.api = api
         self.token_lookup = token_lookup
         self.snapshot_file = os.path.join(os.getcwd(), "data", "oi_snapshot.json")
+        self.history_file = os.path.join(os.getcwd(), "data", "oi_history.json")
+        self._history = self._load_history()
+
+    def _load_history(self):
+        """Loads persistence history from disk."""
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, "r") as f:
+                    data = json.load(f)
+                    today = datetime.date.today().isoformat()
+                    if data.get("date") == today:
+                        hist = data.get("history", [])
+                        # Prune already-expired data (>10 mins old) right on load
+                        now = time.time()
+                        return [x for x in hist if now - x.get("time", 0) <= 600]
+            except Exception as e:
+                logger.debug(f"OI History load failed: {e}")
+        return []
+
+    def _save_history(self):
+        """Persists the current telemetry history to disk."""
+        try:
+            today = datetime.date.today().isoformat()
+            data = {"date": today, "history": self._history}
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            with open(self.history_file, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.error(f"Failed to save OI history: {e}")
 
     def _get_oi_snapshot(self):
         """Loads today's 09:15 OI snapshot."""
@@ -137,14 +166,13 @@ class OIAnalyzer:
         current_data = self.get_market_sentiment(expiry, atm_strike)
         current_time = time.time()
         
-        # Initialize history if missing
-        if not hasattr(self, '_history'):
-            self._history = []
-            
         self._history.append({"time": current_time, "pcr": current_data["pcr"]})
         
-        # Keep only last 5 minutes (300 seconds)
+        # Keep only last 5 minutes (300 seconds) for calculation window
         self._history = [x for x in self._history if current_time - x["time"] <= 300]
+        
+        # Save updated state to disk to solve subprocess restart blindness
+        self._save_history()
         
         pcr_velocity = 0.0
         if len(self._history) >= 2:
@@ -155,3 +183,4 @@ class OIAnalyzer:
             
         current_data["pcr_velocity"] = round(pcr_velocity, 4)
         return current_data
+

@@ -1,5 +1,7 @@
 import time
 import datetime
+import os
+import json
 from typing import Dict, List, Optional
 from bot.utils.logger import logger
 from bot.core.oi_analyzer import OIAnalyzer
@@ -15,8 +17,42 @@ class AlphaEngine:
 
     def __init__(self, api, token_loader):
         self.oi_analyzer = OIAnalyzer(api, token_loader)
-        self.history = {} # Tracks OI snapshots over time
+        self.history_file = os.path.join(os.getcwd(), "data", "alpha_history.json")
+        self.history = self._load_history()
         self.MAX_HISTORY = 20 # Keep 20 snapshots (approx 60 mins if 3-min polling)
+
+    def _load_history(self):
+        """Loads the historical snapshots from disk to persist context across restarts."""
+        if os.path.exists(self.history_file):
+            try:
+                with open(self.history_file, "r") as f:
+                    data = json.load(f)
+                    today = datetime.date.today().isoformat()
+                    if data.get("date") == today:
+                        hist = data.get("history", {})
+                        # Drop completely expired snapshots
+                        now = time.time()
+                        clean_hist = {}
+                        for key, points in hist.items():
+                            # Maximum persistence window for Alpha is 2 hours (7200 seconds)
+                            clean_pts = [p for p in points if now - p.get('ts', 0) <= 7200]
+                            if clean_pts:
+                                clean_hist[key] = clean_pts
+                        return clean_hist
+            except Exception as e:
+                logger.debug(f"AlphaEngine History Load Failed: {e}")
+        return {}
+
+    def _save_history(self):
+        """Writes current telemetry snapshots to persistent disk store."""
+        try:
+            today = datetime.date.today().isoformat()
+            data = {"date": today, "history": self.history}
+            os.makedirs(os.path.dirname(self.history_file), exist_ok=True)
+            with open(self.history_file, "w") as f:
+                json.dump(data, f)
+        except Exception as e:
+            logger.error(f"AlphaEngine History Write Error: {e}")
 
     def analyze_panic(self, expiry: str, atm_strike: int) -> Dict:
         """
@@ -42,6 +78,9 @@ class AlphaEngine:
             # Keep history lean
             if len(self.history[key]) > self.MAX_HISTORY:
                 self.history[key].pop(0)
+
+            # Save to solve subprocess blindness
+            self._save_history()
 
             # Calculate Velocity (ROC)
             if len(self.history[key]) < 2:
