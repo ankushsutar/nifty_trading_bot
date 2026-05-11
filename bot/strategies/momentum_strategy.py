@@ -702,7 +702,14 @@ class MomentumStrategy:
             _is_squeeze = True
             logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
 
-        if not _is_squeeze:
+        _is_extreme_trend = self.last_analysis.get('adx', 0) >= 45.0
+        if _is_extreme_trend and not _is_squeeze and ((leg == "CE" and _fresh_bias == "BEARISH") or (leg == "PE" and _fresh_bias == "BULLISH")):
+            logger.info(
+                f"🚀 EXTREME TREND OVERRIDE: ADX={self.last_analysis.get('adx', 0):.1f} is extreme (>=45.0). "
+                f"Bypassing OI Alignment Gate to capture high-velocity trend despite contradicting institutional bias ({_fresh_bias})."
+            )
+
+        if not _is_squeeze and not _is_extreme_trend:
             if leg == "CE" and _fresh_bias == "BEARISH":
                 logger.warning(
                     "🛑 OI Alignment Gate: Fresh OI=BEARISH — CE blocked. "
@@ -732,8 +739,8 @@ class MomentumStrategy:
                 _htf_trend = self.calculate_htf_trend()
                 _htf_aligned = (_htf_trend == ("BULLISH" if leg == "CE" else "BEARISH"))
                 
-                # SQUEEZE BYPASS: If a squeeze is detected, we enter regardless of candle confirmation.
-                if _is_squeeze:
+                # SQUEEZE/EXTREME TREND BYPASS: If a squeeze or extreme trend is detected, we enter regardless of candle confirmation.
+                if _is_squeeze or _is_extreme_trend:
                     _min_candles = 0
                 else:
                     _min_candles = 1 if (_regime == "TRENDING" and _htf_aligned) else 2

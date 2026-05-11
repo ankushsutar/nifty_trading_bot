@@ -95,6 +95,7 @@ class GammaBlastStrategy:
                     if db_trade:
                         found_active['id'] = db_trade['id']
                         found_active['sl_price'] = db_trade.get('sl_price', found_active['sl_price'])
+                        found_active['sl_order_id'] = db_trade.get('sl_order_id') # FIX: Restore SL OID for logic below
                         logger.info(f"♻️ [Gamma Blast] RECOVERY: Linked to DB Trade #{db_trade['id']}")
                     
                     if self.active_position is None:
@@ -237,6 +238,18 @@ class GammaBlastStrategy:
                 time.sleep(30)
                 continue
 
+            # ── REGIME DRIFT YIELD ──────────────────────────────────────────────────
+            # If conditions leave Gamma Blast territory, yield control back to the Brain.
+            # Uses a 5-point buffer (e.g., 42.0 -> 37.0) to prevent jitter/thrashing.
+            _regime_now = analysis.get('regime', 'UNKNOWN')
+            _drift_threshold = _tier.adx_gamma_blast - 5.0
+            if adx < _drift_threshold or _regime_now in ["CHOP", "SIDEWAYS"]:
+                logger.warning(
+                    f"🔄 [Gamma Blast] Regime Drift detected (ADX: {adx:.1f} | Regime: {_regime_now}). "
+                    f"Yielding control back to Decision Engine for re-evaluation."
+                )
+                break # Terminate execution loop, allowing Lifecycle Manager to restart and switch strategies
+
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"
 
@@ -270,7 +283,15 @@ class GammaBlastStrategy:
             
             _is_squeeze = self._is_squeeze
 
-            if not _is_squeeze and ((leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH")):
+            # EXTREME TREND OVERRIDE: Cap at 60.0 to avoid entering at climax exhaustion.
+            _is_extreme_trend = 45.0 <= adx <= 60.0
+            if _is_extreme_trend and not _is_squeeze and ((leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH")):
+                logger.info(
+                    f"🚀 EXTREME TREND OVERRIDE: ADX={adx:.1f} is extreme (>=45.0). Bypassing Strict OI Gate "
+                    f"to capture parabolic move despite contradicting institutional bias ({oi_bias})."
+                )
+
+            if not _is_squeeze and not _is_extreme_trend and ((leg == "CE" and oi_bias == "BEARISH") or (leg == "PE" and oi_bias == "BULLISH")):
                 logger.warning(
                     f"Gamma Blast: 🛑 Strict OI Gate — Price Action says {leg} but institutions say {oi_bias}. "
                     f"Contradicting signals on ADX={adx:.1f} day. Skipping entry to protect capital."
@@ -281,29 +302,32 @@ class GammaBlastStrategy:
             # At least 2 of the last 3 completed 5-min candles must close in the
             # trade direction. Prevents entering on an EMA crossover from a single
             # spike or post-SL bounce candle.
-            try:
-                _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
-                if _df_gb is not None and len(_df_gb) >= 3:
-                    _l3 = _df_gb.tail(3)
-                    _bull = (_l3['close'] > _l3['open']).sum()
-                    _bear = (_l3['close'] < _l3['open']).sum()
-                    if leg == "CE" and _bull < 2:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
-                            "Waiting for stronger confirmation."
-                        )
-                        time.sleep(30)
-                        continue
-                    if leg == "PE" and _bear < 2:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
-                            "Waiting for stronger confirmation."
-                        )
-                        time.sleep(30)
-                        continue
-            except Exception as _ce:
-                logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
-                _df_gb = None  # Ensure downstream filters know df is unavailable
+            _df_gb = None
+            if _is_squeeze or _is_extreme_trend:
+                logger.info(f"🚀 Candle Momentum Filter: Bypassing due to {'Squeeze' if _is_squeeze else 'Extreme Trend Override'} (ADX={adx:.1f}).")
+            else:
+                try:
+                    _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
+                    if _df_gb is not None and len(_df_gb) >= 3:
+                        _l3 = _df_gb.tail(3)
+                        _bull = (_l3['close'] > _l3['open']).sum()
+                        _bear = (_l3['close'] < _l3['open']).sum()
+                        if leg == "CE" and _bull < 2:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
+                                "Waiting for stronger confirmation."
+                            )
+                            time.sleep(30)
+                            continue
+                        if leg == "PE" and _bear < 2:
+                            logger.warning(
+                                f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
+                                "Waiting for stronger confirmation."
+                            )
+                            time.sleep(30)
+                            continue
+                except Exception as _ce:
+                    logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
 
             # --- VWAP POSITION FILTER ---
             # On parabolic days institutions drive the move — VWAP confirms which side
@@ -577,6 +601,18 @@ class GammaBlastStrategy:
         # PERSIST SL OID: Critical for recovery after restarts
         if trade_id and sl_oid:
             trade_repo.update_sl_order_id(trade_id, sl_oid)
+
+        # CRITICAL FIX: Fully initialize local state tracker before entering monitor loop
+        self.active_position = {
+            'id': trade_id,
+            'leg': leg,
+            'symbol': symbol,
+            'token': token,
+            'qty': qty,
+            'entry_price': fill_price,
+            'sl_price': sl_price,
+            'sl_order_id': str(sl_oid)
+        }
 
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
