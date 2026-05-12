@@ -52,6 +52,7 @@ class LadderedTrailingManager:
         threshold_1_0 = min(25.0, round(1.5 * risk_unit, 1)) # Base Floor at 1.5R move
         threshold_2_0 = min(40.0, round(2.5 * risk_unit, 1)) # Buffer at 2.5R move
         threshold_3_0 = min(55.0, round(3.5 * risk_unit, 1)) # Runner Mode at 3.5R move
+        threshold_4_0 = min(75.0, round(4.5 * risk_unit, 1)) # Moonshot Trigger at 4.5R move 🚀
 
         # Stage 0.5: Breakeven Shield (No-Loss Mode)
         # Trigger when option jumps by at least 1R (adaptive threshold)
@@ -101,8 +102,8 @@ class LadderedTrailingManager:
                         self._apply_sl_update(strategy_name, active_position, new_sl)
             
             # --- STAGE 4: MOONSHOT MODE (The X-Factor) ---
-            # Trigger when option jumps a massive 75 points. Sell 75% and trail the final runner.
-            if current_stage < 4 and points_up >= 75:
+            # Trigger at 4.5R Jump. Sell 75% and trail the final runner indefinitely.
+            if current_stage < 4 and points_up >= threshold_4_0:
                 total_qty = active_position.get('qty', 0)
                 
                 if total_qty > Config.NIFTY_LOT_SIZE:
@@ -128,10 +129,10 @@ class LadderedTrailingManager:
                 else:
                     logger.info(f"🚀 STAGE 4: MOONSHOT MODE! (1-Lot Position) Locking Safe Zone.")
 
-                # Secure 45 points on the remaining runner. 
-                # (Since points_up >= 75, securing 45 yields a 30-point stop distance. Safe.)
+                # Secure Adaptive Floor on the remaining runner lot. 
+                # Example: Locks 3.0R profit floor, providing 1.5R wiggle room below the 4.5R trigger.
                 active_position['ladder_stage'] = 4
-                new_sl = entry_price + 45 
+                new_sl = entry_price + min(45.0, round(3.0 * risk_unit, 1)) 
                 self._apply_sl_update(strategy_name, active_position, new_sl)
 
         # Exit Check

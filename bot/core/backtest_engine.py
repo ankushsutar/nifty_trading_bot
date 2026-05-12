@@ -542,6 +542,7 @@ class BacktestEngine:
                 threshold_1_0 = min(25.0, round(1.5 * initial_risk, 1)) # Base Floor at 1.5R
                 threshold_2_0 = min(40.0, round(2.5 * initial_risk, 1)) # Buffer at 2.5R
                 threshold_3_0 = min(55.0, round(3.5 * initial_risk, 1)) # Runner Mode at 3.5R
+                threshold_4_0 = min(75.0, round(4.5 * initial_risk, 1)) # Moonshot at 4.5R 🚀
 
                 # Stage 0.5: Breakeven Shield (Newly added in backtest parity)
                 if stage < 0.5 and points_up >= threshold_0_5:
@@ -569,8 +570,8 @@ class BacktestEngine:
                     stage = 3
                 
                 # --- STAGE 4: MOONSHOT MODE (X-FACTOR) ---
-                if stage < 4 and points_up >= 75: # Hard requirement maintained for parity
-                    new_sl = entry_price + 45 # Scaled moonshot floor
+                if stage < 4 and points_up >= threshold_4_0: 
+                    new_sl = entry_price + min(45.0, round(3.0 * initial_risk, 1)) # Scaled moonshot floor
                     if new_sl > current_sl:
                         current_sl = new_sl
                         stage = 4
