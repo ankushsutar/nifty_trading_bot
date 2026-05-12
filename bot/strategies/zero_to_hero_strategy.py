@@ -211,7 +211,7 @@ class ZeroToHeroStrategy:
             if ltp <= sl_price and not half_booked:
                  logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
-                 trade_repo.close_trade(tid, ltp, (ltp-entry)*qty, "HARD_FLOOR")
+                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=(ltp-entry)*qty, exit_reason="HARD_FLOOR")
                  break
                  
             # 3. Final Time Exit at 15:10
@@ -219,7 +219,7 @@ class ZeroToHeroStrategy:
             if now >= datetime.time(15, 10):
                  logger.info(f"⏰ End of Day. Liquidating Wildcard final runner at ₹{ltp}")
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
-                 trade_repo.close_trade(tid, ltp, (ltp-entry)*qty, "EOD_LIQUIDATION")
+                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=(ltp-entry)*qty, exit_reason="EOD_LIQUIDATION")
                  break
                  
             time.sleep(5) # Low intensity polling
