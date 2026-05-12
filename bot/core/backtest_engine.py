@@ -528,50 +528,48 @@ class BacktestEngine:
             option_price = max(0.01, option_price - decayed_premium)
 
             if use_progressive_trail:
-                unrealized_pnl = (option_price - entry_price) * qty
+                points_up = option_price - entry_price
                 
-                # Stage 1: The ₹1,500 Floor
-                if stage < 1 and unrealized_pnl >= 1500:
-                    new_sl = entry_price + 16
+                # --- ALIGNED WITH PositionManager.py ---
+                threshold_0_5 = min(15.0, round(1.0 * initial_risk, 1)) # Break-Even at 1R
+                threshold_1_0 = min(25.0, round(1.5 * initial_risk, 1)) # Base Floor at 1.5R
+                threshold_2_0 = min(40.0, round(2.5 * initial_risk, 1)) # Buffer at 2.5R
+                threshold_3_0 = min(55.0, round(3.5 * initial_risk, 1)) # Runner Mode at 3.5R
+
+                # Stage 0.5: Breakeven Shield (Newly added in backtest parity)
+                if stage < 0.5 and points_up >= threshold_0_5:
+                     new_sl = entry_price + min(5.0, round(0.5 * initial_risk, 1))
+                     if new_sl > current_sl:
+                         current_sl = new_sl
+                         stage = 0.5
+
+                # Stage 1: The Base Floor
+                if stage < 1 and points_up >= threshold_1_0:
+                    new_sl = entry_price + min(15.0, round(1.0 * initial_risk, 1))
                     if new_sl > current_sl:
                         current_sl = new_sl
                         stage = 1
                 
                 # Stage 2: The Buffer
-                if stage < 2 and unrealized_pnl >= 2600:
-                    new_sl = entry_price + 30
+                if stage < 2 and points_up >= threshold_2_0:
+                    new_sl = entry_price + min(25.0, round(1.5 * initial_risk, 1))
                     if new_sl > current_sl:
                         current_sl = new_sl
                         stage = 2
                 
-                # Stage 3: The 3R Hunter (1m 9-EMA Trail)
-                if stage < 3 and unrealized_pnl >= 3900:
+                # Stage 3: The 3R Hunter
+                if stage < 3 and points_up >= threshold_3_0:
                     stage = 3
                 
-                if stage == 3:
-                    # Simulate 1m 9-EMA Trail (approximate)
-                    # For backtest, we use the row's close as a proxy for EMA9 if we don't calculate it fully here.
-                    # Actually, we can calculate EMA9 on the fly or just use a tight trail.
-                    # To be accurate, we'll use a tight 5-point trail in Stage 3 for the backtest.
-                    new_sl = option_price - 5
-                    if new_sl > current_sl:
-                        current_sl = new_sl
-
                 # --- STAGE 4: MOONSHOT MODE (X-FACTOR) ---
-                if stage < 4 and unrealized_pnl >= 5000:
-                    # In backtest, we simulate partial sell by adjusting current_sl
-                    # to a 'Deep-Safe' zone and reducing future pnl impact.
-                    # We lock in 50 points profit immediately.
-                    new_sl = entry_price + 50
+                if stage < 4 and points_up >= 75: # Hard requirement maintained for parity
+                    new_sl = entry_price + 45 # Scaled moonshot floor
                     if new_sl > current_sl:
                         current_sl = new_sl
                         stage = 4
-                        # Note: We don't reduce qty in vectorized backtest for simplicity,
-                        # but locking the SL at +50 mimics the 'Safe Capital' effect.
 
                 if stage >= 3:
-                    # Trailing Stop: 1m 9-EMA or tight trail
-                    # Use a 10% of premium trailing stop in runner mode
+                    # Trailing Stop: Use 10% of current premium trailing stop in runner mode
                     trail_sl = option_price * 0.90
                     if trail_sl > current_sl:
                         current_sl = trail_sl
