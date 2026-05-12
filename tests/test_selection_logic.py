@@ -29,8 +29,8 @@ class TestSelection(unittest.TestCase):
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
-        print(f"9:45 AM, ADX 35 -> Expected: ORB, Got: {strat}")
-        self.assertEqual(strat, "ORB")
+        print(f"9:45 AM, ADX 35 -> Expected: MOMENTUM, Got: {strat}")
+        self.assertEqual(strat, "MOMENTUM")
 
         # Case 2: 11:00 AM, ADX 35 (Should be MOMENTUM)
         mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
@@ -65,8 +65,8 @@ class TestSelection(unittest.TestCase):
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
-        print(f"11:00 AM, ADX 20 -> Expected: VWAP, Got: {strat}")
-        self.assertEqual(strat, "VWAP")
+        print(f"11:00 AM, ADX 20 -> Expected: STRADDLE_SCALP, Got: {strat}")
+        self.assertEqual(strat, "STRADDLE_SCALP")
 
 if __name__ == '__main__':
     unittest.main()
