@@ -279,7 +279,13 @@ class DecisionEngine:
                 logger.info(f"🎯 [SNIPER] LOD BREAKDOWN DETECTED! (Spot {nifty_ltp:.1f} < Floor {lod:.1f} with Volume Spike)")
 
         # ── STRATEGY SELECTION MATRIX ────────────────────────────────────────
-        if panic_data.get('panic_score', 50) >= 80:
+        
+        # --- SUPERNOVA DETECTED: Upgrade to ZERO_TO_HERO Wildcard ---
+        if confluence_score >= 6 and adx >= 50.0:
+            logger.info(f"🛸 [SUPERNOVA] Confluence {confluence_score}/7 & ADX {adx:.1f} detected. Launching Zero-To-Hero Wildcard mode! 🚀")
+            selected_strategy = "ZERO_TO_HERO"
+        
+        elif panic_data.get('panic_score', 50) >= 80:
             # INSTITUTIONAL PANIC DETECTED -> Prioritize GAMMA regardless of day
             logger.info(f"🔥 [X-FACTOR] PANIC DETECTED ({panic_data.get('reason')}). Launching Alpha Strike.")
             selected_strategy = "GAMMA_BLAST"

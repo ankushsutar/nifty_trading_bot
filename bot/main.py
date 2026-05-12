@@ -13,6 +13,7 @@ from bot.strategies.momentum_strategy import MomentumStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 from bot.strategies.selling_strategy import SellingStrategy
+from bot.strategies.zero_to_hero_strategy import ZeroToHeroStrategy
 from bot.core.decision_engine import DecisionEngine
 from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
@@ -58,7 +59,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -149,6 +150,10 @@ def run_bot():
     elif args.strategy == "STRADDLE_SCALP":
         logger.info(f"\n>>> [Strategy] Selected: Straddle Scalp (ATM CE+PE Ranging) 🎯")
         bot = StraddleScalpStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
+    elif args.strategy == "ZERO_TO_HERO":
+        logger.info(f"\n>>> [Strategy] Selected: 🛸 ZERO TO HERO WILD CARD! 🚀💎")
+        bot = ZeroToHeroStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
     elif args.strategy == "SELLING":
         logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
