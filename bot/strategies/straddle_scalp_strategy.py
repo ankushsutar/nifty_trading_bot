@@ -75,6 +75,7 @@ class StraddleScalpStrategy:
                     'token':       t['token'],
                     'qty':         t['qty'],
                     'entry_price': t['entry_price'],
+                    'sl_oid':      t.get('sl_order_id')
                 }
                 if t.get('leg') == 'CE' and self.ce_position is None:
                     self.ce_position = pos
@@ -279,10 +280,23 @@ class StraddleScalpStrategy:
             sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
         )
 
+        # --- INSTITUTIONAL SAFETY UPGRADE: Place Disaster Hard SLs (fallback) ---
+        DISASTER_SL_PCT = 0.50
+        ce_sl_price = round(ce_entry * (1 - DISASTER_SL_PCT), 1)
+        pe_sl_price = round(pe_entry * (1 - DISASTER_SL_PCT), 1)
+        
+        logger.info(f"🛡️ Placing Broker Disaster SLs: CE @ {ce_sl_price} | PE @ {pe_sl_price}")
+        ce_sl_oid = self.order_manager.place_sl_order(ce_symbol, ce_token, qty_units, ce_sl_price, "CE")
+        pe_sl_oid = self.order_manager.place_sl_order(pe_symbol, pe_token, qty_units, pe_sl_price, "PE")
+        
+        # Persist SL IDs for recovery
+        if ce_id and ce_sl_oid: trade_repo.update_sl_order_id(ce_id, ce_sl_oid)
+        if pe_id and pe_sl_oid: trade_repo.update_sl_order_id(pe_id, pe_sl_oid)
+
         self.ce_position = {'id': ce_id, 'symbol': ce_symbol, 'token': ce_token,
-                            'qty': qty_units, 'entry_price': ce_entry}
+                            'qty': qty_units, 'entry_price': ce_entry, 'sl_oid': ce_sl_oid}
         self.pe_position = {'id': pe_id, 'symbol': pe_symbol, 'token': pe_token,
-                            'qty': qty_units, 'entry_price': pe_entry}
+                            'qty': qty_units, 'entry_price': pe_entry, 'sl_oid': pe_sl_oid}
 
         combined_entry = ce_entry + pe_entry
         notifier.send(
@@ -376,6 +390,13 @@ class StraddleScalpStrategy:
         for pos, leg_name in [(self.ce_position, "CE"), (self.pe_position, "PE")]:
             if pos is None:
                 continue
+            
+            # 🛡️ Institutional Upgrade: First cancel existing Broker Disaster SL to release holding
+            sl_oid = pos.get('sl_oid')
+            if sl_oid:
+                logger.debug(f"Straddle Scalp: Cancelling Disaster SL ({sl_oid}) for {pos['symbol']} before exit.")
+                self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+
             ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
             oid = self.order_manager.place_smart_limit(
                 pos['symbol'], pos['token'], pos['qty'],

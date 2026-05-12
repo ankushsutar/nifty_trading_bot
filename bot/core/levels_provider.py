@@ -34,8 +34,9 @@ class LevelsProvider:
         Target: Nifty 50 Index (99926000)
         """
         try:
-            # Fetch 2 days of data to be sure we cross the previous session boundary
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=2)
+            # Use 1 day; DataFetcher automatically pads it to include the full previous session.
+            # Standardizing to 1 ensures we hit the shared unified cache key on startup.
+            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=1)
             
             if df is None or df.empty:
                 logger.error("[Levels] Failed to fetch data for level calculation.")

@@ -308,6 +308,20 @@ class DecisionEngine:
         else:
             # Transition Phase
             selected_strategy = "STRADDLE_SCALP"
+        
+        # ── VOLATILITY DEADZONE OVERRIDE ─────────────────────────────────────
+        # Explosive options buying relies on volatility 'fuel'. If VIX is historically
+        # depressed, explosive moves frequently fail to sustain.
+        # Downgrade to lower-leverage Momentum.
+        vix = float(market_data.get('vix', 15.0) or 15.0)
+        MIN_VIX_FOR_GAMMA = 11.5
+        
+        if selected_strategy == "GAMMA_BLAST" and vix < MIN_VIX_FOR_GAMMA:
+            logger.warning(
+                f">>> [Brain] 🛡️ VIX DEADZONE DETECTED ({vix:.1f} < {MIN_VIX_FOR_GAMMA}). "
+                f"Insufficient volatility fuel for Gamma Blast. Downgrading to MOMENTUM."
+            )
+            selected_strategy = "MOMENTUM"
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

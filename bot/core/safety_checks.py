@@ -208,6 +208,22 @@ class SafetyGatekeeper:
         If Peak Profit > ₹1,000, and current PnL falls below 50% of peak, stop for the day.
         """
         from bot.config.settings import Config
+        
+        # --- FIX: Startup/Recovery Shield ---
+        # If there's an active trade in DB, but the caller passed 0.0 unrealized,
+        # skip the check to avoid false-positive lockouts before the strategy
+        # resolves the actual current LTP of the running position.
+        if active_unrealized_pnl == 0.0:
+            try:
+                from bot.core.trade_repo import trade_repo
+                mode = "PAPER" if self.dry_run else "LIVE"
+                open_trades = trade_repo.get_open_trades(mode=mode)
+                if open_trades:
+                    # We have an open trade, don't compute safety until its real value is supplied.
+                    return True
+            except Exception:
+                pass
+
         realized_pnl = self.get_daily_realized_pnl()
         total_pnl = realized_pnl + active_unrealized_pnl
         

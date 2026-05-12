@@ -40,35 +40,50 @@ class LadderedTrailingManager:
         points_up = ltp - entry_price
         current_stage = active_position.get('ladder_stage', 0)
 
+        # --- DYNAMIC SCALING FIX ---
+        # Standard gates (15, 25, 40, 55) are for expensive options.
+        # For cheap/OTM options (Gamma), 15 pts could be a 100%+ move.
+        # We cap required points at multiples of the ACTUAL strategy risk.
+        # Fallback to 20.0 standard risk if not provided.
+        risk_unit = float(active_position.get('initial_risk', 20.0))
+        
+        # Compute dynamic gate floors based on R-Multiples
+        threshold_0_5 = min(15.0, round(1.0 * risk_unit, 1)) # Break-Even at 1R move
+        threshold_1_0 = min(25.0, round(1.5 * risk_unit, 1)) # Base Floor at 1.5R move
+        threshold_2_0 = min(40.0, round(2.5 * risk_unit, 1)) # Buffer at 2.5R move
+        threshold_3_0 = min(55.0, round(3.5 * risk_unit, 1)) # Runner Mode at 3.5R move
+
         # Stage 0.5: Breakeven Shield (No-Loss Mode)
-        # Trigger when option jumps 15 points from entry. Move SL to cost + 5pts.
-        if current_stage < 0.5 and points_up >= 15:
-            new_sl = entry_price + 5
+        # Trigger when option jumps by at least 1R (adaptive threshold)
+        if current_stage < 0.5 and points_up >= threshold_0_5:
+            # Adaptive Floor: Locks 0.5R or standard 5 points
+            new_sl = entry_price + min(5.0, round(0.5 * risk_unit, 1))
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active (+15pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
                 current_stage = 0.5
 
         # Stage 1: The Base Floor
-        # Trigger when option jumps 25 points. Move SL to cost + 15pts.
-        if current_stage < 1 and points_up >= 25:
-            new_sl = entry_price + 15
+        # Trigger at Stage 1 Threshold. Move SL to protect ~1.0R gain
+        if current_stage < 1 and points_up >= threshold_1_0:
+            # Adaptive Floor: Locks 1.0R or standard 15 points
+            new_sl = entry_price + min(15.0, round(1.0 * risk_unit, 1))
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 1 Reached: Floor Locked (+25pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 1 Reached: Floor Locked (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
 
         # Stage 2: The Buffer
-        # Trigger when option jumps 40 points. Move SL to cost + 25pts.
-        if current_stage < 2 and points_up >= 40:
-            new_sl = entry_price + 25
+        if current_stage < 2 and points_up >= threshold_2_0:
+            # Adaptive Floor: Locks 1.5R or standard 25 points
+            new_sl = entry_price + min(25.0, round(1.5 * risk_unit, 1))
             if new_sl > current_sl:
-                logger.info(f"📈 Stage 2 Reached: Buffer Set (+40pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"📈 Stage 2 Reached: Buffer Set (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 current_stage = 2
 
         # Stage 3: The 3R Hunter (1m 21-EMA Trail)
-        if current_stage < 3 and points_up >= 55:
+        if current_stage < 3 and points_up >= threshold_3_0:
             logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 21-EMA Trail) for {symbol}")
             active_position['ladder_stage'] = 3
             current_stage = 3

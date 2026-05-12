@@ -281,8 +281,8 @@ class DataFetcher:
             
             except Exception as e:
                 err_str = str(e)
-                if "AB1004" in err_str or "TooManyRequests" in err_str:
-                    logger.critical(f"🛑 [CRITICAL] AB1004 Exception for {symbol_token}. Triggering 60s Circuit Breaker.")
+                if any(term in err_str for term in ["AB1004", "TooManyRequests", "Access denied", "exceeding access rate"]):
+                    logger.critical(f"🛑 [CRITICAL] Rate Limit Exception for {symbol_token}: {err_str}. Triggering 60s Circuit Breaker.")
                     from bot.utils.rate_limiter import rate_limiter
                     rate_limiter.trigger_circuit_breaker(60)
                     return None # Critical: Do not continue loop

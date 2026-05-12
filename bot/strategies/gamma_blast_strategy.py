@@ -616,6 +616,8 @@ class GammaBlastStrategy:
         trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
         if trade_id:
             trade_repo.update_sl(trade_id, sl_price)
+            # Architecturally persist true initial risk for long-term adaptive scaling guarantees
+            trade_repo.collection.update_one({"id": trade_id}, {"$set": {"initial_risk": float(sl_points)}})
         else:
             logger.warning("Gamma Blast: Could not link fill to DB record. Status might be out of sync.")
 
@@ -676,7 +678,29 @@ class GammaBlastStrategy:
         if remaining_qty is None:
             remaining_qty = qty
             
-        risk          = abs(entry_price - sl)   # Initial risk distance — reference point
+        # --- REHYDRATION SHIELD ---
+        # Ensures local tracking state is populated if monitor is called via recovery flow.
+        # Essential for sync_state() to detect externally closed positions and exit this loop.
+        risk = abs(entry_price - sl)   # Initial risk distance calculation
+        
+        if self.active_position is None:
+            self.active_position = {
+                'id': trade_id,
+                'leg': leg,
+                'symbol': symbol,
+                'token': token,
+                'qty': qty,
+                'entry_price': entry_price,
+                'sl_price': sl,
+                'sl_order_id': str(sl_oid) if sl_oid else None,
+                'ladder_stage': stage # Persist stage to tracking object too
+            }
+
+        # Anchor the risk value for the LadderedTrailingManager (fuels adaptive scaling)
+        if 'initial_risk' not in self.active_position:
+             # If at stage 0, 'risk' is exactly the initial risk distance!
+             # If at later stage, the manager already passed Stage 0 so fallback is safe.
+             self.active_position['initial_risk'] = risk
 
         logger.info(
             f"Gamma Blast: 🎯 PROGRESSIVE TRAIL | "
