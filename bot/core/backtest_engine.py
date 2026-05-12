@@ -45,7 +45,9 @@ class BacktestEngine:
         option_premium_atr_mult: float = 2.5,  # ATM premium ≈ ATR * this multiplier
         max_trades_per_day: int = 3,
         max_lots: int = 20,                    # Hard cap on position size
-        slippage_pct: float = 0.005            # 0.5% slippage per side
+        slippage_pct: float = 0.005,           # 0.5% slippage per side
+        min_gamma_adx: float = 40.0,           # Filter from tier config
+        tier_sl_pct: float = 0.25              # Dynamic initial SL multiplier
     ):
         self.initial_capital = initial_capital
         self.lot_size = lot_size
@@ -57,6 +59,8 @@ class BacktestEngine:
         self.max_trades_per_day = max_trades_per_day
         self.max_lots = max_lots
         self.slippage_pct = slippage_pct
+        self.min_gamma_adx = min_gamma_adx
+        self.tier_sl_pct = tier_sl_pct
 
         self.df_1m: pd.DataFrame | None = None
         self.df_5m: pd.DataFrame | None = None
@@ -82,6 +86,9 @@ class BacktestEngine:
             max_daily_loss_pct=tier.max_daily_loss_pct,
             risk_per_trade_pct=tier.risk_per_trade_pct,
             max_trades_per_day=tier.max_trades_per_day,
+            min_gamma_adx=tier.adx_gamma_blast,
+            max_lots=tier.max_lots * 3, # Allow reasonable upper growth room in backtest
+            tier_sl_pct=tier.sl_pct
         )
 
     # ------------------------------------------------------------------ #
@@ -259,12 +266,12 @@ class BacktestEngine:
         df5["ema21"] = df5["close"].ewm(span=21, adjust=False).mean()
 
         bullish = (
-            (df5["adx"] > 40) &
+            (df5["adx"] > self.min_gamma_adx) &
             (df5["ema9"] > df5["ema21"]) &
             self._in_session(df5) & ~self._in_blackout(df5)
         )
         bearish = (
-            (df5["adx"] > 40) &
+            (df5["adx"] > self.min_gamma_adx) &
             (df5["ema9"] < df5["ema21"]) &
             self._in_session(df5) & ~self._in_blackout(df5)
         )
@@ -355,13 +362,13 @@ class BacktestEngine:
                 # We stay in premium terms and adjust risk/target multipliers instead.
                 if atr < 15:
                     # Low vol: tighter spreads, use ATM (delta 0.50)
-                    delta, sl_mult, tgt_mult = 0.50, 0.25, 0.50   # SL 25%, Target 50%
+                    delta, sl_mult, tgt_mult = 0.50, self.tier_sl_pct, 0.50   # Uses Live Config SL%
                 elif atr < 30:
                     # Medium vol: 1 OTM (delta 0.35)
-                    delta, sl_mult, tgt_mult = 0.35, 0.30, 0.60
+                    delta, sl_mult, tgt_mult = 0.35, self.tier_sl_pct * 1.2, 0.60
                 else:
                     # High vol: 2 OTM (delta 0.25) — bigger swings expected
-                    delta, sl_mult, tgt_mult = 0.25, 0.35, 0.70
+                    delta, sl_mult, tgt_mult = 0.25, self.tier_sl_pct * 1.5, 0.70
 
             sl_price     = entry_premium * (1 - sl_mult)
             target_price = entry_premium * (1 + tgt_mult)

@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from typing import List, Optional
+# pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -135,16 +136,16 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         name="MEDIUM",
         capital_min=1_00_000.0,
         capital_max=5_00_000.0,
-        risk_per_trade_pct=0.05,
-        max_daily_loss_pct=0.08,
+        risk_per_trade_pct=0.04,           # Optimized from 0.05 for 'Goldilocks'
+        max_daily_loss_pct=0.06,           # Tightened ceiling for safety
         max_capital_usage_pct=0.80,
         min_adx_to_trade=25.0,
-        adx_gamma_blast=40.0,
+        adx_gamma_blast=42.0,              # High-Confidence entry gate
         adx_trend_fade_exit=20.0,
-        max_lots=5,
+        max_lots=15,                       # Expanded for the 2 Lakh Expansion! 🚀
         margin_buffer_pct=0.15,
         gamma_blast_lot_pct=0.70,
-        sl_pct=0.18,
+        sl_pct=0.16,                       # Tighter shield optimized from 0.18
         min_sl_points=8.0,                 # 8 points for medium accounts
         max_trades_per_day=4,
         max_consecutive_losses=3,
