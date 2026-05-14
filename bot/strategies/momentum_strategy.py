@@ -8,6 +8,7 @@ import os
 from bot.config.settings import Config
 from bot.core.angel_connect import get_angel_session
 from bot.core.safety_checks import SafetyGatekeeper
+from bot.core.levels_provider import levels_provider
 from bot.core.data_fetcher import DataFetcher
 from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
@@ -445,7 +446,17 @@ class MomentumStrategy:
                             reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
                             logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
-                    else:
+                        # --- INSTITUTIONAL LEVEL AWARENESS ---
+                        levels = levels_provider.get_levels()
+                        nifty_ltp = self.data_fetcher.get_ltp("99926000")
+                        is_retesting_level = False
+                        if levels and nifty_ltp:
+                            pdh = levels.get('pdh', 0)
+                            # If we are within 0.1% of PDH after a breakout, we are retesting
+                            if current_leg == "CE" and nifty_ltp > pdh and nifty_ltp < pdh * 1.002:
+                                is_retesting_level = True
+                                logger.info(f"🏛️ [Levels] Nifty is retesting PDH ({pdh}). Holding through potential bounce.")
+
                         current_leg = self.active_position['leg']
                         current_stage = self.active_position.get('ladder_stage', 0)
                         is_exhausted = self.last_analysis.get('is_exhausted', False)
@@ -459,9 +470,10 @@ class MomentumStrategy:
                         
                         # 2. Hierarchical Reversal Exit
                         if current_leg == "CE" and trend == "BEARISH":
-                            # If in Stage 1 or above, we ignore 5m trend reversals to let the runner breathe
-                            if current_stage >= 1:
-                                logger.info(f"Signal: 5m Trend Reversed to BEARISH, but Stage {current_stage} is active. Ignoring noise.")
+                            # If in Stage 1 or above, OR retesting a major level, we ignore 5m trend reversals
+                            if current_stage >= 1 or is_retesting_level:
+                                reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
+                                logger.info(f"Signal: 5m Trend Reversed to BEARISH, but {reason} is active. Ignoring noise.")
                             else:
                                 # For trades not yet in profit, require 15m HTF confirmation to prevent fake-outs
                                 if htf_trend == "BEARISH":
@@ -471,8 +483,9 @@ class MomentumStrategy:
                                     logger.info(f"Signal: 5m Trend Reversed to BEARISH, but 15m HTF is still {htf_trend}. Keeping CE.")
 
                         elif current_leg == "PE" and trend == "BULLISH":
-                            if current_stage >= 1:
-                                logger.info(f"Signal: 5m Trend Reversed to BULLISH, but Stage {current_stage} is active. Ignoring noise.")
+                            if current_stage >= 1 or is_retesting_level:
+                                reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
+                                logger.info(f"Signal: 5m Trend Reversed to BULLISH, but {reason} is active. Ignoring noise.")
                             else:
                                 if htf_trend == "BULLISH":
                                     logger.info("Signal: Trend Reversed to BULLISH (Confirmed by 15m HTF). Exiting PE.")

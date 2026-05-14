@@ -63,27 +63,29 @@ class LadderedTrailingManager:
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
                 current_stage = 0.5
 
-        # Stage 1: The Base Floor
+        # Stage 1: The Base Floor (More generous)
         if current_stage < 1 and points_up >= threshold_1_0:
-            new_sl = entry_price + round(0.5 * atr, 1)
+            # Move SL to Entry + 0.3 ATR (Just enough to cover costs and minor profit)
+            new_sl = entry_price + round(0.3 * atr, 1)
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 1: Floor Locked at 0.5 ATR (+{points_up:.1f}pts) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 1: Floor Locked at 0.3 ATR (+{points_up:.1f}pts) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
 
         # Stage 2: The Buffer & PARTIAL BOOKING
         if current_stage < 2 and points_up >= threshold_2_0:
-            new_sl = entry_price + round(1.2 * atr, 1)
+            # Maintain 1.5 ATR room for the runner
+            new_sl = ltp - round(1.5 * atr, 1)
             if new_sl > current_sl:
-                logger.info(f"📈 Stage 2: Buffer Set (+{points_up:.1f}pts) | SL: {new_sl}")
+                logger.info(f"📈 Stage 2: Adaptive Buffer (1.5 ATR Room) | LTP: {ltp} | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 
-                # --- EARLY PARTIAL BOOKING (The Profit Generator) ---
+                # --- EARLY PARTIAL BOOKING ---
                 total_qty = active_position.get('qty', 0)
                 if total_qty > Config.NIFTY_LOT_SIZE:
                     lots_to_sell = max(1, (total_qty // Config.NIFTY_LOT_SIZE) // 2)
                     qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
-                    logger.info(f"💰 PARTIAL BOOKING (Stage 2): Selling {lots_to_sell} lots to lock profits.")
+                    logger.info(f"💰 PARTIAL BOOKING: Securing {lots_to_sell} lots. Letting the rest RUN.")
                     oid = self.order_manager.place_smart_limit(symbol, token, qty_to_sell, ltp, "SELL", strategy_name=strategy_name)
                     if oid:
                         pnl_booked = (ltp - entry_price) * qty_to_sell
@@ -92,24 +94,25 @@ class LadderedTrailingManager:
                 
                 current_stage = 2
 
-        # Stage 3: The Runner (1m 21-EMA Trail)
+        # Stage 3: The Runner (1m 21-EMA Trail with Volatility Buffer)
         if current_stage < 3 and points_up >= threshold_3_0:
-            logger.info(f"🏃 Stage 3: Runner Mode (1m 21-EMA Trail) Active.")
+            logger.info(f"🏃 Stage 3: Runner Mode Active. Transitioning to 1m 21-EMA Trail.")
             active_position['ladder_stage'] = 3
             current_stage = 3
 
         if current_stage >= 3:
-            # Check 1m 21-EMA Trail
             now = time.time()
             if now - self._last_ema_check > 10: 
                 self._last_ema_check = now
-                ema_trail_period = 21 if current_stage == 3 else 9 # Tighter trail for Stage 4
-                ema_val = self._get_1m_ema(token, period=ema_trail_period)
+                # Use 1m 21-EMA as the anchor
+                ema_val = self._get_1m_ema(token, period=21)
                 if ema_val > 0:
-                    new_sl = round(ema_val, 1)
-                    # Allow breathing room (0.5 ATR) below EMA
-                    new_sl = new_sl - (0.5 * atr)
-                    if new_sl > current_sl and new_sl < ltp - (0.3 * atr):
+                    # Anchor at EMA but ensure 1.2 ATR of room from LTP
+                    ema_sl = round(ema_val - (0.3 * atr), 1)
+                    hard_room_sl = round(ltp - (1.8 * atr), 1) # Fallback room
+                    new_sl = max(ema_sl, hard_room_sl)
+                    
+                    if new_sl > current_sl and new_sl < ltp - (0.5 * atr):
                         self._apply_sl_update(strategy_name, active_position, new_sl)
             
             # --- STAGE 4: MOONSHOT MODE ---
