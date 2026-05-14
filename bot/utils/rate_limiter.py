@@ -1,6 +1,6 @@
 import os
 import time
-import fcntl
+from bot.utils.file_lock import flock, LOCK_EX, LOCK_UN
 from bot.utils.logger import logger
 
 class GlobalRateLimiter:
@@ -52,7 +52,7 @@ class GlobalRateLimiter:
             lock_fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT)
             try:
                 # 2. Acquire exclusive lock
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                flock(lock_fd, LOCK_EX)
                 
                 # 3. Read state
                 last_call = 0.0
@@ -91,7 +91,7 @@ class GlobalRateLimiter:
                      return # SUCCESS
                      
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                flock(lock_fd, LOCK_UN)
                 os.close(lock_fd)
                 
             # 7. Sleep OUTSIDE the lock
@@ -104,7 +104,7 @@ class GlobalRateLimiter:
         """
         lock_fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT)
         try:
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            flock(lock_fd, LOCK_EX)
             
             # Read current stats
             last_call = time.time()
@@ -142,20 +142,20 @@ class GlobalRateLimiter:
                     f.write("REFRESH_REQUIRED")
                 
         finally:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            flock(lock_fd, LOCK_UN)
             os.close(lock_fd)
 
     def reset_circuit_breaker(self):
         """Resets the circuit breaker and failure count."""
         lock_fd = os.open(self.lock_file, os.O_RDWR | os.O_CREAT)
         try:
-             fcntl.flock(lock_fd, fcntl.LOCK_EX)
+             flock(lock_fd, LOCK_EX)
              with open(self.time_file, "w") as f:
                  f.write(f"{time.time()}\n0.0\n0") # Reset CB and Fail Count
              logger.info("[System] Circuit Breaker Reset. 🟢")
         except: pass
         finally:
-             fcntl.flock(lock_fd, fcntl.LOCK_UN)
+             flock(lock_fd, LOCK_UN)
              os.close(lock_fd)
 
 rate_limiter = GlobalRateLimiter()

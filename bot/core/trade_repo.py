@@ -164,6 +164,44 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"TradeRepository Update Entry Price Error: {e}")
 
+    def scale_in_position(self, trade_id, added_qty, added_price):
+        """Adds to an existing position and recalculates weighted average entry price."""
+        if not self.client: return
+        try:
+            trade = self.collection.find_one({"id": trade_id})
+            if not trade: return
+            
+            old_qty = trade.get('qty', 0)
+            old_price = trade.get('entry_price', 0.0)
+            
+            new_qty = old_qty + added_qty
+            # Weighted Average Price Calculation
+            new_avg_price = ((old_price * old_qty) + (added_price * added_qty)) / new_qty
+            new_avg_price = round(new_avg_price, 2)
+            
+            self.collection.update_one(
+                {"id": trade_id},
+                {
+                    "$set": {
+                        "qty": new_qty,
+                        "remaining_qty": new_qty,
+                        "entry_price": new_avg_price,
+                        "updated_at": datetime.datetime.now(),
+                        "scaled_in": True
+                    },
+                    "$push": {
+                        "scale_ins": {
+                            "qty": added_qty,
+                            "price": added_price,
+                            "time": datetime.datetime.now()
+                        }
+                    }
+                }
+            )
+            logger.info(f"TradeRepository: Scaled-In Trade #{trade_id}. New Qty: {new_qty}, New Avg Price: {new_avg_price}")
+        except Exception as e:
+            logger.error(f"TradeRepository Scale-In Error: {e}")
+
     def reduce_position(self, trade_id, reduction_qty, exit_price, pnl_segment, reason):
         """Reduces the quantity of an open trade (Partial Booking). Status remains OPEN."""
         if not self.client: return

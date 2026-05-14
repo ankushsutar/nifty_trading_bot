@@ -47,113 +47,93 @@ class LadderedTrailingManager:
         # Fallback to 20.0 standard risk if not provided.
         risk_unit = float(active_position.get('initial_risk', 20.0))
         
-        # Compute dynamic gate floors based on R-Multiples
-        threshold_0_5 = min(15.0, round(1.0 * risk_unit, 1)) # Break-Even at 1R move
-        threshold_1_0 = min(25.0, round(1.5 * risk_unit, 1)) # Base Floor at 1.5R move
-        threshold_2_0 = min(40.0, round(2.5 * risk_unit, 1)) # Buffer at 2.5R move
-        threshold_3_0 = min(55.0, round(3.5 * risk_unit, 1)) # Runner Mode at 3.5R move
-        threshold_4_0 = min(75.0, round(4.5 * risk_unit, 1)) # Moonshot Trigger at 4.5R move 🚀
+        # Compute dynamic gate floors based on ATR Multiples (Institutional Standard)
+        # We replace fixed points with ATR-based room.
+        threshold_0_5 = round(1.0 * atr, 1) # Breakeven at 1 ATR move
+        threshold_1_0 = round(1.5 * atr, 1) # Stage 1 at 1.5 ATR move
+        threshold_2_0 = round(2.5 * atr, 1) # Stage 2 at 2.5 ATR move
+        threshold_3_0 = round(3.5 * atr, 1) # Stage 3 at 3.5 ATR move
+        threshold_4_0 = round(5.0 * atr, 1) # Stage 4 at 5.0 ATR move 🚀
 
         # Stage 0.5: Breakeven Shield (No-Loss Mode)
-        # Trigger when option jumps by at least 1R (adaptive threshold)
         if current_stage < 0.5 and points_up >= threshold_0_5:
-            # Adaptive Floor: Locks 0.5R or standard 5 points
-            new_sl = entry_price + min(5.0, round(0.5 * risk_unit, 1))
+            new_sl = entry_price + 2.0 # Minimum lock to cover charges
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 0.5 Reached: Breakeven Shield Active (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 0.5: Breakeven Shield Active (+{points_up:.1f}pts) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
                 current_stage = 0.5
 
         # Stage 1: The Base Floor
-        # Trigger at Stage 1 Threshold. Move SL to protect ~1.0R gain
         if current_stage < 1 and points_up >= threshold_1_0:
-            # Adaptive Floor: Locks 1.0R or standard 15 points
-            new_sl = entry_price + min(15.0, round(1.0 * risk_unit, 1))
+            new_sl = entry_price + round(0.5 * atr, 1)
             if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 1 Reached: Floor Locked (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"🛡️ Stage 1: Floor Locked at 0.5 ATR (+{points_up:.1f}pts) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
 
-        # Stage 2: The Buffer
+        # Stage 2: The Buffer & PARTIAL BOOKING
         if current_stage < 2 and points_up >= threshold_2_0:
-            # Adaptive Floor: Locks 1.5R or standard 25 points
-            new_sl = entry_price + min(25.0, round(1.5 * risk_unit, 1))
+            new_sl = entry_price + round(1.2 * atr, 1)
             if new_sl > current_sl:
-                logger.info(f"📈 Stage 2 Reached: Buffer Set (+{points_up:.1f}pts) ({symbol}) | SL: {new_sl}")
+                logger.info(f"📈 Stage 2: Buffer Set (+{points_up:.1f}pts) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
+                
+                # --- EARLY PARTIAL BOOKING (The Profit Generator) ---
+                total_qty = active_position.get('qty', 0)
+                if total_qty > Config.NIFTY_LOT_SIZE:
+                    lots_to_sell = max(1, (total_qty // Config.NIFTY_LOT_SIZE) // 2)
+                    qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
+                    logger.info(f"💰 PARTIAL BOOKING (Stage 2): Selling {lots_to_sell} lots to lock profits.")
+                    oid = self.order_manager.place_smart_limit(symbol, token, qty_to_sell, ltp, "SELL", strategy_name=strategy_name)
+                    if oid:
+                        pnl_booked = (ltp - entry_price) * qty_to_sell
+                        trade_repo.reduce_position(active_position['id'], qty_to_sell, ltp, pnl_booked, "STAGE_2_PARTIAL")
+                        active_position['qty'] = total_qty - qty_to_sell
+                
                 current_stage = 2
 
-        # Stage 3: The 3R Hunter (1m 21-EMA Trail)
+        # Stage 3: The Runner (1m 21-EMA Trail)
         if current_stage < 3 and points_up >= threshold_3_0:
-            logger.info(f"🏃 Stage 3 Reached: Runner Mode (1m 21-EMA Trail) for {symbol}")
+            logger.info(f"🏃 Stage 3: Runner Mode (1m 21-EMA Trail) Active.")
             active_position['ladder_stage'] = 3
             current_stage = 3
 
-        if current_stage == 3:
+        if current_stage >= 3:
             # Check 1m 21-EMA Trail
             now = time.time()
-            if now - self._last_ema_check > 10: # Check every 10s
+            if now - self._last_ema_check > 10: 
                 self._last_ema_check = now
-                ema21_1m = self._get_1m_ema21(token)
-                if ema21_1m > 0:
-                    # Trailing stop at EMA21
-                    new_sl = round(ema21_1m, 1)
-                    if new_sl > current_sl and new_sl < ltp - 5: # Ensure at least 5 pts wiggle from current LTP
+                ema_trail_period = 21 if current_stage == 3 else 9 # Tighter trail for Stage 4
+                ema_val = self._get_1m_ema(token, period=ema_trail_period)
+                if ema_val > 0:
+                    new_sl = round(ema_val, 1)
+                    # Allow breathing room (0.5 ATR) below EMA
+                    new_sl = new_sl - (0.5 * atr)
+                    if new_sl > current_sl and new_sl < ltp - (0.3 * atr):
                         self._apply_sl_update(strategy_name, active_position, new_sl)
             
-            # --- STAGE 4: MOONSHOT MODE (The X-Factor) ---
-            # Trigger at 4.5R Jump. Sell 75% and trail the final runner indefinitely.
+            # --- STAGE 4: MOONSHOT MODE ---
             if current_stage < 4 and points_up >= threshold_4_0:
-                total_qty = active_position.get('qty', 0)
-                
-                if total_qty > Config.NIFTY_LOT_SIZE:
-                    total_lots = total_qty // Config.NIFTY_LOT_SIZE
-                    lots_to_sell = max(1, int(total_lots * 0.75))
-                    qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
-                    
-                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Points Up: {points_up:.1f}. Selling {lots_to_sell} lots.")
-                    
-                    # Execute partial sell
-                    oid = self.order_manager.place_smart_limit(
-                        symbol, token, qty_to_sell, ltp, "SELL",
-                        strategy_name=strategy_name
-                    )
-                    
-                    if oid:
-                        # Update DB and Active Position
-                        pnl_booked = (ltp - entry_price) * qty_to_sell
-                        trade_repo.reduce_position(
-                            active_position['id'], qty_to_sell, ltp, pnl_booked, "MOONSHOT_PARTIAL"
-                        )
-                        active_position['qty'] = total_qty - qty_to_sell
-                else:
-                    logger.info(f"🚀 STAGE 4: MOONSHOT MODE! (1-Lot Position) Locking Safe Zone.")
-
-                # Secure Adaptive Floor on the remaining runner lot. 
-                # Example: Locks 3.0R profit floor, providing 1.5R wiggle room below the 4.5R trigger.
+                logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Activating Tighter 1m 9-EMA Trail.")
                 active_position['ladder_stage'] = 4
-                new_sl = entry_price + min(45.0, round(3.0 * risk_unit, 1)) 
-                self._apply_sl_update(strategy_name, active_position, new_sl)
+                current_stage = 4
 
         # Exit Check
         if ltp <= active_position.get('sl_price', 0):
             logger.info(f"🛑 Laddered SL Hit! LTP: {ltp} <= SL: {active_position['sl_price']}")
-            # Emergency Patch: Force MARKET execution for all survival exits.
-            # Never play price optimization games during a Stop Loss cascade.
-            exit_type = "MARKET" 
-            return True, exit_type
+            return True, "MARKET"
 
         return False, None
 
-    def _get_1m_ema21(self, token):
+    def _get_1m_ema(self, token, period=21):
         try:
             df = self.data_fetcher.fetch_latest_candles(token, interval="ONE_MINUTE", exchange="NFO")
             if df is not None and not df.empty:
-                # Simple EMA21 calculation for wide breathing room
-                ema21 = df['close'].ewm(span=21, adjust=False).mean()
-                return ema21.iloc[-1]
+                # Dynamic EMA based on period (9 or 21)
+                ema = df['close'].ewm(span=period, adjust=False).mean()
+                return ema.iloc[-1]
         except Exception as e:
-            logger.error(f"Error fetching 1m EMA21: {e}")
+            logger.error(f"Error fetching 1m EMA{period}: {e}")
         return 0
 
     def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None):

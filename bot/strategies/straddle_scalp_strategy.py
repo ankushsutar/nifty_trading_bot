@@ -9,6 +9,7 @@ from bot.core.regime_classifier import RegimeClassifier
 from bot.core.market_feed import market_feed
 from bot.utils.logger import logger
 from bot.utils.notifier import notifier
+from backend.market_service import market_service
 
 
 class StraddleScalpStrategy:
@@ -131,16 +132,16 @@ class StraddleScalpStrategy:
                 logger.info(f"Straddle Scalp: ⏰ Past entry window ({entry_cutoff}). Exiting.")
                 break
 
-            # ADX + regime gate
-            df = market_feed.get_5min_candles("99926000")
-            if df is None or len(df) < 20:
-                logger.warning("Straddle Scalp: Insufficient candle data. Retrying in 30s.")
+            # ADX + regime gate (Centralized Intelligence Integration)
+            market_data = market_service.get_market_data()
+            analysis    = market_data.get('analysis', {})
+            regime      = analysis.get('regime', 'UNKNOWN')
+            adx         = analysis.get('adx', 99.0)
+
+            if not analysis or regime == "UNKNOWN":
+                logger.warning("Straddle Scalp: Centralized intelligence not ready. Retrying in 30s.")
                 time.sleep(30)
                 continue
-
-            analysis = self.classifier.classify(df)
-            adx      = analysis.get('adx', 99.0)
-            regime   = analysis.get('regime', 'UNKNOWN')
 
             if adx >= self.MAX_ADX_TO_ENTER:
                 logger.info(
@@ -360,20 +361,19 @@ class StraddleScalpStrategy:
             self._close_both("TIME_FLUSH")
             return "TIME"
 
-        # Trend-Kill Switch (Throttled every 60 seconds)
+        # Trend-Kill Switch (Throttled every 60 seconds, centralized)
         if time.time() - self._last_trend_check >= 60:
             self._last_trend_check = time.time()
-            df = market_feed.get_5min_candles("99926000")
-            if df is not None and len(df) >= 20:
-                analysis = self.classifier.classify(df)
-                curr_adx = analysis.get('adx', 0)
-                if curr_adx >= self.TREND_KILL_ADX:
-                    logger.warning(
-                        f"Straddle Scalp: 🛡️ TREND-KILL TRIGGERED! ADX={curr_adx:.1f} ≥ {self.TREND_KILL_ADX}. "
-                        "Market is no longer sideways. Exiting for safety."
-                    )
-                    self._close_both("TREND_KILL")
-                    return "TREND_KILL"
+            market_data = market_service.get_market_data()
+            analysis = market_data.get('analysis', {})
+            curr_adx = analysis.get('adx', 0)
+            if curr_adx > 0 and curr_adx >= self.TREND_KILL_ADX:
+                logger.warning(
+                    f"Straddle Scalp: 🛡️ TREND-KILL TRIGGERED! ADX={curr_adx:.1f} ≥ {self.TREND_KILL_ADX}. "
+                    "Market is no longer sideways. Exiting for safety."
+                )
+                self._close_both("TREND_KILL")
+                return "TREND_KILL"
 
         return "CONTINUE"
 

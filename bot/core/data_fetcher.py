@@ -3,7 +3,7 @@ import datetime
 import pandas as pd
 import json
 import os
-import fcntl
+from bot.utils.file_lock import flock, LOCK_SH, LOCK_EX, LOCK_UN
 from bot.utils.logger import logger
 from bot.utils.expiry_calculator import is_trading_day
 
@@ -85,7 +85,7 @@ class DataFetcher:
         """
         # 0. WebSocket Fast Path for ONE_MINUTE (ORB/OHL opening range)
         # market_feed builds 1-min candles from ticks in real-time — no REST needed.
-        if interval in ["ONE_MINUTE", "FIVE_MINUTE"]:
+        if interval in ["ONE_MINUTE"]:
             try:
                 from bot.core.market_feed import market_feed
                 if interval == "ONE_MINUTE":
@@ -404,11 +404,11 @@ class DataFetcher:
 
             lock_fd = os.open(self.disk_cache_lock, os.O_RDWR | os.O_CREAT)
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_SH)  # Shared lock for reads
+                flock(lock_fd, LOCK_SH)  # Shared lock for reads
                 with open(self.disk_cache_path, "r") as f:
                     full_cache = json.load(f)
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                flock(lock_fd, LOCK_UN)
                 os.close(lock_fd)
 
             if cache_key in full_cache:
@@ -434,7 +434,7 @@ class DataFetcher:
             
             lock_fd = os.open(self.disk_cache_lock, os.O_RDWR | os.O_CREAT)
             try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)  # Exclusive lock for write
+                flock(lock_fd, LOCK_EX)  # Exclusive lock for write
                 
                 full_cache = {}
                 if os.path.exists(self.disk_cache_path):
@@ -457,7 +457,7 @@ class DataFetcher:
                 os.replace(temp_path, self.disk_cache_path)
                 
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                flock(lock_fd, LOCK_UN)
                 os.close(lock_fd)
         except Exception as e:
             logger.error(f"Disk Cache Write Error: {e}")

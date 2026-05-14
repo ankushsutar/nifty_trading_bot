@@ -429,29 +429,56 @@ class MomentumStrategy:
                         
                         # Execution Logic: 6/7 score AND Mandatory Alignment
                         if score >= 6 and mtf_aligned and signal_valid:
-                            logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Volume. Firing Entry.")
-                            if trend == "BULLISH":
-                                self.enter_position(expiry, "CE")
-                            elif trend == "BEARISH":
-                                self.enter_position(expiry, "PE")
+                            if not self.active_position:
+                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Volume. Firing Entry.")
+                                if trend == "BULLISH":
+                                    self.enter_position(expiry, "CE")
+                                elif trend == "BEARISH":
+                                    self.enter_position(expiry, "PE")
+                            else:
+                                # SCALE-IN LOGIC: If already in a winner, add to it!
+                                current_stage = self.active_position.get('ladder_stage', 0)
+                                if current_stage >= 2 and not self.active_position.get('scaled_in', False):
+                                    logger.info(f"🚀 SCALE-IN SIGNAL: High Confluence in a Stage {current_stage} winner. Adding 1 lot.")
+                                    self.enter_position(expiry, self.active_position['leg'], is_scale_in=True)
                         elif trend != "NEUTRAL":
                             reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
                             logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
                     else:
                         current_leg = self.active_position['leg']
+                        current_stage = self.active_position.get('ladder_stage', 0)
+                        is_exhausted = self.last_analysis.get('is_exhausted', False)
+                        
+                        # --- THE POWER-TREND EXIT LOGIC ---
+                        
+                        # 1. Exhaustion Exit (Peak Booking)
+                        if is_exhausted:
+                            logger.info(f"🔥 EXHAUSTION DETECTED (RSI Extreme). Booking 50% profit immediately to capture peak.")
+                            self.close_position("EXHAUSTION", is_partial=True)
+                        
+                        # 2. Hierarchical Reversal Exit
                         if current_leg == "CE" and trend == "BEARISH":
-                            logger.info("Signal: Trend Reversed to BEARISH. Exiting CE.")
-                            self.close_position("REVERSAL")
-                            # Cooldown: skip immediate re-entry — next 5-min candle will evaluate PE.
-                            # Avoids whipsaws without blocking the global safety kill-switch (sleep removed).
-                            logger.info("⏳ Reversal Cooldown: PE entry will be evaluated on the next candle.")
+                            # If in Stage 1 or above, we ignore 5m trend reversals to let the runner breathe
+                            if current_stage >= 1:
+                                logger.info(f"Signal: 5m Trend Reversed to BEARISH, but Stage {current_stage} is active. Ignoring noise.")
+                            else:
+                                # For trades not yet in profit, require 15m HTF confirmation to prevent fake-outs
+                                if htf_trend == "BEARISH":
+                                    logger.info("Signal: Trend Reversed to BEARISH (Confirmed by 15m HTF). Exiting CE.")
+                                    self.close_position("REVERSAL")
+                                else:
+                                    logger.info(f"Signal: 5m Trend Reversed to BEARISH, but 15m HTF is still {htf_trend}. Keeping CE.")
 
                         elif current_leg == "PE" and trend == "BULLISH":
-                            logger.info("Signal: Trend Reversed to BULLISH. Exiting PE.")
-                            self.close_position("REVERSAL")
-                            # Cooldown: skip immediate re-entry — next 5-min candle will evaluate CE.
-                            logger.info("⏳ Reversal Cooldown: CE entry will be evaluated on the next candle.")
+                            if current_stage >= 1:
+                                logger.info(f"Signal: 5m Trend Reversed to BULLISH, but Stage {current_stage} is active. Ignoring noise.")
+                            else:
+                                if htf_trend == "BULLISH":
+                                    logger.info("Signal: Trend Reversed to BULLISH (Confirmed by 15m HTF). Exiting PE.")
+                                    self.close_position("REVERSAL")
+                                else:
+                                    logger.info(f"Signal: 5m Trend Reversed to BULLISH, but 15m HTF is still {htf_trend}. Keeping PE.")
 
                     now = datetime.datetime.now()
                     minute = now.minute
@@ -552,7 +579,7 @@ class MomentumStrategy:
                     analysis = shared.get("analysis", {})
                     trend = analysis.get("trend", "NEUTRAL")
                     regime = analysis.get("regime", "UNKNOWN")
-                    if regime != "UNKNOWN" and trend != "NEUTRAL":
+                    if regime != "UNKNOWN":
                         logger.debug(f"[HTF] Using shared intelligence: {trend}")
                         return trend
         except Exception as e:
@@ -650,7 +677,7 @@ class MomentumStrategy:
         rsi = 100 - (100 / (1 + rs))
         return rsi.fillna(50)
 
-    def enter_position(self, expiry, leg):
+    def enter_position(self, expiry, leg, is_scale_in=False):
         # Post-SL cooldown: 5 min after any SL hit, no re-entry (matches gamma blast gate).
         _SL_COOLDOWN_SECS = 300
         if self._last_sl_hit_time > 0 and time.time() - self._last_sl_hit_time < _SL_COOLDOWN_SECS:
@@ -939,7 +966,11 @@ class MomentumStrategy:
         margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
         
         # Apply Compounding (Exponential Scaling) using real estimated cost
-        lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
+        if is_scale_in:
+            lots = 1 # Only add 1 lot on scale-in for safety
+            self.active_position['scaled_in'] = True
+        else:
+            lots = self.gatekeeper.get_compounded_lots(margin_per_lot=margin_per_lot, multiplier=self.risk_multiplier)
         
         # Phase 3: Capital & Lot Sizing (Uses Gatekeeper's dynamic tier-based calculation)
         # This allows for 4-5 lots on ₹35k capital, ensuring ₹1,500 profit is achievable.
@@ -947,7 +978,10 @@ class MomentumStrategy:
 
         qty = lots * Config.NIFTY_LOT_SIZE
         
-        logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
+        if is_scale_in:
+             logger.info(f"🚀 SCALING IN: Adding 1 lot ({qty} qty) to existing {leg} position.")
+        else:
+             logger.info(f"⚖️ Sizing: ATR={atr:.2f} | Method=Exponential Compounding | Multiplier={self.risk_multiplier}x | Qty={qty} ({lots} lots)")
 
         # 1.5 Cost Viability Check (Small Account Protection)
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
@@ -1076,6 +1110,28 @@ class MomentumStrategy:
             actual_sl = max(0.1, fill_price - actual_sl_points)
 
             # 3. Finalize Local State & Update DB
+            if is_scale_in:
+                trade_id = self.active_position.get('id')
+                if trade_id:
+                    trade_repo.scale_in_position(trade_id, qty, fill_price)
+                
+                # Update Local State (Weighted Average)
+                old_qty = self.active_position['qty']
+                old_price = self.active_position['entry_price']
+                new_qty = old_qty + qty
+                new_avg = ((old_price * old_qty) + (fill_price * qty)) / new_qty
+                
+                self.active_position['qty'] = new_qty
+                self.active_position['entry_price'] = round(new_avg, 2)
+                
+                # IMPORTANT: Update Broker SL for the NEW total quantity
+                sl_oid = self.active_position.get('sl_order_id')
+                if sl_oid and not self.dry_run:
+                    self.order_manager.modify_sl_order(sl_oid, self.active_position['sl_price'], symbol, token, new_qty, leg="CE" if leg == "CE" else "PE")
+                
+                logger.info(f"🚀 SCALE-IN COMPLETE: New Qty={new_qty} | New Avg={self.active_position['entry_price']}")
+                return
+
             trade_id = self.order_manager.update_trade_fill(symbol, "MOMENTUM", fill_price, expected_price=quote_ltp)
             
             actual_sl = max(0.1, fill_price - actual_sl_points)
@@ -1089,7 +1145,8 @@ class MomentumStrategy:
                 'target_price': actual_target,
                 'dynamic_rr': dynamic_rr,
                 'atr': atr,
-                'context': trade_context
+                'context': trade_context,
+                'initial_risk': actual_sl_points
             }
             
             if trade_id:
@@ -1097,7 +1154,9 @@ class MomentumStrategy:
             
             # Place Hard SL (Broker-Side)
             sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
-            
+            if sl_oid:
+                self.active_position['sl_order_id'] = sl_oid
+                if trade_id: trade_repo.update_sl_order_id(trade_id, sl_oid)
             # SL VERIFICATION: If SL placement failed, we cannot hold the position safely.
             if not sl_oid and not self.dry_run:
                 logger.critical(f"🚨 MOMENTUM: SL placement FAILED for {symbol}. Emergency exiting position for safety!")

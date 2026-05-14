@@ -90,7 +90,12 @@ class RegimeClassifier:
             f"EMA9={ema9:.1f} EMA21={ema21:.1f} → {regime}/{trend}"
         )
 
-        # 5. Volume Spike Detection (Institutional Activity Filter)
+        # 5. Trend Strength & Slope
+        adx_slope = 0.0
+        if n >= 2:
+            adx_slope = df['ADX'].iloc[-1] - df['ADX'].iloc[-2]
+
+        # 6. Volume Spike Detection (Institutional Activity Filter)
         volume_spike = self._calculate_volume_spike(df)
         if volume_spike:
             logger.info(f"[Regime] 🔥 VOLUME SPIKE DETECTED! (High institutional confidence)")
@@ -99,12 +104,14 @@ class RegimeClassifier:
             "regime": regime,
             "trend": trend,
             "adx": round(adx, 2),
+            "adx_slope": round(adx_slope, 2),
             "rsi": round(rsi, 2),
             "atr": round(atr, 2),
             "bbw": round(bbw, 4),
             "ema9": round(ema9, 2),
             "ema21": round(ema21, 2),
-            "volume_spike": volume_spike
+            "volume_spike": volume_spike,
+            "is_exhausted": rsi > 80 or rsi < 20
         }
 
     def _calculate_rsi(self, df, period=14):
