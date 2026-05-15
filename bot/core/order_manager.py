@@ -234,7 +234,7 @@ class OrderManager:
             # Institutional Grade: Use STOPLOSS_LIMIT to prevent broker rejections and flash-crash slippage.
             # We set 'price' slightly below 'trigger_price' for SELL SL to ensure fill within a corridor.
             # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
-            trigger_price = price
+            trigger_price = round(price, 2)
             limit_price = round(price * 0.95 / 0.05) * 0.05 if transaction_type == "SELL" else round(price * 1.05 / 0.05) * 0.05
             limit_price = round(limit_price, 2)
             
@@ -302,6 +302,7 @@ class OrderManager:
             
             # Using same corridor logic as placement to maintain institutional quality
             # Using 5% corridor to stay within exchange LPP (Limit Price Protection) rules.
+            trigger_price = round(price, 2)
             limit_price = round((price * 0.95) / 0.05) * 0.05 if transaction_type == "SELL" else round((price * 1.05) / 0.05) * 0.05
             limit_price = round(limit_price, 2)
             

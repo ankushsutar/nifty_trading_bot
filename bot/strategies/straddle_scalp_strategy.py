@@ -282,7 +282,7 @@ class StraddleScalpStrategy:
         )
 
         # --- INSTITUTIONAL SAFETY UPGRADE: Place Disaster Hard SLs (fallback) ---
-        DISASTER_SL_PCT = 0.50
+        DISASTER_SL_PCT = 0.35  # Reduced from 0.50 to stay within exchange LPP (AB1007 fix)
         ce_sl_price = round(ce_entry * (1 - DISASTER_SL_PCT), 1)
         pe_sl_price = round(pe_entry * (1 - DISASTER_SL_PCT), 1)
         
@@ -300,7 +300,7 @@ class StraddleScalpStrategy:
                             'qty': qty_units, 'entry_price': pe_entry, 'sl_oid': pe_sl_oid}
 
         combined_entry = ce_entry + pe_entry
-        notifier.send(
+        notifier.send_message(
             f"🎯 Straddle Scalp ENTERED\n"
             f"CE: {ce_symbol} @ ₹{ce_entry:.1f}\n"
             f"PE: {pe_symbol} @ ₹{pe_entry:.1f}\n"
@@ -411,7 +411,7 @@ class StraddleScalpStrategy:
                 f"Straddle Scalp: {leg_name} closed @ ₹{exit_price:.1f} | P&L=₹{pnl:+.0f}"
             )
 
-        notifier.send(
+        notifier.send_message(
             f"Straddle Scalp CLOSED ({reason})\n"
             f"CE: {self.ce_position['symbol'] if self.ce_position else 'N/A'}\n"
             f"PE: {self.pe_position['symbol'] if self.pe_position else 'N/A'}\n"

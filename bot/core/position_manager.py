@@ -49,6 +49,7 @@ class LadderedTrailingManager:
         
         # Compute dynamic gate floors based on ATR Multiples (Institutional Standard)
         # We replace fixed points with ATR-based room.
+        atr = float(active_position.get('atr', risk_unit))
         threshold_0_5 = round(1.0 * atr, 1) # Breakeven at 1 ATR move
         threshold_1_0 = round(1.5 * atr, 1) # Stage 1 at 1.5 ATR move
         threshold_2_0 = round(2.5 * atr, 1) # Stage 2 at 2.5 ATR move

@@ -163,7 +163,7 @@ class ZeroToHeroStrategy:
                 self.active_position = {
                     'id': trade_id, 'symbol': symbol, 'token': token, 'qty': qty, 'entry_price': prem
                 }
-                notifier.send_notification(f"🚀 Z2H WILDCARD PURCHASED!\nSymbol: {symbol}\nPrice: ₹{prem}\nQty: {qty}")
+                notifier.send_message(f"🚀 Z2H WILDCARD PURCHASED!\nSymbol: {symbol}\nPrice: ₹{prem}\nQty: {qty}")
                 
                 # Drop Emergency Broker-Side SL
                 sl_id = self.order_manager.place_stoploss(symbol, token, qty, sl_init, self.STRATEGY_NAME)

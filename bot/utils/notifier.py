@@ -32,6 +32,14 @@ class TelegramNotifier:
         except Exception as e:
             logger.error(f"Telegram Notification Crash: {e}")
 
+    def send(self, message):
+        """Alias for send_message"""
+        self.send_message(message)
+
+    def send_notification(self, message):
+        """Alias for send_message"""
+        self.send_message(message)
+
     def notify_trade_entry(self, strategy, symbol, side, qty, price):
         icon = "🟢" if side == "BUY" else "🔴"
         msg = (
