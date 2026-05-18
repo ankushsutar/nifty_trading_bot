@@ -340,32 +340,30 @@ class GammaBlastStrategy:
             # At least 2 of the last 3 completed 5-min candles must close in the
             # trade direction. Prevents entering on an EMA crossover from a single
             # spike or post-SL bounce candle.
+            # Enforced at all times to prevent buying/selling at trend climax/exhaustion points.
             _df_gb = None
-            if _is_squeeze or _is_extreme_trend:
-                logger.info(f"🚀 Candle Momentum Filter: Bypassing due to {'Squeeze' if _is_squeeze else 'Extreme Trend Override'} (ADX={adx:.1f}).")
-            else:
-                try:
-                    _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
-                    if _df_gb is not None and len(_df_gb) >= 3:
-                        _l3 = _df_gb.tail(3)
-                        _bull = (_l3['close'] > _l3['open']).sum()
-                        _bear = (_l3['close'] < _l3['open']).sum()
-                        if leg == "CE" and _bull < 2:
-                            logger.warning(
-                                f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
-                                "Waiting for stronger confirmation."
-                            )
-                            time.sleep(30)
-                            continue
-                        if leg == "PE" and _bear < 2:
-                            logger.warning(
-                                f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
-                                "Waiting for stronger confirmation."
-                            )
-                            time.sleep(30)
-                            continue
-                except Exception as _ce:
-                    logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
+            try:
+                _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
+                if _df_gb is not None and len(_df_gb) >= 3:
+                    _l3 = _df_gb.tail(3)
+                    _bull = (_l3['close'] > _l3['open']).sum()
+                    _bear = (_l3['close'] < _l3['open']).sum()
+                    if leg == "CE" and _bull < 2:
+                        logger.warning(
+                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
+                            "Waiting for stronger confirmation."
+                        )
+                        time.sleep(30)
+                        continue
+                    if leg == "PE" and _bear < 2:
+                        logger.warning(
+                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
+                            "Waiting for stronger confirmation."
+                        )
+                        time.sleep(30)
+                        continue
+            except Exception as _ce:
+                logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
 
             # --- VWAP POSITION FILTER ---
             # On parabolic days institutions drive the move — VWAP confirms which side

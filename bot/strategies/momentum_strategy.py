@@ -794,11 +794,8 @@ class MomentumStrategy:
                 _htf_trend = self.calculate_htf_trend()
                 _htf_aligned = (_htf_trend == ("BULLISH" if leg == "CE" else "BEARISH"))
                 
-                # SQUEEZE/EXTREME TREND BYPASS: If a squeeze or extreme trend is detected, we enter regardless of candle confirmation.
-                if _is_squeeze or _is_extreme_trend:
-                    _min_candles = 0
-                else:
-                    _min_candles = 1 if (_regime == "TRENDING" and _htf_aligned) else 2
+                # SQUEEZE/EXTREME TREND BYPASS: Removed to guarantee candle confirmation under all overrides
+                _min_candles = 1 if (_regime == "TRENDING" and _htf_aligned) else 2
 
                 if leg == "CE" and _bull_count < _min_candles:
                     logger.warning(

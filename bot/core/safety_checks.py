@@ -242,15 +242,62 @@ class SafetyGatekeeper:
                 return False
         return True
 
+    def get_starting_capital(self):
+        """
+        Retrieves or initializes the starting capital for the trading day.
+        Persisted in data/session_stats.json to prevent the 'Rubber Band' effect
+        when capital/margin changes dynamically during the session.
+        """
+        try:
+            stats_file = os.path.join(os.getcwd(), "data", "session_stats.json")
+            today = datetime.date.today().isoformat()
+            stats = {}
+            if os.path.exists(stats_file):
+                with open(stats_file, "r") as f:
+                    stats = json.load(f)
+            
+            day_stats = stats.get(today, {})
+            starting_capital = day_stats.get("starting_capital", 0.0)
+            
+            if starting_capital <= 0.0:
+                # First time running today — fetch current capital as starting capital
+                current_cap = self.get_current_capital()
+                if current_cap > 0.0:
+                    starting_capital = round(current_cap, 2)
+                    day_stats["starting_capital"] = starting_capital
+                    # Preserve existing fields in day_stats like peak_profit if they exist
+                    if "peak_profit" not in day_stats:
+                        day_stats["peak_profit"] = 0.0
+                    if "last_updated" not in day_stats:
+                        day_stats["last_updated"] = 0
+                    stats[today] = day_stats
+                    
+                    # Ensure directory exists
+                    os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+                    with open(stats_file, "w") as f:
+                        json.dump(stats, f)
+                    logger.info(f">>> [Gatekeeper] 📈 Initialized Starting Capital for today: ₹{starting_capital:,.2f}")
+                else:
+                    # Fallback to simulation/default capital if fetch fails
+                    from bot.config.settings import Config
+                    starting_capital = float(Config.SIMULATION_CAPITAL)
+                    logger.warning(f">>> [Gatekeeper] Fetch failed. Using simulation fallback for starting capital: ₹{starting_capital:,.2f}")
+            
+            return starting_capital
+        except Exception as e:
+            logger.error(f"Error in get_starting_capital: {e}")
+            from bot.config.settings import Config
+            return float(Config.SIMULATION_CAPITAL)
+
     def check_max_daily_loss(self, active_unrealized_pnl=0.0):
         """
         Rule: Stop trading if (Realized + Unrealized) loss exceeds tier daily loss limit.
-        Limit is a percentage of current capital — scales automatically with account size.
+        Limit is a percentage of starting capital — scales automatically with account size.
         """
         from bot.config.settings import Config
-        capital  = self.get_current_capital()
-        tier     = Config.get_tier(capital)
-        max_loss = -(capital * tier.max_daily_loss_pct)
+        starting_capital = self.get_starting_capital()
+        tier             = Config.get_tier(starting_capital)
+        max_loss         = -(starting_capital * tier.max_daily_loss_pct)
 
         realized_pnl = self.get_daily_realized_pnl()
         total_pnl    = realized_pnl + active_unrealized_pnl
