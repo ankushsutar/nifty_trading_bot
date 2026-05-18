@@ -68,7 +68,9 @@ class StraddleScalpStrategy:
         """Recover open straddle legs from DB after a restart."""
         mode = "PAPER" if self.dry_run else "LIVE"
         try:
-            open_trades = trade_repo.get_open_trades(mode=mode, strategy=self.STRATEGY_NAME)
+            # Look for both OPEN and PLACED trades during recovery
+            query = {"status": {"$in": ["OPEN", "PLACED"]}, "mode": mode, "strategy": self.STRATEGY_NAME}
+            open_trades = list(trade_repo.collection.find(query))
             for t in open_trades:
                 pos = {
                     'id':          t['id'],
@@ -129,7 +131,7 @@ class StraddleScalpStrategy:
             # Entry time window gate
             now = datetime.datetime.now().time()
             if now >= entry_cutoff:
-                logger.info(f"Straddle Scalp: ⏰ Past entry window ({entry_cutoff}). Exiting.")
+                logger.info(f"Straddle Scalp: ⏰ Past entry window ({entry_cutoff}). No new entries allowed today.")
                 break
 
             # ADX + regime gate (Centralized Intelligence Integration)
