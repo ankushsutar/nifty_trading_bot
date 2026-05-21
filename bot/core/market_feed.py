@@ -4,6 +4,7 @@ import threading
 import json
 import datetime
 import pandas as pd
+# pyrefly: ignore [missing-import]
 from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from bot.config.settings import Config
 from bot.utils.logger import logger
@@ -237,9 +238,35 @@ class MarketFeedService:
                     'best_bid': float(tick.get('best_5_buy_data', [{}])[0].get('price', 0)) / 100.0 if tick.get('best_5_buy_data') else 0
                 }
                 
+                # --- PASSIVE MODE TICK SHARING FOR CHILD PROCESSES ---
+                import os
+                if os.getenv("PROCESS_TYPE") == "BACKEND":
+                    try:
+                        from bot.core.trade_repo import trade_repo
+                        if trade_repo.client:
+                            db = trade_repo.client[Config.MONGO_DB]
+                            db["ticks_cache"].update_one(
+                                {"token": token},
+                                {
+                                    "$set": {
+                                        "token": token,
+                                        "ltp": ltp_val,
+                                        "timestamp": time.time(),
+                                        "best_ask": self.latest_data[token]['best_ask'],
+                                        "best_bid": self.latest_data[token]['best_bid']
+                                    }
+                                },
+                                upsert=True
+                            )
+                    except Exception as e:
+                        pass
+
+                
                 # --- Candle Construction (1-Minute) ---
                 try:
                     ts = float(tick.get('exchange_timestamp', time.time())) # Prefer Exchange TS
+                    if ts > 1e11:
+                        ts = ts / 1000.0
                     
                     # Memoization: ISO string formatting is expensive. Cache it per-minute.
                     minute_ts = int(ts // 60) * 60

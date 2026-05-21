@@ -42,10 +42,20 @@ class LevelsProvider:
                 logger.error("[Levels] Failed to fetch data for level calculation.")
                 return None
 
-            # Filter for Previous Day Data (Excluding Today)
-            # Use timezone-naive comparison — NIFTY candle timestamps are already in IST without tz info.
             today_start = pd.Timestamp(datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0))
-            prev_day_df = df[pd.to_datetime(df['timestamp']).dt.tz_localize(None) < today_start]
+            
+            def _to_naive(val):
+                if pd.isna(val): return val
+                if isinstance(val, str):
+                    if '+' in val: val = val.split('+')[0]
+                    if 'T' in val: val = val.replace('T', ' ')
+                    return pd.to_datetime(val)
+                if hasattr(val, 'tzinfo') and val.tzinfo is not None:
+                    return val.replace(tzinfo=None)
+                return pd.to_datetime(val)
+                
+            naive_timestamps = pd.Series([_to_naive(v) for v in df['timestamp']], index=df.index)
+            prev_day_df = df[naive_timestamps < today_start]
             
             if prev_day_df.empty:
                 logger.warning("[Levels] No previous day data found. Using earliest available session.")

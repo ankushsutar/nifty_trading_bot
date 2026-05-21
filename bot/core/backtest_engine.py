@@ -24,7 +24,7 @@ from bot.utils.logger import logger
 class BacktestEngine:
     """Vectorized backtesting engine that mirrors live strategy logic."""
 
-    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP"]
+    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "PASSIVE_ASYMMETRIC_SCALPER"]
 
     # Market session constants
     SESSION_START = dtime(9, 15)
@@ -122,12 +122,13 @@ class BacktestEngine:
         df = df.between_time("09:15", "15:30")
 
         self.df_1m  = df
+        self.df_3m  = self._resample(df, "3min")
         self.df_5m  = self._resample(df, "5min")
         self.df_15m = self._resample(df, "15min")
 
         logger.info(
             f"[Backtest] Data loaded: {len(df)} 1m bars | "
-            f"{len(self.df_5m)} 5m | {len(self.df_15m)} 15m | "
+            f"{len(self.df_3m)} 3m | {len(self.df_5m)} 5m | {len(self.df_15m)} 15m | "
             f"Range: {df.index[0].date()} → {df.index[-1].date()}"
         )
 
@@ -186,6 +187,7 @@ class BacktestEngine:
             "MOMENTUM":   self._momentum_signals,
             "GAMMA_BLAST":self._gamma_blast_signals,
             "STRADDLE_SCALP": self._straddle_scalp_signals,
+            "PASSIVE_ASYMMETRIC_SCALPER": self._passive_asymmetric_scalper_signals,
         }
         fn = dispatch.get(strategy_name)
         if fn is None:
@@ -312,6 +314,45 @@ class BacktestEngine:
             
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
+    # ---- PASSIVE ASYMMETRIC SCALPER (EMA Cloud + RSI + ADX on 3m) ---- #
+
+    def _passive_asymmetric_scalper_signals(self) -> pd.DataFrame:
+        df3 = self.df_3m.copy()
+        
+        df3["ema9"]  = df3["close"].ewm(span=9,  adjust=False).mean()
+        df3["ema21"] = df3["close"].ewm(span=21, adjust=False).mean()
+        df3["atr"]   = self._atr(df3, 14)
+        df3["rsi"]   = self._rsi(df3, 14)
+        df3["adx"]   = self._adx(df3, 14)
+
+        # Optimize filters to focus only on high-momentum breakouts (RSI > 55 / < 45, ADX >= 22)
+        bullish = (
+            (df3["close"] > df3["ema9"]) & (df3["ema9"] > df3["ema21"]) &
+            (df3["rsi"] > 54) &
+            (df3["adx"] >= 22) &
+            self._in_session(df3) &
+            ~self._in_blackout(df3)
+        )
+        
+        bearish = (
+            (df3["close"] < df3["ema9"]) & (df3["ema9"] < df3["ema21"]) &
+            (df3["rsi"] < 46) &
+            (df3["adx"] >= 22) &
+            self._in_session(df3) &
+            ~self._in_blackout(df3)
+        )
+
+        rows = []
+        for ts in bullish[bullish].index:
+            rows.append({"timestamp": ts, "direction": "CE", "atr": df3.loc[ts, "atr"]})
+        for ts in bearish[bearish].index:
+            rows.append({"timestamp": ts, "direction": "PE", "atr": df3.loc[ts, "atr"]})
+            
+        if not rows:
+            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
+            
+        return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+
     # ------------------------------------------------------------------ #
     #  Trade Simulation Engine                                             #
     # ------------------------------------------------------------------ #
@@ -341,7 +382,10 @@ class BacktestEngine:
 
             if d_pnl <= self.max_daily_loss:
                 continue  # Circuit breaker
-            if d_count >= self.max_trades_per_day:
+            
+            # Special attempts cap (Max 2 trades per day for Passive Asymmetric Scalper)
+            max_attempts = 2 if strategy_name == "PASSIVE_ASYMMETRIC_SCALPER" else self.max_trades_per_day
+            if d_count >= max_attempts:
                 continue
 
             # Blackout / session filter (already in signals but double-check)
@@ -370,24 +414,47 @@ class BacktestEngine:
                     # High vol: 2 OTM (delta 0.25) — bigger swings expected
                     delta, sl_mult, tgt_mult = 0.25, self.tier_sl_pct * 1.5, 0.70
 
-            sl_price     = entry_premium * (1 - sl_mult)
-            target_price = entry_premium * (1 + tgt_mult)
-
-            # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
-            if 30000 <= capital <= 40000:
-                if entry_premium <= 80:
-                    lots = 2
-                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} <= 80. Trading 2 lots.")
-                elif entry_premium > 100:
-                    lots = 1
-                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} > 100. Trading 1 lot.")
+            if strategy_name == "PASSIVE_ASYMMETRIC_SCALPER":
+                # Scaled Dynamic Sizing: Premium <= 60 -> 8 lots, <= 120 -> 4 lots, Else -> 2 lots
+                if entry_premium <= 60:
+                    lots = 8
+                elif entry_premium <= 120:
+                    lots = 4
                 else:
-                    lots = 1
+                    lots = 2
+                qty = lots * self.lot_size
+                
+                # Asymmetric Risk Engine: SL = -1.5 * ATR, Target = +4.5 * ATR
+                delta = 0.50  # ATM
+                sl_price = entry_premium - (1.5 * atr * delta)
+                target_price = entry_premium + (4.5 * atr * delta)
+                
+                # Scaled Absolute Monetary Killswitches (scaled proportionally to the number of lots)
+                monetary_sl_price = entry_premium - (1000.0 * lots / qty)
+                monetary_tgt_price = entry_premium + (1500.0 * lots / qty)
+                
+                # Actual exit points are the tighter/safer of technical and monetary bounds
+                sl_price = max(sl_price, monetary_sl_price)
+                target_price = min(target_price, monetary_tgt_price)
             else:
-                # Default position sizing: risk-based
-                risk_amount  = capital * self.risk_per_trade_pct
-                max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
-                lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
+                sl_price     = entry_premium * (1 - sl_mult)
+                target_price = entry_premium * (1 + tgt_mult)
+
+                # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
+                if 30000 <= capital <= 40000:
+                    if entry_premium <= 80:
+                        lots = 2
+                        logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} <= 80. Trading 2 lots.")
+                    elif entry_premium > 100:
+                        lots = 1
+                        logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} > 100. Trading 1 lot.")
+                    else:
+                        lots = 1
+                else:
+                    # Default position sizing: risk-based
+                    risk_amount  = capital * self.risk_per_trade_pct
+                    max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
+                    lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
             
             # Realistic Cap: Never trade more than max_lots
             lots = min(lots, self.max_lots)
@@ -417,9 +484,9 @@ class BacktestEngine:
 
             # --- FIX: Lookahead Bias Prevention ---
             # Signals are emitted at bar-start. We MUST wait for the bar to CLOSE before executing.
-            # Our core trinity (GAMMA_BLAST, MOMENTUM, STRADDLE_SCALP) all use 5-min timeframes.
-            timeframe_delay = 5  # Wait for 5m bar to complete
-
+            # PASSIVE_ASYMMETRIC_SCALPER uses 3-min bars, others use 5-min bars.
+            timeframe_delay = 3 if strategy_name == "PASSIVE_ASYMMETRIC_SCALPER" else 5
+ 
             execution_ts = ts + pd.Timedelta(minutes=timeframe_delay)
 
             # --- Simulate trade outcome on 1m bars ---

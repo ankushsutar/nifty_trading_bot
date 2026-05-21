@@ -14,6 +14,7 @@ from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 from bot.strategies.selling_strategy import SellingStrategy
 from bot.strategies.zero_to_hero_strategy import ZeroToHeroStrategy
+from bot.strategies.passive_asymmetric_scalper import PassiveAsymmetricScalper
 from bot.core.decision_engine import DecisionEngine
 from bot.core.order_feed import order_feed
 from bot.utils.logger import logger
@@ -59,7 +60,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO", "PASSIVE_ASYMMETRIC_SCALPER"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -119,24 +120,80 @@ def run_bot():
                 os.remove(".kill_trading_bot")
                 return
 
+            # Check for fatal exits (like daily limit) inside DecisionEngine, 
+            # but if it just says "Market Conditions not met", we loop.
+            # If Market is literally CLOSED according to logic, we should probably exit.
+            from bot.core.safety_checks import SafetyGatekeeper
+            gate = SafetyGatekeeper(api, dry_run=args.dry_run)
+            if not gate.is_market_open():
+                logger.warning(">>> [Auto] ❌ Market is Closed. Exiting.")
+                return
+
             selected_strategy, risk_multiplier = engine.analyze_and_select()
             
             if selected_strategy:
                 logger.info(f">>> [Auto] 🤖 Brain selected: {selected_strategy} (Risk Multiplier: {risk_multiplier:.2f}x)")
-                args.strategy = selected_strategy
-                break
-            else:
-                # Check for fatal exits (like daily limit) inside DecisionEngine, 
-                # but if it just says "Market Conditions not met", we loop.
-                # If Market is literally CLOSED according to logic, we should probably exit.
-                from bot.core.safety_checks import SafetyGatekeeper
-                gate = SafetyGatekeeper(api, dry_run=args.dry_run)
-                if not gate.is_market_open():
-                    logger.warning(">>> [Auto] ❌ Market is Closed. Exiting.")
-                    return
+                
+                # 4. Initialize Strategy
+                if selected_strategy == "MOMENTUM":
+                    logger.info(f"\n>>> [Strategy] Selected: Momentum (EMA Crossover) ⚡")
+                    bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
+                    bot.risk_multiplier = risk_multiplier
+                elif selected_strategy == "GAMMA_BLAST":
+                    logger.info(f"\n>>> [Strategy] Selected: Gamma Blast (OTM Momentum) 🚀💎")
+                    bot = GammaBlastStrategy(api, loader, dry_run=args.dry_run)
+                    bot.risk_multiplier = risk_multiplier
+                elif selected_strategy == "STRADDLE_SCALP":
+                    logger.info(f"\n>>> [Strategy] Selected: Straddle Scalp (ATM CE+PE Ranging) 🎯")
+                    bot = StraddleScalpStrategy(api, loader, dry_run=args.dry_run)
+                    bot.risk_multiplier = risk_multiplier
+                elif selected_strategy == "ZERO_TO_HERO":
+                    logger.info(f"\n>>> [Strategy] Selected: 🛸 ZERO TO HERO WILD CARD! 🚀💎")
+                    bot = ZeroToHeroStrategy(api, loader, dry_run=args.dry_run)
+                    bot.risk_multiplier = risk_multiplier
+                elif selected_strategy == "SELLING":
+                    logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
+                    bot = SellingStrategy(api, loader, dry_run=args.dry_run)
+                elif selected_strategy == "PASSIVE_ASYMMETRIC_SCALPER":
+                    logger.info(f"\n>>> [Strategy] Selected: Passive Asymmetric Scalper 🎯⚡")
+                    bot = PassiveAsymmetricScalper(api, loader, dry_run=args.dry_run)
+                else:
+                    logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
+                    bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
+                    
+                bot_instance = bot 
 
+                # 5. Setup Parameters
+                logger.info("\n--- NIFTY OPTION TRADER ---")
+                expiry = get_next_weekly_expiry()
+                logger.info(f">>> [Setup] Target Expiry: {expiry}")
+                
+                # SAFEGUARD: Prevent using past expiry
+                try:
+                    exp_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
+                    if exp_date < datetime.date.today():
+                         logger.critical(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
+                         return
+                except Exception as e:
+                    logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
+
+                # 6. Execute Strategy
+                if selected_strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "PASSIVE_ASYMMETRIC_SCALPER"]:
+                    bot.execute(expiry=expiry)
+                else:
+                    # pyrefly: ignore [unexpected-keyword]
+                    bot.execute(expiry=expiry, action="SELL")
+
+                # 7. Record trade for daily limit tracking (only in auto mode)
+                # This increments the DecisionEngine's daily counter so the 2-trade cap works.
+                engine.record_trade()
+                logger.info(">>> [System] Trade completed and recorded for daily limit tracking. Returning to Brain Loop in 15 seconds...")
+                time.sleep(15)
+            else:
                 logger.info(">>> [Auto] 💤 No A+ setup found. Retrying in 60 seconds...")
                 time.sleep(60)
+                
+        return
 
     # 4. Initialize Strategy
     if args.strategy == "MOMENTUM":
@@ -158,6 +215,9 @@ def run_bot():
     elif args.strategy == "SELLING":
         logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
         bot = SellingStrategy(api, loader, dry_run=args.dry_run)
+    elif args.strategy == "PASSIVE_ASYMMETRIC_SCALPER":
+        logger.info(f"\n>>> [Strategy] Selected: Passive Asymmetric Scalper 🎯⚡")
+        bot = PassiveAsymmetricScalper(api, loader, dry_run=args.dry_run)
     else:
         logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
         bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
@@ -179,9 +239,10 @@ def run_bot():
         logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
     # 6. Execute Strategy
-    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"]:
+    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "PASSIVE_ASYMMETRIC_SCALPER"]:
         bot.execute(expiry=expiry)
     else:
+        # pyrefly: ignore [unexpected-keyword]
         bot.execute(expiry=expiry, action="SELL")
 
     # 7. Record trade for daily limit tracking (only in auto mode)

@@ -1,6 +1,7 @@
 import threading
 import datetime
 import time
+# pyrefly: ignore [missing-import]
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bot.config.settings import Config
 from bot.utils.logger import logger
@@ -332,9 +333,16 @@ class TradeRepository:
         """Returns all trades (OPEN and CLOSED) created today."""
         if not self.client: return []
         try:
-            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            now = datetime.datetime.now()
+            market_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+            if now < market_start:
+                # Pre-market/testing: count all trades since midnight
+                start_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            else:
+                # Regular market hours: only count trades opened since market opened at 9:15 AM
+                start_time = market_start
             
-            query = {"created_at": {"$gte": today_start}}
+            query = {"created_at": {"$gte": start_time}}
             if mode:
                 query["mode"] = mode
             else:

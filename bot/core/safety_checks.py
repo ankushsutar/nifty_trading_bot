@@ -21,6 +21,10 @@ class SafetyGatekeeper:
         """
         Hard rule: 09:15 to 15:29 IST
         """
+        if os.getenv("BYPASS_MARKET_OPEN") == "TRUE":
+            logger.info(">>> [Gatekeeper] Bypassing Market Open check (BYPASS_MARKET_OPEN=TRUE) 🔓")
+            return True
+
         now = datetime.datetime.now().time()
         start = datetime.time(9, 15)
         end = datetime.time(15, 29)

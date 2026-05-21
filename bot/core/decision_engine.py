@@ -301,7 +301,11 @@ class DecisionEngine:
             selected_strategy = "GAMMA_BLAST"
 
         elif adx > 25:
-            # NORMAL TRENDING
+            # NORMAL TRENDING -> Default to high-performance Passive Asymmetric Scalper
+            selected_strategy = "PASSIVE_ASYMMETRIC_SCALPER"
+            
+        elif adx >= 22:
+            # Moderate Trend -> MOMENTUM fallback
             selected_strategy = "MOMENTUM"
         
         elif is_morning and adx < 20:
@@ -366,7 +370,7 @@ class DecisionEngine:
                 return None, 1.0
             
             # If 4H regime still aligns with the strategy, override the gate
-            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP")
+            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "PASSIVE_ASYMMETRIC_SCALPER")
             regime_4h_trending   = regime_4h.get("regime") == "TRENDING"
             if strategy_is_trending == regime_4h_trending:
                 logger.info(

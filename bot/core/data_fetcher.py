@@ -185,7 +185,7 @@ class DataFetcher:
         # --- TIMESTAMP ALIGNMENT FIX (AB1004) ---
         # Angel One requires todate to be aligned with the interval boundary.
         # e.g. For 5-min candles, it MUST be 13:00, 13:05, etc.
-        interval_map = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "ONE_MINUTE": 1}
+        interval_map = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "ONE_MINUTE": 1, "THREE_MINUTE": 3}
         mins = interval_map.get(interval, 5)
         
         aligned_to = self._align_to_interval(now, mins)
@@ -335,7 +335,7 @@ class DataFetcher:
         """Appends real-time forming candle from MarketFeed if available."""
         try:
             from bot.core.market_feed import market_feed
-            interval_map = {"FIVE_MINUTE": 5, "ONE_MINUTE": 1}
+            interval_map = {"FIVE_MINUTE": 5, "ONE_MINUTE": 1, "THREE_MINUTE": 3}
             mins = interval_map.get(interval)
             
             if not mins: return df
@@ -346,6 +346,8 @@ class DataFetcher:
             # Create a localized timestamp for comparison
             # Live candle timestamp string is already formatted
             live_ts = pd.to_datetime(live_candle['timestamp'])
+            if live_ts.tzinfo is not None:
+                live_ts = live_ts.tz_localize(None)
             
             if df.empty:
                 # Create single row df
@@ -360,6 +362,10 @@ class DataFetcher:
                 return pd.DataFrame([new_row])
                 
             last_ts = df.iloc[-1]['timestamp']
+            if isinstance(last_ts, str):
+                last_ts = pd.to_datetime(last_ts)
+            if isinstance(last_ts, pd.Timestamp) and last_ts.tzinfo is not None:
+                last_ts = last_ts.tz_localize(None)
             
             if live_ts > last_ts:
                 # Append

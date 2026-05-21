@@ -60,6 +60,14 @@ class MarketService:
                 threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
                 logger.info("MarketService: [MASTER] Starting Session Heartbeat... 💓")
                 threading.Thread(target=cls._instance._heartbeat_loop, daemon=True).start()
+                
+                # Start MarketFeed WebSocket in master process to populate ticks_cache
+                logger.info("MarketService: [MASTER] Starting Real-time WebSocket Feed... 🚀")
+                try:
+                    from bot.core.market_feed import market_feed
+                    market_feed.start()
+                except Exception as feed_err:
+                    logger.error(f"MarketService: Failed to start market feed WebSocket: {feed_err}")
             else:
 
                 logger.info("MarketService: [CHILD] Passive Mode (Consuming Shared Data) 🛰️")
@@ -286,6 +294,18 @@ class MarketService:
                     # fetch_latest_candles handles 5-min caching AND real-time WebSocket hybrid-merge.
                     df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
                     
+                    # Compute Nifty Spot 3m ATR for the Passive Asymmetric Scalper
+                    self.atr_3m_val = 0.0
+                    try:
+                        df_3m = self.data_fetcher.fetch_latest_candles("99926000", interval="THREE_MINUTE", days=1)
+                        if df_3m is not None and not df_3m.empty:
+                            atr_series = self.regime_engine._calculate_atr(df_3m, period=14)
+                            if atr_series is not None and not atr_series.empty:
+                                self.atr_3m_val = float(atr_series.iloc[-1])
+                                logger.info(f"MarketService: Computed Nifty Spot 3m ATR: {self.atr_3m_val:.2f}")
+                    except Exception as atr_err:
+                        logger.error(f"MarketService: Failed to compute 3m ATR: {atr_err}")
+                    
                     if df is None:
                         # EMERGENCY FALLBACK: If API is blocked (AB1004), use ANY cache for up to 4h
                         logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
@@ -305,7 +325,16 @@ class MarketService:
                             # Armored Fix: Check for 'timestamp' column before defaulting to index.date
                             # preventing 'RangeIndex has no attribute date' failures.
                             if 'timestamp' in df.columns:
-                                dates = pd.to_datetime(df['timestamp']).dt.date
+                                def _to_naive(val):
+                                    if pd.isna(val): return val
+                                    if isinstance(val, str):
+                                        if '+' in val: val = val.split('+')[0]
+                                        if 'T' in val: val = val.replace('T', ' ')
+                                        return pd.to_datetime(val)
+                                    if hasattr(val, 'tzinfo') and val.tzinfo is not None:
+                                        return val.replace(tzinfo=None)
+                                    return pd.to_datetime(val)
+                                dates = pd.Series([_to_naive(v) for v in df['timestamp']], index=df.index).dt.date
                             else:
                                 # Fallback assuming index might be DatetimeIndex
                                 dates = pd.Series(df.index).dt.date if not isinstance(df.index, pd.DatetimeIndex) else df.index.date
@@ -361,6 +390,7 @@ class MarketService:
                                 "timestamp": datetime.datetime.now().isoformat(),
                                 "nifty_ltp": ltp,
                                 "vix": vix_ltp,
+                                "nifty_3m_atr": round(getattr(self, 'atr_3m_val', 0.0), 2),
                                 "analysis": self.analysis_data,
                                 "oi_data": {
                                     "bias": analysis.get("bias", "NEUTRAL"),
