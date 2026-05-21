@@ -89,8 +89,8 @@ class AlphaEngine:
             prev = self.history[key][-2]['data']
             curr = self.history[key][-1]['data']
             
-            call_oi_change = (curr['total_ce_oi'] - prev['total_ce_oi'])
-            put_oi_change = (curr['total_pe_oi'] - prev['total_pe_oi'])
+            call_oi_change = (curr.get('total_ce_oi', 0) - prev.get('total_ce_oi', 0))
+            put_oi_change = (curr.get('total_pe_oi', 0) - prev.get('total_pe_oi', 0))
             
             # ── ALPHA LOGIC: SHORT COVERING DETECTION ─────────────────────
             # If Call OI is DROPPING while price is RISING = Institutional Panic.
@@ -99,8 +99,8 @@ class AlphaEngine:
             reason = "Market Normal"
             
             # Normalize changes based on total OI
-            call_roc = call_oi_change / max(1, prev['total_ce_oi'])
-            put_roc = put_oi_change / max(1, prev['total_pe_oi'])
+            call_roc = call_oi_change / max(1, prev.get('total_ce_oi', 0))
+            put_roc = put_oi_change / max(1, prev.get('total_pe_oi', 0))
             
             if call_roc < -0.05: # >5% Call Unwinding in 3-5 mins
                 panic_score += 30

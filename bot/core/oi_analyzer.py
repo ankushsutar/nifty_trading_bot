@@ -83,7 +83,7 @@ class OIAnalyzer:
                         token_map[token] = {"strike": strike, "type": opt_type, "symbol": symbol}
 
             if not tokens_to_fetch:
-                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0, "total_ce_oi": 0, "total_pe_oi": 0}
 
             # 3. Batch Fetch Current Quotes (OI + LTP)
             batch_params = {"NFO": tokens_to_fetch}
@@ -93,7 +93,7 @@ class OIAnalyzer:
             
             if not response.get('status') or 'data' not in response:
                 logger.error(f"OI Batch Fetch Failed: {response}")
-                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+                return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0, "total_ce_oi": 0, "total_pe_oi": 0}
 
             fetched_data = response['data']['fetched']
             
@@ -156,7 +156,7 @@ class OIAnalyzer:
 
         except Exception as e:
             logger.error(f"OI Analysis Error: {e}")
-            return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0}
+            return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0, "total_ce_oi": 0, "total_pe_oi": 0}
 
     def get_oi_velocity(self, expiry, atm_strike):
         """

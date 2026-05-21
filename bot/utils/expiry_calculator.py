@@ -10,7 +10,7 @@ NSE_HOLIDAYS_2026 = {
     datetime.date(2026, 4, 3),    # Good Friday
     datetime.date(2026, 4, 14),   # Dr. Baba Saheb Ambedkar Jayanti
     datetime.date(2026, 5, 1),    # Maharashtra Day
-    datetime.date(2026, 5, 26),   # Bakra Eid
+    datetime.date(2026, 5, 28),   # Bakra Eid
     datetime.date(2026, 6, 26),   # Muharram
     datetime.date(2026, 9, 14),   # Ganesh Chaturthi
     datetime.date(2026, 10, 2),   # Mahatma Gandhi Jayanti

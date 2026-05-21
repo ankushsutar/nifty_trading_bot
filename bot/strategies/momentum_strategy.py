@@ -446,52 +446,59 @@ class MomentumStrategy:
                             reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
                             logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
-                        # --- INSTITUTIONAL LEVEL AWARENESS ---
-                        levels = levels_provider.get_levels()
-                        nifty_ltp = self.data_fetcher.get_ltp("99926000")
-                        is_retesting_level = False
-                        if levels and nifty_ltp:
-                            pdh = levels.get('pdh', 0)
-                            # If we are within 0.1% of PDH after a breakout, we are retesting
-                            if current_leg == "CE" and nifty_ltp > pdh and nifty_ltp < pdh * 1.002:
-                                is_retesting_level = True
-                                logger.info(f"🏛️ [Levels] Nifty is retesting PDH ({pdh}). Holding through potential bounce.")
+                        # --- INSTITUTIONAL LEVEL AWARENESS & EXIT LOGIC ---
+                        if self.active_position:
+                            levels = levels_provider.get_levels()
+                            nifty_ltp = self.data_fetcher.get_ltp("99926000")
+                            is_retesting_level = False
+                            current_leg = self.active_position['leg']
+                            current_stage = self.active_position.get('ladder_stage', 0)
+                            
+                            if levels and nifty_ltp:
+                                pdh = levels.get('pdh', 0)
+                                pdl = levels.get('pdl', 0)
+                                # If we are within 0.1% of PDH/PDL after a breakout, we are retesting
+                                if current_leg == "CE" and nifty_ltp > pdh and nifty_ltp < pdh * 1.002:
+                                    is_retesting_level = True
+                                    logger.info(f"🏛️ [Levels] Nifty is retesting PDH ({pdh}). Holding through potential bounce.")
+                                elif current_leg == "PE" and nifty_ltp < pdl and nifty_ltp > pdl * 0.998:
+                                    is_retesting_level = True
+                                    logger.info(f"🏛️ [Levels] Nifty is retesting PDL ({pdl}). Holding through potential bounce.")
 
-                        current_leg = self.active_position['leg']
-                        current_stage = self.active_position.get('ladder_stage', 0)
-                        is_exhausted = self.last_analysis.get('is_exhausted', False)
-                        
-                        # --- THE POWER-TREND EXIT LOGIC ---
-                        
-                        # 1. Exhaustion Exit (Peak Booking)
-                        if is_exhausted:
-                            logger.info(f"🔥 EXHAUSTION DETECTED (RSI Extreme). Booking 50% profit immediately to capture peak.")
-                            self.close_position("EXHAUSTION", is_partial=True)
-                        
-                        # 2. Hierarchical Reversal Exit
-                        if current_leg == "CE" and trend == "BEARISH":
-                            # If in Stage 1 or above, OR retesting a major level, we ignore 5m trend reversals
-                            if current_stage >= 1 or is_retesting_level:
-                                reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
-                                logger.info(f"Signal: 5m Trend Reversed to BEARISH, but {reason} is active. Ignoring noise.")
-                            else:
-                                # For trades not yet in profit, require 15m HTF confirmation to prevent fake-outs
-                                if htf_trend == "BEARISH":
-                                    logger.info("Signal: Trend Reversed to BEARISH (Confirmed by 15m HTF). Exiting CE.")
-                                    self.close_position("REVERSAL")
+                            is_exhausted = self.last_analysis.get('is_exhausted', False)
+                            
+                            # --- THE POWER-TREND EXIT LOGIC ---
+                            
+                            # 1. Exhaustion Exit (Peak Booking)
+                            if is_exhausted:
+                                logger.info(f"🔥 EXHAUSTION DETECTED (RSI Extreme). Booking 50% profit immediately to capture peak.")
+                                half_qty = max(1, self.active_position['qty'] // 2)
+                                self.close_position("EXHAUSTION", override_qty=half_qty)
+                            
+                            # 2. Hierarchical Reversal Exit
+                            if current_leg == "CE" and trend == "BEARISH":
+                                # If in Stage 1 or above, OR retesting a major level, we ignore 5m trend reversals
+                                if current_stage >= 1 or is_retesting_level:
+                                    reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
+                                    logger.info(f"Signal: 5m Trend Reversed to BEARISH, but {reason} is active. Ignoring noise.")
                                 else:
-                                    logger.info(f"Signal: 5m Trend Reversed to BEARISH, but 15m HTF is still {htf_trend}. Keeping CE.")
+                                    # For trades not yet in profit, require 15m HTF confirmation to prevent fake-outs
+                                    if htf_trend == "BEARISH":
+                                        logger.info("Signal: Trend Reversed to BEARISH (Confirmed by 15m HTF). Exiting CE.")
+                                        self.close_position("REVERSAL")
+                                    else:
+                                        logger.info(f"Signal: 5m Trend Reversed to BEARISH, but 15m HTF is still {htf_trend}. Keeping CE.")
 
-                        elif current_leg == "PE" and trend == "BULLISH":
-                            if current_stage >= 1 or is_retesting_level:
-                                reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
-                                logger.info(f"Signal: 5m Trend Reversed to BULLISH, but {reason} is active. Ignoring noise.")
-                            else:
-                                if htf_trend == "BULLISH":
-                                    logger.info("Signal: Trend Reversed to BULLISH (Confirmed by 15m HTF). Exiting PE.")
-                                    self.close_position("REVERSAL")
+                            elif current_leg == "PE" and trend == "BULLISH":
+                                if current_stage >= 1 or is_retesting_level:
+                                    reason = f"Stage {current_stage}" if current_stage >= 1 else "Level Retest"
+                                    logger.info(f"Signal: 5m Trend Reversed to BULLISH, but {reason} is active. Ignoring noise.")
                                 else:
-                                    logger.info(f"Signal: 5m Trend Reversed to BULLISH, but 15m HTF is still {htf_trend}. Keeping PE.")
+                                    if htf_trend == "BULLISH":
+                                        logger.info("Signal: Trend Reversed to BULLISH (Confirmed by 15m HTF). Exiting PE.")
+                                        self.close_position("REVERSAL")
+                                    else:
+                                        logger.info(f"Signal: 5m Trend Reversed to BULLISH, but 15m HTF is still {htf_trend}. Keeping PE.")
 
                     now = datetime.datetime.now()
                     minute = now.minute
@@ -1137,7 +1144,7 @@ class MomentumStrategy:
                 # IMPORTANT: Update Broker SL for the NEW total quantity
                 sl_oid = self.active_position.get('sl_order_id')
                 if sl_oid and not self.dry_run:
-                    self.order_manager.modify_sl_order(sl_oid, self.active_position['sl_price'], symbol, token, new_qty, leg="CE" if leg == "CE" else "PE")
+                    self.order_manager.modify_sl_order(sl_oid, self.active_position['sl_price'], symbol, token, new_qty)
                 
                 logger.info(f"🚀 SCALE-IN COMPLETE: New Qty={new_qty} | New Avg={self.active_position['entry_price']}")
                 return
