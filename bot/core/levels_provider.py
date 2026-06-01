@@ -1,4 +1,6 @@
 import datetime
+import os
+import json
 import pandas as pd
 from bot.core.data_fetcher import DataFetcher
 from bot.utils.logger import logger
@@ -16,16 +18,41 @@ class LevelsProvider:
     def get_levels(self):
         """
         Returns institutional levels (Camarilla + PDH/L/C) for the current session.
-        Caches results per date to avoid redundant API calls.
+        Caches results per date (both in-memory and on disk) to avoid redundant API calls.
         """
         today = datetime.datetime.now().date()
+        today_str = str(today)
+
+        # 1. Check in-memory cache
         if today in self._levels_cache:
             return self._levels_cache[today]
+
+        # 2. Check disk cache
+        levels_file = "data/institutional_levels.json"
+        if os.path.exists(levels_file):
+            try:
+                with open(levels_file, "r") as f:
+                    cached_data = json.load(f)
+                    if cached_data.get("date") == today_str:
+                        levels = cached_data.get("levels")
+                        self._levels_cache[today] = levels
+                        logger.info(f"[Levels] Loaded from disk cache for {today_str}: {levels}")
+                        return levels
+            except Exception as e:
+                logger.warning(f"[Levels] Failed to read disk cache: {e}")
 
         logger.info(f">>> [Levels] 🏛️ Calculating Institutional Levels for {today}...")
         levels = self._calculate_levels()
         if levels:
             self._levels_cache[today] = levels
+            # Save to disk cache
+            try:
+                os.makedirs("data", exist_ok=True)
+                with open(levels_file, "w") as f:
+                    json.dump({"date": today_str, "levels": levels}, f)
+                logger.info(f"[Levels] Institutional Levels cached to disk for {today_str}")
+            except Exception as e:
+                logger.warning(f"[Levels] Failed to write disk cache: {e}")
         return levels
 
     def _calculate_levels(self):

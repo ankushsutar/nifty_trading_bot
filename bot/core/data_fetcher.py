@@ -83,9 +83,10 @@ class DataFetcher:
         Priority: WebSocket ring-buffer (ONE_MINUTE) → In-Memory Cache → Disk Cache → REST.
         Uses in-flight deduplication so only ONE REST call fires per token+interval.
         """
-        # 0. WebSocket Fast Path for ONE_MINUTE (ORB/OHL opening range)
-        # market_feed builds 1-min candles from ticks in real-time — no REST needed.
-        if interval in ["ONE_MINUTE"]:
+        # 0. WebSocket Fast Path (ORB/OHL/Active Strategy Loops)
+        # market_feed builds 1-min and 5-min candles from ticks in real-time — no REST needed.
+        if interval in ["ONE_MINUTE", "FIVE_MINUTE"]:
+
             try:
                 from bot.core.market_feed import market_feed
                 if interval == "ONE_MINUTE":
@@ -146,190 +147,180 @@ class DataFetcher:
                 return self._merge_live_candle(cached_df.copy(), symbol_token, interval)
             return None  # leader failed — return None gracefully
 
-        # --- ARCHITECTURAL ENFORCEMENT: Master Fetcher Only ---
-        process_type = os.getenv("PROCESS_TYPE", "BOT")
-        if process_type != "BACKEND":
-            # CHILD/BOT PROCESS: STRICTLY PROHIBITED from calling getCandleData.
-            # It must poll the disk cache for up to 30s, assuming the BACKEND is fetching it.
-            logger.warning(f"DataFetcher [CHILD]: Blocked REST fetch for {cache_key}. Polling shared disk cache for up to 30s...")
-            start_poll = time.time()
-            while time.time() - start_poll < 30:  # FIX: lowered from 120s to 30s
-                disk_data = self._read_disk_cache(cache_key, force_fresh=True)
-                if disk_data is not None:
-                    logger.info(f"DataFetcher [CHILD]: Found Shared Data for {cache_key} after polling.")
-                    self.data_cache[cache_key] = (time.time(), disk_data)
-                    # Release in-flight lock for any other local threads
-                    with self._inflight_lock_guard:
-                        ev = self._inflight_locks.pop(cache_key, None)
-                    if ev: ev.set()
-                    return self._merge_live_candle(disk_data, symbol_token, interval)
-                time.sleep(2)
-            
-            logger.error(f"DataFetcher [CHILD]: Timeout (30s) waiting for BACKEND to populate {cache_key}. Falling back to stale data.")
-            with self._inflight_lock_guard:
-                ev = self._inflight_locks.pop(cache_key, None)
-            if ev: ev.set()
-            
-            # Emergency fallback: use any available cache for up to 4 hours if backend timed out
-            stale_data = self._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
-            if stale_data is not None:
-                logger.warning(f"DataFetcher [CHILD]: Using STALE data for {cache_key} (up to 4h fallback).")
-                return self._merge_live_candle(stale_data, symbol_token, interval)
+        # We are the leader!
+        try:
+            # --- ARCHITECTURAL ENFORCEMENT: Master Fetcher Only ---
+            process_type = os.getenv("PROCESS_TYPE", "BOT")
+            if process_type != "BACKEND":
+                # CHILD/BOT PROCESS: STRICTLY PROHIBITED from calling getCandleData.
+                # It must poll the disk cache for up to 30s, assuming the BACKEND is fetching it.
+                logger.warning(f"DataFetcher [CHILD]: Blocked REST fetch for {cache_key}. Polling shared disk cache for up to 30s...")
+                start_poll = time.time()
+                while time.time() - start_poll < 30:  # FIX: lowered from 120s to 30s
+                    disk_data = self._read_disk_cache(cache_key, force_fresh=True)
+                    if disk_data is not None:
+                        logger.info(f"DataFetcher [CHILD]: Found Shared Data for {cache_key} after polling.")
+                        self.data_cache[cache_key] = (time.time(), disk_data)
+                        return self._merge_live_candle(disk_data, symbol_token, interval)
+                    time.sleep(2)
                 
-            return None
+                logger.error(f"DataFetcher [CHILD]: Timeout (30s) waiting for BACKEND to populate {cache_key}. Falling back to stale data.")
+                
+                # Emergency fallback: use any available cache for up to 4 hours if backend timed out
+                stale_data = self._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
+                if stale_data is not None:
+                    logger.warning(f"DataFetcher [CHILD]: Using STALE data for {cache_key} (up to 4h fallback).")
+                    return self._merge_live_candle(stale_data, symbol_token, interval)
+                    
+                return None
 
-        # BACKEND PROCESS (MASTER): Proceed with REST Fetch
-        max_retries = 3
-        now = datetime.datetime.now()
-        
-        # --- TIMESTAMP ALIGNMENT FIX (AB1004) ---
-        # Angel One requires todate to be aligned with the interval boundary.
-        # e.g. For 5-min candles, it MUST be 13:00, 13:05, etc.
-        interval_map = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "ONE_MINUTE": 1}
-        mins = interval_map.get(interval, 5)
-        
-        aligned_to = self._align_to_interval(now, mins)
-        
-        # --- FIX: Shift back by 1 minute to avoid requesting unfinalized candles ---
-        # Requesting a candle exactly at its boundary can trigger AB1004/TooManyRequests
-        # if the broker's historical DB hasn't finalized it yet.
-        aligned_to = aligned_to - datetime.timedelta(minutes=1)
-        
-        # Default start time: 24 hours ago (ensures enough candles for indicators)
-        aligned_from = aligned_to - datetime.timedelta(days=days)
+            # BACKEND PROCESS (MASTER): Proceed with REST Fetch
+            max_retries = 3
+            now = datetime.datetime.now()
             
-        # Optimization: For intraday (days=1), ensure we have at least ~50 candles 
-        # to prime indicators (EMA, ADX, RSI) properly even at 09:15 AM.
-        if days == 1:
-            # For intraday analysis, we always want at least 24 hours of data 
-            # to include yesterday's session for indicator priming (EMA, ADX).
-            # We fetch from 09:15 AM of the PREVIOUS trading day.
-            prev_day = now.date() - datetime.timedelta(days=1)
-            while not is_trading_day(prev_day):
-                prev_day -= datetime.timedelta(days=1)
+            # --- TIMESTAMP ALIGNMENT FIX (AB1004) ---
+            # Angel One requires todate to be aligned with the interval boundary.
+            # e.g. For 5-min candles, it MUST be 13:00, 13:05, etc.
+            interval_map = {"FIVE_MINUTE": 5, "FIFTEEN_MINUTE": 15, "ONE_MINUTE": 1}
+            mins = interval_map.get(interval, 5)
             
-            aligned_from = datetime.datetime.combine(prev_day, datetime.time(9, 15))
-        else:
-            # For larger requests, use the standard timedelta
+            aligned_to = self._align_to_interval(now, mins)
+            
+            # --- FIX: Shift back by 1 minute to avoid requesting unfinalized candles ---
+            # Requesting a candle exactly at its boundary can trigger AB1004/TooManyRequests
+            # if the broker's historical DB hasn't finalized it yet.
+            aligned_to = aligned_to - datetime.timedelta(minutes=1)
+            
+            # Default start time: 24 hours ago (ensures enough candles for indicators)
             aligned_from = aligned_to - datetime.timedelta(days=days)
-            
-        from_date = aligned_from.strftime("%Y-%m-%d %H:%M")
-        to_date = aligned_to.strftime("%Y-%m-%d %H:%M")
-
-        historicParam = {
-            "exchange": exchange,
-            "symboltoken": symbol_token,
-            "interval": interval,
-            "fromdate": from_date,
-            "todate": to_date
-        }
-
-
-        for attempt in range(max_retries):
-            # Aggressive Time Alignment on subsequent attempts
-            current_aligned_to = aligned_to
-            if attempt > 0:
-                current_aligned_to = aligned_to - datetime.timedelta(minutes=mins * attempt)
-                historicParam["todate"] = current_aligned_to.strftime("%Y-%m-%d %H:%M")
-
-            try:
-                from bot.utils.rate_limiter import rate_limiter
-                rate_limiter.wait()
                 
-                response = self.api.getCandleData(historicParam)
+            # Optimization: For intraday (days=1), ensure we have at least ~50 candles 
+            # to prime indicators (EMA, ADX, RSI) properly even at 09:15 AM.
+            if days == 1:
+                # For intraday analysis, we always want at least 24 hours of data 
+                # to include yesterday's session for indicator priming (EMA, ADX).
+                # We fetch from 09:15 AM of the PREVIOUS trading day.
+                prev_day = now.date() - datetime.timedelta(days=1)
+                while not is_trading_day(prev_day):
+                    prev_day -= datetime.timedelta(days=1)
                 
-                if response and response.get('status') and response.get('data'):
-                    columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
-                    df = pd.DataFrame(response['data'], columns=columns)
-                    
-                    if df.empty:
-                        logger.warning(f"Fetch Candles Success but EMPTY data for {symbol_token}")
-                        return None
+                aligned_from = datetime.datetime.combine(prev_day, datetime.time(9, 15))
+            else:
+                # For larger requests, use the standard timedelta
+                aligned_from = aligned_to - datetime.timedelta(days=days)
+                
+            from_date = aligned_from.strftime("%Y-%m-%d %H:%M")
+            to_date = aligned_to.strftime("%Y-%m-%d %H:%M")
 
-                    df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
+            historicParam = {
+                "exchange": exchange,
+                "symboltoken": symbol_token,
+                "interval": interval,
+                "fromdate": from_date,
+                "todate": to_date
+            }
+
+            for attempt in range(max_retries):
+                # Aggressive Time Alignment on subsequent attempts
+                current_aligned_to = aligned_to
+                if attempt > 0:
+                    current_aligned_to = aligned_to - datetime.timedelta(minutes=mins * attempt)
+                    historicParam["todate"] = current_aligned_to.strftime("%Y-%m-%d %H:%M")
+
+                try:
+                    from bot.utils.rate_limiter import rate_limiter
+                    rate_limiter.wait()
                     
-                    self.data_cache[cache_key] = (time.time(), df)
-                    self._write_disk_cache(cache_key, df)
-                    # Release in-flight lock so waiting threads get the cached result
-                    with self._inflight_lock_guard:
-                        ev = self._inflight_locks.pop(cache_key, None)
-                    if ev:
-                        ev.set()
-                    return self._merge_live_candle(df, symbol_token, interval)
-                if not response.get('status'):
-                    err_msg = str(response.get('message', ''))
-                    err_code = str(response.get('errorcode', ''))
+                    response = self.api.getCandleData(historicParam)
                     
-                    if err_code == 'AB1004' or "TooManyRequests" in err_msg:
-                        logger.critical(f"🛑 [CRITICAL] AB1004 Rate Limit Hit for {symbol_token}. Triggering 60s Circuit Breaker.")
+                    if response and response.get('status') and response.get('data'):
+                        columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                        df = pd.DataFrame(response['data'], columns=columns)
+                        
+                        if df.empty:
+                            logger.warning(f"Fetch Candles Success but EMPTY data for {symbol_token}")
+                            return None
+
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].apply(pd.to_numeric)
+                        
+                        self.data_cache[cache_key] = (time.time(), df)
+                        self._write_disk_cache(cache_key, df)
+                        return self._merge_live_candle(df, symbol_token, interval)
+                    if not response.get('status'):
+                        err_msg = str(response.get('message', ''))
+                        err_code = str(response.get('errorcode', ''))
+                        
+                        if err_code == 'AB1004' or "TooManyRequests" in err_msg:
+                            logger.critical(f"🛑 [CRITICAL] AB1004 Rate Limit Hit for {symbol_token}. Triggering 60s Circuit Breaker.")
+                            self._ab1004_cooldowns[symbol_token] = time.time()
+                            from bot.utils.rate_limiter import rate_limiter
+                            # Trigger 60s penalty to prevent global starvation while the token cools down
+                            rate_limiter.trigger_circuit_breaker(60)
+                            return None # STOP RETRYING immediately for AB1004
+
+                        if attempt < max_retries - 1:
+                            import random
+                            sleep_time = (attempt + 1) * 3 + random.uniform(1.0, 5.0)
+                            logger.warning(f"Fetch Candles Failed (Attempt {attempt+1}): {response}. Retrying in {sleep_time:.2f}s...")
+                            time.sleep(sleep_time)
+                            continue
+                        else:
+                            logger.error(f"Fetch Candles Final Failure: {response}")
+                            return None
+                
+                except Exception as e:
+                    err_str = str(e)
+                    if any(term in err_str for term in ["AB1004", "TooManyRequests", "Access denied", "exceeding access rate"]):
+                        logger.critical(f"🛑 [CRITICAL] Rate Limit Exception for {symbol_token}: {err_str}. Triggering 60s Circuit Breaker.")
                         self._ab1004_cooldowns[symbol_token] = time.time()
                         from bot.utils.rate_limiter import rate_limiter
-                        # Trigger 60s penalty to prevent global starvation while the token cools down
                         rate_limiter.trigger_circuit_breaker(60)
-                        return None # STOP RETRYING immediately for AB1004
+                        return None # Critical: Do not continue loop
+                    
+                    logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
+                    
+                    # --- SESSION RELOAD CHECK ---
+                    # If we encounter an error, check if the session file has been updated (by MarketService)
+                    try:
+                        session_file = os.path.join(os.getcwd(), "data", "session.json")
+                        if os.path.exists(session_file):
+                            file_mtime = os.path.getmtime(session_file)
+                            if file_mtime > self.last_session_check:
+                                logger.info(">>> [DataFetcher] Deteced New Session File! Reloading API... 🔄")
+                                from bot.core.angel_connect import get_angel_session
+                                new_api = get_angel_session()
+                                if new_api:
+                                    self.api = new_api
+                                    self.last_session_check = time.time()
+                                    logger.info(">>> [DataFetcher] API Instance Reloaded Successfully.")
+                    except Exception as ex:
+                        logger.warning(f"Session Reload Check Failed: {ex}")
+                    # -----------------------------
 
-                    if attempt < max_retries - 1:
-                        import random
-                        sleep_time = (attempt + 1) * 3 + random.uniform(1.0, 5.0)
-                        logger.warning(f"Fetch Candles Failed (Attempt {attempt+1}): {response}. Retrying in {sleep_time:.2f}s...")
-                        time.sleep(sleep_time)
-                        continue
-                    else:
-                        logger.error(f"Fetch Candles Final Failure: {response}")
-                        return None
-            
-            except Exception as e:
-                err_str = str(e)
-                if any(term in err_str for term in ["AB1004", "TooManyRequests", "Access denied", "exceeding access rate"]):
-                    logger.critical(f"🛑 [CRITICAL] Rate Limit Exception for {symbol_token}: {err_str}. Triggering 60s Circuit Breaker.")
-                    from bot.utils.rate_limiter import rate_limiter
-                    rate_limiter.trigger_circuit_breaker(60)
-                    return None # Critical: Do not continue loop
-                
-                logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
-                
-                # --- SESSION RELOAD CHECK ---
-                # If we encounter an error, check if the session file has been updated (by MarketService)
-                try:
-                    session_file = os.path.join(os.getcwd(), "data", "session.json")
-                    if os.path.exists(session_file):
-                        file_mtime = os.path.getmtime(session_file)
-                        if file_mtime > self.last_session_check:
-                            logger.info(">>> [DataFetcher] Deteced New Session File! Reloading API... 🔄")
-                            from bot.core.angel_connect import get_angel_session
-                            new_api = get_angel_session()
-                            if new_api:
-                                self.api = new_api
-                                self.last_session_check = time.time()
-                                logger.info(">>> [DataFetcher] API Instance Reloaded Successfully.")
-                except Exception as ex:
-                    logger.warning(f"Session Reload Check Failed: {ex}")
-                # -----------------------------
+                if attempt < max_retries - 1:
+                    import random
+                    sleep_time = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
+                    logger.info(f"Retrying Candle Fetch in {sleep_time:.2f}s...")
+                    time.sleep(sleep_time)
 
-            if attempt < max_retries - 1:
-                import random
-                sleep_time = (attempt + 1) * 2 + random.uniform(0.5, 1.5)
-                logger.info(f"Retrying Candle Fetch in {sleep_time:.2f}s...")
-                time.sleep(sleep_time)
+            # --- OPTIMISTIC FALLBACK ---
+            # If all retries fail, check if we have ANY data in disk/memory cache 
+            # that is not TOO old (e.g. < 10 mins)
+            stale_data = self._read_disk_cache(cache_key, force_fresh=False)
+            if stale_data is not None:
+                 logger.warning(f"!!! [System] All retries failed. Returning STALE cached data for {symbol_token} as fallback.")
+                 result = self._merge_live_candle(stale_data, symbol_token, interval)
+            else:
+                 result = None
 
-        # --- OPTIMISTIC FALLBACK ---
-        # If all retries fail, check if we have ANY data in disk/memory cache 
-        # that is not TOO old (e.g. < 10 mins)
-        stale_data = self._read_disk_cache(cache_key, force_fresh=False)
-        if stale_data is not None:
-             logger.warning(f"!!! [System] All retries failed. Returning STALE cached data for {symbol_token} as fallback.")
-             result = self._merge_live_candle(stale_data, symbol_token, interval)
-        else:
-             result = None
+            return result
 
-        # Always release the in-flight lock so waiting threads unblock
-        with self._inflight_lock_guard:
-            ev = self._inflight_locks.pop(cache_key, None)
-        if ev:
-            ev.set()
-
-        return result
+        finally:
+            with self._inflight_lock_guard:
+                ev = self._inflight_locks.pop(cache_key, None)
+            if ev:
+                ev.set()
 
     def _merge_live_candle(self, df, token, interval):
         """Appends real-time forming candle from MarketFeed if available."""
