@@ -111,7 +111,10 @@ class StraddleScalpStrategy:
                 logger.warning("Straddle Scalp: 🛑 Market Closed. Exiting.")
                 break
             if not self.gatekeeper.check_max_daily_loss(0.0):
-                logger.critical("Straddle Scalp: 🛑 Max Daily Loss hit. Halting.")
+                if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                    logger.critical("Straddle Scalp: 🛑 Profit Protection locked. Halting.")
+                else:
+                    logger.critical("Straddle Scalp: 🛑 Max Daily Loss hit. Halting.")
                 break
 
             # Both legs open → monitor until exit condition

@@ -219,7 +219,10 @@ class MomentumStrategy:
             logger.info("Momentum: ⏸️ Execution Suspended - Mid-day Blackout.")
             return
         if not self.gatekeeper.check_max_daily_loss(0.0):
-            logger.critical("Momentum: 🛑 Execution Blocked - Max Daily Loss reached.")
+            if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                logger.critical("Momentum: 🛑 Execution Blocked - Profit Protection locked.")
+            else:
+                logger.critical("Momentum: 🛑 Execution Blocked - Max Daily Loss reached.")
             return
 
         if not self.gatekeeper.check_funds(required_margin_per_lot=5000): return
@@ -291,8 +294,12 @@ class MomentumStrategy:
                                 pass
                             # Global Safety Check (Realized + This Unrealized)
                             if not self.gatekeeper.check_max_daily_loss(curr_unrealized_pnl):
-                                logger.critical(f"🛑 EMERGENCY EXIT: Global Loss Limit Breached.")
-                                self.close_position("MAX_DAILY_LOSS")
+                                if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                                    logger.critical(f"🛑 EMERGENCY EXIT: Profit Protection Triggered.")
+                                    self.close_position("PROFIT_PROTECTION")
+                                else:
+                                    logger.critical(f"🛑 EMERGENCY EXIT: Global Loss Limit Breached.")
+                                    self.close_position("MAX_DAILY_LOSS")
                                 break
                     except Exception as e:
                         logger.error(f"Global Safety Check Error: {e}")

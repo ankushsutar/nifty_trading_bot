@@ -164,7 +164,10 @@ class GammaBlastStrategy:
                 time.sleep(60)
                 continue
             if not self.gatekeeper.check_max_daily_loss(0.0):
-                logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
+                if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                    logger.critical("Gamma Blast: 🛑 Execution Blocked - Profit Protection locked.")
+                else:
+                    logger.critical("Gamma Blast: 🛑 Execution Blocked - Max Daily Loss reached.")
                 break
 
             # Post-SL cooldown: wait 5 min before re-entering after a stop-loss hit.
@@ -723,8 +726,12 @@ class GammaBlastStrategy:
                 # ── Global kill switch ────────────────────────────────────
                 unrealized_pnl = (ltp - entry_price) * remaining_qty
                 if not self.gatekeeper.check_max_daily_loss(unrealized_pnl):
-                    logger.critical("🛑 EMERGENCY: Account Daily Loss Limit Breach in Gamma Blast!")
-                    self.exit_market(token, symbol, remaining_qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
+                    if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                        logger.critical("🛑 EMERGENCY: Profit Protection Circuit Locked in Gamma Blast!")
+                        self.exit_market(token, symbol, remaining_qty, "PROFIT_PROTECTION", trade_id, sl_oid)
+                    else:
+                        logger.critical("🛑 EMERGENCY: Account Daily Loss Limit Breach in Gamma Blast!")
+                        self.exit_market(token, symbol, remaining_qty, "MAX_DAILY_LOSS", trade_id, sl_oid)
                     break
 
                 # ── Trend-fade check + status heartbeat (throttled to every 30s) ──

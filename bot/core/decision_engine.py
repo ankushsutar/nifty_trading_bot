@@ -44,9 +44,14 @@ class DecisionEngine:
             logger.info(">>> [Brain] ⏸️ Decision Suspended: System in mid-day Blackout.")
             return None, 1.0
 
-        # Rule C: Max Daily Loss Limit
+        # Rule C: Max Daily Loss Limit & Profit Protection Check
         if not self.gatekeeper.check_max_daily_loss(active_unrealized_pnl=0.0):
-             logger.critical(">>> [Brain] 🛑 Decision Blocked: Max Daily Loss reached.")
+             if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                  logger.critical(">>> [Brain] 🛑 Decision Blocked: Profit Protection has locked the session.")
+             else:
+                  logger.critical(">>> [Brain] 🛑 Decision Blocked: Max Daily Loss reached.")
+             from bot.core.kill_switch import activate_kill_switch
+             activate_kill_switch()
              return None, 1.0
 
         # Rule D: Daily Trade Limit Check (DB-backed, limit from capital tier)
@@ -70,6 +75,8 @@ class DecisionEngine:
                 f">>> [Brain] 🛑 Daily trade limit reached "
                 f"({trades_today}/{tier.max_trades_per_day}) [{tier.name} tier]. No new entries."
             )
+            from bot.core.kill_switch import activate_kill_switch
+            activate_kill_switch()
             return None, 1.0
 
         # 0b. Consecutive Loss Circuit Breaker — halts after tier-defined consecutive losses
@@ -85,6 +92,8 @@ class DecisionEngine:
                         f">>> [Brain] 🛑 CONSECUTIVE LOSS BREAKER: {MAX_CONSECUTIVE_LOSSES} losses in a row "
                         f"(₹{total_loss:.0f}). Halting for the day. Manual reset required."
                     )
+                    from bot.core.kill_switch import activate_kill_switch
+                    activate_kill_switch()
                     return None, 1.0
         except Exception:
             pass  # Fail open — don't block on DB error
@@ -300,7 +309,7 @@ class DecisionEngine:
             logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
             selected_strategy = "GAMMA_BLAST"
 
-        elif adx > 25:
+        elif adx >= 25:
             # NORMAL TRENDING
             selected_strategy = "MOMENTUM"
         
@@ -310,7 +319,7 @@ class DecisionEngine:
             
         elif adx < 18:
             # Range-Bound Regime
-            selected_strategy = "SELLING"
+            selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else "STRADDLE_SCALP"
         else:
             # Transition Phase
             selected_strategy = "STRADDLE_SCALP"

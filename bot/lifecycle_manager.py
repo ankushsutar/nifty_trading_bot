@@ -144,6 +144,23 @@ class LifecycleManager:
 
         try:
             while self.running:
+                # Check for global kill switch (.stop_signal)
+                from bot.core.kill_switch import is_kill_switch_active
+                if is_kill_switch_active():
+                    self.log("🛑 Global Stop Signal (.stop_signal) active. Terminating and shutting down...")
+                    self.running = False
+                    if self.current_process:
+                        self.log("Terminating current strategy process...")
+                        self.current_process.terminate()
+                        self.current_process.wait()
+                        self.current_process = None
+                    if self.selling_process:
+                        self.log("Terminating selling engine process...")
+                        self.selling_process.terminate()
+                        self.selling_process.wait()
+                        self.selling_process = None
+                    break
+
                 now = datetime.datetime.now().time()
                 today = datetime.date.today()
 

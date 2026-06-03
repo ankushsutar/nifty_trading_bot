@@ -119,6 +119,11 @@ def run_bot():
                 os.remove(".kill_trading_bot")
                 return
 
+            from bot.core.kill_switch import is_kill_switch_active
+            if is_kill_switch_active():
+                logger.info(">>> [Auto] 🛑 Stop Signal/Kill Switch Active (.stop_signal). Exiting gracefully.")
+                return
+
             selected_strategy, risk_multiplier = engine.analyze_and_select()
             
             if selected_strategy:

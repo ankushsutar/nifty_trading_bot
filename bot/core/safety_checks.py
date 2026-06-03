@@ -16,6 +16,7 @@ class SafetyGatekeeper:
         self.dry_run = dry_run
         self.cached_rms = None
         self.last_rms_time = 0
+        self.last_breaker_triggered = None
 
     def is_market_open(self):
         """
@@ -188,16 +189,46 @@ class SafetyGatekeeper:
                 with open(stats_file, "r") as f:
                     stats = json.load(f)
             
-            day_stats = stats.get(today, {"peak_profit": 0.0, "last_updated": 0})
-            if current_total_pnl > day_stats["peak_profit"]:
-                day_stats["peak_profit"] = round(current_total_pnl, 2)
-                day_stats["last_updated"] = time.time()
+            day_stats = stats.setdefault(today, {})
+            mode_key = "paper" if self.dry_run else "live"
+            
+            # Migration check: if top-level keys exist in day_stats, migrate them
+            if "starting_capital" in day_stats or "peak_profit" in day_stats:
+                old_cap = day_stats.pop("starting_capital", 0.0)
+                old_peak = day_stats.pop("peak_profit", 0.0)
+                old_lu = day_stats.pop("last_updated", 0)
+                day_stats[mode_key] = {
+                    "starting_capital": old_cap,
+                    "peak_profit": old_peak,
+                    "last_updated": old_lu
+                }
                 stats[today] = day_stats
+                os.makedirs(os.path.dirname(stats_file), exist_ok=True)
                 with open(stats_file, "w") as f:
                     json.dump(stats, f)
-                logger.info(f">>> [Gatekeeper] 🏆 New Peak Profit Reached: ₹{day_stats['peak_profit']:.2f}")
+                logger.info(f">>> [Gatekeeper] Migrated session stats to mode-isolated structure (track_peak_profit).")
+
+            if mode_key not in day_stats or not isinstance(day_stats[mode_key], dict):
+                day_stats[mode_key] = {
+                    "starting_capital": 0.0,
+                    "peak_profit": 0.0,
+                    "last_updated": 0
+                }
             
-            return day_stats["peak_profit"]
+            mode_stats = day_stats[mode_key]
+            
+            if current_total_pnl > mode_stats["peak_profit"]:
+                mode_stats["peak_profit"] = round(current_total_pnl, 2)
+                mode_stats["last_updated"] = time.time()
+                day_stats[mode_key] = mode_stats
+                stats[today] = day_stats
+                
+                os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+                with open(stats_file, "w") as f:
+                    json.dump(stats, f)
+                logger.info(f">>> [Gatekeeper] 🏆 New Peak Profit Reached ({mode_key}): ₹{mode_stats['peak_profit']:.2f}")
+            
+            return mode_stats["peak_profit"]
         except Exception as e:
             logger.error(f"Error tracking peak profit: {e}")
             return 0.0
@@ -239,6 +270,7 @@ class SafetyGatekeeper:
                 logger.critical(f">>> [Gatekeeper] 🛡️ PROFIT PROTECTION TRIGGERED!")
                 logger.critical(f"    Peak Profit: ₹{peak:.2f} | Current: ₹{total_pnl:.2f} | Floor: ₹{min_allowed_pnl:.2f}")
                 logger.critical("    Stopping to preserve remaining gains. Pro-Trader Mode: Locked.")
+                self.last_breaker_triggered = "PROFIT_PROTECTION"
                 return False
         return True
 
@@ -256,32 +288,54 @@ class SafetyGatekeeper:
                 with open(stats_file, "r") as f:
                     stats = json.load(f)
             
-            day_stats = stats.get(today, {})
-            starting_capital = day_stats.get("starting_capital", 0.0)
+            day_stats = stats.setdefault(today, {})
+            mode_key = "paper" if self.dry_run else "live"
+            
+            # Migration check: if top-level keys exist in day_stats, migrate them
+            if "starting_capital" in day_stats or "peak_profit" in day_stats:
+                old_cap = day_stats.pop("starting_capital", 0.0)
+                old_peak = day_stats.pop("peak_profit", 0.0)
+                old_lu = day_stats.pop("last_updated", 0)
+                day_stats[mode_key] = {
+                    "starting_capital": old_cap,
+                    "peak_profit": old_peak,
+                    "last_updated": old_lu
+                }
+                stats[today] = day_stats
+                os.makedirs(os.path.dirname(stats_file), exist_ok=True)
+                with open(stats_file, "w") as f:
+                    json.dump(stats, f)
+                logger.info(f">>> [Gatekeeper] Migrated session stats to mode-isolated structure (get_starting_capital).")
+
+            if mode_key not in day_stats or not isinstance(day_stats[mode_key], dict):
+                day_stats[mode_key] = {
+                    "starting_capital": 0.0,
+                    "peak_profit": 0.0,
+                    "last_updated": 0
+                }
+            
+            mode_stats = day_stats[mode_key]
+            starting_capital = mode_stats.get("starting_capital", 0.0)
             
             if starting_capital <= 0.0:
                 # First time running today — fetch current capital as starting capital
                 current_cap = self.get_current_capital()
                 if current_cap > 0.0:
                     starting_capital = round(current_cap, 2)
-                    day_stats["starting_capital"] = starting_capital
-                    # Preserve existing fields in day_stats like peak_profit if they exist
-                    if "peak_profit" not in day_stats:
-                        day_stats["peak_profit"] = 0.0
-                    if "last_updated" not in day_stats:
-                        day_stats["last_updated"] = 0
+                    mode_stats["starting_capital"] = starting_capital
+                    day_stats[mode_key] = mode_stats
                     stats[today] = day_stats
                     
                     # Ensure directory exists
                     os.makedirs(os.path.dirname(stats_file), exist_ok=True)
                     with open(stats_file, "w") as f:
                         json.dump(stats, f)
-                    logger.info(f">>> [Gatekeeper] 📈 Initialized Starting Capital for today: ₹{starting_capital:,.2f}")
+                    logger.info(f">>> [Gatekeeper] 📈 Initialized Starting Capital for today ({mode_key}): ₹{starting_capital:,.2f}")
                 else:
                     # Fallback to simulation/default capital if fetch fails
                     from bot.config.settings import Config
                     starting_capital = float(Config.SIMULATION_CAPITAL)
-                    logger.warning(f">>> [Gatekeeper] Fetch failed. Using simulation fallback for starting capital: ₹{starting_capital:,.2f}")
+                    logger.warning(f">>> [Gatekeeper] Fetch failed. Using simulation fallback for starting capital ({mode_key}): ₹{starting_capital:,.2f}")
             
             return starting_capital
         except Exception as e:
@@ -294,6 +348,7 @@ class SafetyGatekeeper:
         Rule: Stop trading if (Realized + Unrealized) loss exceeds tier daily loss limit.
         Limit is a percentage of starting capital — scales automatically with account size.
         """
+        self.last_breaker_triggered = None
         from bot.config.settings import Config
         starting_capital = self.get_starting_capital()
         tier             = Config.get_tier(starting_capital)
@@ -304,6 +359,7 @@ class SafetyGatekeeper:
 
         # First check profit protection
         if not self.check_profit_protection(active_unrealized_pnl):
+            # self.last_breaker_triggered is set inside check_profit_protection
             return False
 
         if total_pnl <= max_loss:
@@ -313,6 +369,7 @@ class SafetyGatekeeper:
                 f"Total: ₹{total_pnl:.2f} | Limit: ₹{max_loss:.2f} ({tier.max_daily_loss_pct*100:.0f}%)"
             )
             logger.critical("    Halting Operations.")
+            self.last_breaker_triggered = "MAX_DAILY_LOSS"
             return False
         return True
 

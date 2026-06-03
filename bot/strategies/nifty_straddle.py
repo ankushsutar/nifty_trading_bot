@@ -55,7 +55,10 @@ class NiftyStrategy:
             logger.info("Straddle: ⏸️ Execution Suspended - Mid-day Blackout.")
             return
         if not self.gatekeeper.check_max_daily_loss(0.0):
-            logger.critical("Straddle: 🛑 Execution Blocked - Max Daily Loss reached.")
+            if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                logger.critical("Straddle: 🛑 Execution Blocked - Profit Protection locked.")
+            else:
+                logger.critical("Straddle: 🛑 Execution Blocked - Max Daily Loss reached.")
             return
         if not self.gatekeeper.check_funds(required_margin_per_lot=150000): return
 
@@ -254,8 +257,12 @@ class NiftyStrategy:
                     combined_unrealized = ce_pnl + pe_pnl
                     
                     if not self.gatekeeper.check_max_daily_loss(combined_unrealized):
-                        logger.critical(f"Straddle: 🛑 EMERGENCY EXIT - Global Loss Limit Hit.")
-                        self.exit_all_market(quantity, "MAX_DAILY_LOSS")
+                        if self.gatekeeper.last_breaker_triggered == "PROFIT_PROTECTION":
+                            logger.critical(f"Straddle: 🛑 EMERGENCY EXIT - Profit Protection Triggered.")
+                            self.exit_all_market(quantity, "PROFIT_PROTECTION")
+                        else:
+                            logger.critical(f"Straddle: 🛑 EMERGENCY EXIT - Global Loss Limit Hit.")
+                            self.exit_all_market(quantity, "MAX_DAILY_LOSS")
                         break
                 
             except Exception as e:
