@@ -893,9 +893,18 @@ class GammaBlastStrategy:
     def exit_market(self, token, symbol, qty, reason, trade_id, sl_oid, exit_type="MARKET"):
         """Institutional Exit: Use buffered LIMIT instead of MARKET for OTM safety if requested."""
         try:
-            if sl_oid: self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
-            
             ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 0
+            
+            if sl_oid:
+                cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                if not cancel_success:
+                    # Check if it was already filled
+                    sl_status = self.order_manager.get_order_status(sl_oid)
+                    if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                        logger.warning(f"🛡️ [Double-Exit Protection] SL Order {sl_oid} was already FILLED. Skipping market exit order.")
+                        exit_price = sl_status.get('price', ltp)
+                        trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason="SL_HIT")
+                        return True
             
             # Smart-Exit logic: Use LIMIT at SL price if exit_type is LIMIT
             if exit_type == "LIMIT":

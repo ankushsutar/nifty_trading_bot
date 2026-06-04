@@ -172,5 +172,112 @@ class TestSafetyRefactoring(unittest.TestCase):
         # Should allow trading because the latest trade won
         self.assertTrue(allowed_after_win)
 
+    def test_cancel_order_retry(self):
+        """Verify OrderManager.cancel_order retries up to 3 times on failure."""
+        from bot.core.order_manager import OrderManager
+        mock_api = MagicMock()
+        mock_api.cancelOrder.side_effect = [
+            {"status": False, "message": "API error"},
+            {"status": False, "message": "API error"},
+            {"status": True}
+        ]
+        
+        with patch('bot.core.order_manager.rate_limiter') as mock_limiter, \
+             patch('bot.core.order_manager.is_kill_switch_active', return_value=False), \
+             patch('time.sleep') as mock_sleep:
+            order_manager = OrderManager(mock_api, dry_run=False)
+            order_manager.live_trade_enabled = True
+            
+            result = order_manager.cancel_order("12345", variety="STOPLOSS")
+            
+            self.assertTrue(result)
+            self.assertEqual(mock_api.cancelOrder.call_count, 3)
+
+    def test_double_exit_protection_momentum(self):
+        """Verify MomentumStrategy aborts exit if SL is already filled."""
+        from bot.strategies.momentum_strategy import MomentumStrategy
+        
+        mock_api = MagicMock()
+        strategy = MomentumStrategy(mock_api, MagicMock(), dry_run=False)
+        strategy.active_position = {
+            "id": 101,
+            "symbol": "NIFTY27FEB2622000CE",
+            "token": "12345",
+            "qty": 50,
+            "entry_price": 100.0,
+            "sl_price": 80.0,
+            "sl_order_id": "SL_12345",
+            "strategy": "MOMENTUM"
+        }
+        
+        # Mock cancel_order to fail (False)
+        strategy.order_manager.cancel_order = MagicMock(return_value=False)
+        
+        # Mock get_order_status to return FILLED
+        strategy.order_manager.get_order_status = MagicMock(return_value={"status": "FILLED", "price": 79.5})
+        
+        # Mock place_order (it should NOT be called!)
+        strategy.order_manager.place_order = MagicMock()
+        
+        # Mock trade_repo.close_trade
+        with patch('bot.strategies.momentum_strategy.trade_repo') as mock_repo:
+            strategy.close_position(reason="TEST_REASON")
+            
+            # Verify close_trade was called with SL_HIT and correct exit price
+            mock_repo.close_trade.assert_called_once_with(
+                trade_id=101, exit_price=79.5, exit_reason="SL_HIT"
+            )
+            # Verify market order exit was NOT placed
+            strategy.order_manager.place_order.assert_not_called()
+            # Verify active position is cleared
+            self.assertIsNone(strategy.active_position)
+
+    def test_double_exit_protection_gammablast(self):
+        """Verify GammaBlastStrategy aborts exit if SL is already filled."""
+        from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
+        
+        mock_api = MagicMock()
+        strategy = GammaBlastStrategy(mock_api, MagicMock(), dry_run=False)
+        strategy.active_position = {
+            "id": 202,
+            "symbol": "NIFTY27FEB2622000PE",
+            "token": "67890",
+            "qty": 50,
+            "entry_price": 120.0,
+            "sl_price": 100.0,
+            "sl_order_id": "SL_67890"
+        }
+        
+        # Mock cancel_order to fail (False)
+        strategy.order_manager.cancel_order = MagicMock(return_value=False)
+        
+        # Mock get_order_status to return FILLED
+        strategy.order_manager.get_order_status = MagicMock(return_value={"status": "FILLED", "price": 99.0})
+        
+        # Mock place_order (should not be called)
+        strategy.order_manager.place_order = MagicMock()
+        
+        # Mock data_fetcher.get_ltp
+        strategy.data_fetcher.get_ltp = MagicMock(return_value=99.0)
+        
+        # Mock trade_repo.close_trade
+        with patch('bot.strategies.gamma_blast_strategy.trade_repo') as mock_repo:
+            result = strategy.exit_market(
+                token="67890",
+                symbol="NIFTY27FEB2622000PE",
+                qty=50,
+                reason="TEST_REASON",
+                trade_id=202,
+                sl_oid="SL_67890"
+            )
+            
+            self.assertTrue(result)
+            # Verify close_trade was called with SL_HIT
+            mock_repo.close_trade.assert_called_once_with(
+                trade_id=202, exit_price=99.0, exit_reason="SL_HIT"
+            )
+            # Verify market order exit was NOT placed
+            strategy.order_manager.place_order.assert_not_called()
+
 if __name__ == "__main__":
     unittest.main()

@@ -261,33 +261,38 @@ class OrderManager:
             return None
 
     def cancel_order(self, order_id, variety="NORMAL"):
-        """Cancels an existing order."""
+        """Cancels an existing order with up to 3 retry attempts."""
         if is_kill_switch_active():
             logger.critical("🛑 KILL SWITCH ACTIVE. Cancellation Rejected.")
             return False
 
-        try:
-            if self.dry_run or not self.live_trade_enabled:
-                logger.info(f"🧪 [DRY RUN] Simulating Cancel: {order_id}")
-                return True
-
-            rate_limiter.wait()
-            response = self.api.cancelOrder(order_id, variety)
-            
-            if isinstance(response, dict):
-                if response.get('status') == True:
-                    logger.info(f"🚫 Cancelled Order: {order_id}")
-                    return True
-                else:
-                    logger.warning(f"⚠️ Cancel Failed for {order_id}: {response.get('message')}")
-                    return False
-            
-            # Mock might return something else, assume True if no exception
-            logger.info(f"🚫 Cancelled Order: {order_id}")
+        if self.dry_run or not self.live_trade_enabled:
+            logger.info(f"🧪 [DRY RUN] Simulating Cancel: {order_id}")
             return True
-        except Exception as e:
-            logger.error(f"Cancel Order Error: {e}")
-            return False
+
+        for attempt in range(3):
+            try:
+                rate_limiter.wait()
+                response = self.api.cancelOrder(order_id, variety)
+                
+                if isinstance(response, dict):
+                    if response.get('status') == True or response.get('success') == True:
+                        logger.info(f"🚫 Cancelled Order: {order_id} (Attempt {attempt+1})")
+                        return True
+                    else:
+                        error_msg = response.get('message') or response.get('error_message') or "Unknown Error"
+                        logger.warning(f"⚠️ Cancel Attempt {attempt+1} Failed for {order_id}: {error_msg}")
+                else:
+                    logger.info(f"🚫 Cancelled Order: {order_id} (Attempt {attempt+1})")
+                    return True
+            except Exception as e:
+                logger.error(f"Cancel Attempt {attempt+1} Exception for {order_id}: {e}")
+            
+            if attempt < 2:
+                time.sleep(0.5)
+
+        logger.critical(f"🛑 CRITICAL: Failed to cancel order {order_id} after 3 attempts.")
+        return False
 
     def modify_sl_order(self, order_id, new_trigger_price, symbol, token, qty, transaction_type="SELL"):
         """Modifies an existing SL Order."""

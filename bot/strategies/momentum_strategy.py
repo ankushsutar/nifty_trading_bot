@@ -282,7 +282,7 @@ class MomentumStrategy:
                         entry_price = self.active_position['entry_price']
                         qty = self.active_position['qty']
 
-                        curr_ltp = market_feed.get_ltp(token)
+                        curr_ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
 
                         if curr_ltp and curr_ltp > 0:
                             curr_unrealized_pnl = (curr_ltp - entry_price) * qty
@@ -1290,7 +1290,16 @@ class MomentumStrategy:
         # Cancel Pending Broker SL
         sl_oid = self.active_position.get('sl_order_id')
         if sl_oid and not self.dry_run:
-            self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+            cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+            if not cancel_success:
+                # If cancel failed, check if it was already filled
+                sl_status = self.order_manager.get_order_status(sl_oid)
+                if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                    logger.warning(f"🛡️ [Double-Exit Protection] SL Order {sl_oid} was already FILLED. Skipping market exit order.")
+                    exit_price = sl_status.get('price', exit_price)
+                    trade_repo.close_trade(trade_id=self.active_position['id'], exit_price=exit_price, exit_reason="SL_HIT")
+                    self.active_position = None
+                    return
 
         if not self.dry_run:
             try:
