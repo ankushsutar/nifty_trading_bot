@@ -23,11 +23,11 @@ def check_imports():
         "bot.main",
         "bot.core.position_manager",
         "bot.strategies.momentum_strategy",
-        "bot.strategies.orb_strategy",
-        "bot.strategies.vwap_strategy",
+        "bot.strategies.gamma_blast_strategy",
         "bot.strategies.nifty_straddle",
-        "bot.strategies.inside_bar_strategy",
-        "bot.strategies.ohl_strategy",
+        "bot.strategies.selling_strategy",
+        "bot.strategies.straddle_scalp_strategy",
+        "bot.strategies.zero_to_hero_strategy",
         "bot.utils.rate_limiter",
         "bot.config.settings"
     ]

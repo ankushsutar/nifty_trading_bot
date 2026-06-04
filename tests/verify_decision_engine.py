@@ -11,6 +11,8 @@ class TestDecisionEngine(unittest.TestCase):
         self.engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
         # Mock Gatekeeper fund checks
         self.engine.gatekeeper.check_funds = MagicMock(return_value=True)
+        self.engine.gatekeeper.check_max_daily_loss = MagicMock(return_value=True)
+        self.engine.gatekeeper.get_current_capital = MagicMock(return_value=150000.0)
 
     @patch('backend.market_service.market_service.get_market_data')
     @patch('datetime.datetime')

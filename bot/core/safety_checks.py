@@ -179,6 +179,56 @@ class SafetyGatekeeper:
             logger.error(f"Error fetching daily realized P&L: {e}")
             return 0.0
 
+    def get_broker_realized_pnl(self):
+        """
+        Fetches positions from the broker API and calculates realized P&L directly
+        to serve as an absolute database-independent safety gatekeeper fallback.
+        """
+        if self.dry_run:
+            return self.get_daily_realized_pnl()
+
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            
+            if not self.api:
+                logger.warning(">>> [Gatekeeper] Broker API is not initialized. Falling back to DB realized PnL.")
+                return self.get_daily_realized_pnl()
+
+            pos_resp = self.api.position()
+            if not pos_resp or not pos_resp.get('status') or not pos_resp.get('data'):
+                logger.warning(">>> [Gatekeeper] Broker position fetch failed or returned empty. Falling back to DB-based PnL.")
+                return self.get_daily_realized_pnl()
+
+            total_realized_pnl = 0.0
+            for pos in pos_resp.get('data', []):
+                try:
+                    buy_qty = int(pos.get('buyqty', 0) or 0)
+                    sell_qty = int(pos.get('sellqty', 0) or 0)
+                    buy_avg = float(pos.get('buyavgprice', 0) or 0)
+                    sell_avg = float(pos.get('sellavgprice', 0) or 0)
+                    
+                    matched_qty = min(buy_qty, sell_qty)
+                    realized_pnl = matched_qty * (sell_avg - buy_avg)
+                    
+                    realised_field = pos.get('realisedprice') or pos.get('realisedpnl')
+                    if realised_field is not None:
+                        try:
+                            realized_pnl = float(realised_field)
+                        except ValueError:
+                            pass
+                            
+                    total_realized_pnl += realized_pnl
+                except Exception as pos_err:
+                    logger.warning(f">>> [Gatekeeper] Error parsing position {pos.get('tradingsymbol')}: {pos_err}")
+                    
+            logger.info(f">>> [Gatekeeper] Broker-verified Daily Realized PnL: ₹{total_realized_pnl:.2f}")
+            return total_realized_pnl
+
+        except Exception as e:
+            logger.error(f">>> [Gatekeeper] Error calculating broker realized PnL: {e}")
+            return self.get_daily_realized_pnl()
+
     def track_peak_profit(self, current_total_pnl):
         """Tracks the highest realized+unrealized profit reached today."""
         try:
@@ -354,7 +404,7 @@ class SafetyGatekeeper:
         tier             = Config.get_tier(starting_capital)
         max_loss         = -(starting_capital * tier.max_daily_loss_pct)
 
-        realized_pnl = self.get_daily_realized_pnl()
+        realized_pnl = self.get_broker_realized_pnl()
         total_pnl    = realized_pnl + active_unrealized_pnl
 
         # First check profit protection
@@ -385,17 +435,29 @@ class SafetyGatekeeper:
             today_trades = trade_repo.get_today_trades(mode=mode)
             
             # Find the last closed trade for this symbol
+            # Note: get_today_trades returns trades sorted by ID DESCENDING, so index 0 is the most recent.
             symbol_trades = [t for t in today_trades if t.get('symbol') == symbol and t.get('status') == 'CLOSED']
             if not symbol_trades:
                 return True
                 
-            last_trade = symbol_trades[-1]
-            if last_trade.get('pnl', 0) < 0:
+            last_trade = symbol_trades[0]
+            pnl_val = last_trade.get('pnl', 0.0) or 0.0
+            if pnl_val < 0.0:
                 # Check time since close
-                exit_time_str = last_trade.get('exit_time')
-                if not exit_time_str: return True
+                exit_time = last_trade.get('closed_at')
+                if not exit_time:
+                    # Fallback to exit_time string
+                    exit_time_str = last_trade.get('exit_time')
+                    if exit_time_str:
+                        exit_time = datetime.datetime.fromisoformat(exit_time_str)
                 
-                exit_time = datetime.datetime.fromisoformat(exit_time_str)
+                if not exit_time:
+                    return True
+                
+                # Make naive local for comparison if it is timezone-aware
+                if exit_time.tzinfo is not None:
+                    exit_time = exit_time.astimezone().replace(tzinfo=None)
+                    
                 diff = (datetime.datetime.now() - exit_time).total_seconds()
                 
                 if diff < 3600: # 60 minutes

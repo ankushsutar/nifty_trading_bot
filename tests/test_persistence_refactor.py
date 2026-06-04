@@ -78,8 +78,8 @@ class TestPersistenceFlow(unittest.TestCase):
         self.mock_collection.insert_one.side_effect = [Exception("DB Fail"), Exception("DB Fail"), MagicMock()]
         
         # We need a real counter for save_trade
-        self.trade_repo.counter_collection = MagicMock()
-        self.trade_repo.counter_collection.find_one_and_update.return_value = {"seq": 1}
+        self.trade_repo.counters = MagicMock()
+        self.trade_repo.counters.find_one_and_update.return_value = {"seq": 1}
 
         # This should succeed after 2 retries (3 attempts total)
         # If 'time' was missing, this would raise NameError

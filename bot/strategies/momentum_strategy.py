@@ -324,6 +324,43 @@ class MomentumStrategy:
 
                 # --- SLOW LOOP (Trend Analysis) ---
                 if datetime.datetime.now() >= next_check:
+                    # Recalculate next check boundary
+                    _now = datetime.datetime.now()
+                    _minute = _now.minute
+                    _remainder = _minute % 5
+                    _minutes_to_add = 5 - _remainder
+                    next_check = _now + datetime.timedelta(minutes=_minutes_to_add)
+                    next_check = next_check.replace(second=5, microsecond=0)
+
+                    # 1. Check Max Daily Loss Limit before running analysis
+                    if not self.gatekeeper.check_max_daily_loss(0.0):
+                        logger.critical("Momentum: 🛑 Skipped trend check — Max Daily Loss limit reached.")
+                        time.sleep(10)
+                        continue
+
+                    # 2. Check Shared Intelligence Freshness
+                    state_file = "data/market_analysis.json"
+                    if not self.dry_run and os.path.exists(state_file):
+                        file_age = time.time() - os.path.getmtime(state_file)
+                        if file_age > 600:  # 10 minutes
+                            logger.warning(f"Momentum: 🛑 Skipped setup check because shared market analysis is stale ({file_age / 60:.1f} mins old).")
+                            time.sleep(10)
+                            continue
+
+                    # 3. Check Candle Data Freshness
+                    if not self.dry_run:
+                        try:
+                            _df_fresh = self.data_fetcher.fetch_latest_candles("99926000")
+                            if _df_fresh is not None and not _df_fresh.empty:
+                                _last_ts = _df_fresh.iloc[-1]['timestamp']
+                                _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
+                                if _age_mins > 15:
+                                    logger.warning(f"Momentum: 🛑 Skipped setup check because candle data is stale (age: {_age_mins:.1f} mins).")
+                                    time.sleep(10)
+                                    continue
+                        except Exception as e:
+                            logger.warning(f"Failed to verify candle freshness: {e}")
+
                     logger.info(f"⏰ Candle Closed. Running Trend Analysis...")
                     
                     trend, ema9, ema21, rsi, adx, atr, regime, bbw = self.analyze_market_trend()
@@ -705,6 +742,11 @@ class MomentumStrategy:
         return rsi.fillna(50)
 
     def enter_position(self, expiry, leg, is_scale_in=False):
+        # 0. Check daily loss limit
+        if not self.gatekeeper.check_max_daily_loss(0.0):
+            logger.warning("Momentum: 🛑 Skipped entry because Max Daily Loss limit has been reached.")
+            return
+
         # Post-SL cooldown: 5 min after any SL hit, no re-entry (matches gamma blast gate).
         _SL_COOLDOWN_SECS = 300
         if self._last_sl_hit_time > 0 and time.time() - self._last_sl_hit_time < _SL_COOLDOWN_SECS:
@@ -1099,7 +1141,9 @@ class MomentumStrategy:
 
             # Update DB Fill (Simulation)
             tid = self.order_manager.update_trade_fill(symbol, "MOMENTUM", quote_ltp)
-            if tid: self.active_position['id'] = tid
+            if tid: 
+                self.active_position['id'] = tid
+                trade_repo.update_trade_context(tid, trade_context)
             return
 
         try:
@@ -1158,6 +1202,9 @@ class MomentumStrategy:
 
             trade_id = self.order_manager.update_trade_fill(symbol, "MOMENTUM", fill_price, expected_price=quote_ltp)
             
+            if trade_id:
+                trade_repo.update_trade_context(trade_id, trade_context)
+
             actual_sl = max(0.1, fill_price - actual_sl_points)
 
             actual_target = fill_price + tgt_option_pts
@@ -1290,30 +1337,11 @@ class MomentumStrategy:
         try:
              entry_price = self.active_position['entry_price']
              pnl = (exit_price - entry_price) * qty
-             pnl_pct = (exit_price - entry_price) / entry_price * 100
-             result = "WIN" if pnl > 0 else "LOSS"
-             
-             trade_record = {
-                 "strategy": "MOMENTUM",
-                 "symbol": symbol,
-                 "action": "SELL",
-                 "qty": qty,
-                 "entry_price": entry_price,
-                 "exit_price": exit_price,
-                 "pnl": round(pnl, 2),
-                 "pnl_percent": round(pnl_pct, 2),
-                 "result": result,
-                 "exit_reason": reason
-             }
-             if 'context' in self.active_position:
-                 trade_record.update(self.active_position['context'])
-             
-             TradeJournal.log_trade(trade_record)
              
              # Notify
              notifier.notify_trade_exit("MOMENTUM", symbol, pnl, reason)
         except Exception as e:
-             logger.error(f"Journal Error: {e}")
+             logger.error(f"Notification Error: {e}")
 
         try:
              entry_p = self.active_position['entry_price']

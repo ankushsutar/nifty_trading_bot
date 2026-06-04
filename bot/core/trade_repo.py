@@ -1,6 +1,7 @@
 import threading
 import datetime
 import time
+# pyrefly: ignore [missing-import]
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bot.config.settings import Config
 from bot.utils.logger import logger
@@ -121,6 +122,18 @@ class TradeRepository:
         except Exception as e:
             logger.error(f"TradeRepository Update SL OID Error: {e}")
 
+    def update_trade_context(self, trade_id, context):
+        """Persists the strategy indicator context for the trade."""
+        if not self.client or not context: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": context}
+            )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} context indicator values.")
+        except Exception as e:
+            logger.error(f"TradeRepository Update Context Error: {e}")
+
     def update_monitoring_state(self, trade_id, stage, remaining_qty=None):
         """Persists the current strategy stage and remaining quantity."""
         if not self.client: return
@@ -206,6 +219,10 @@ class TradeRepository:
         """Reduces the quantity of an open trade (Partial Booking). Status remains OPEN."""
         if not self.client: return
         try:
+            trade = self.collection.find_one({"id": trade_id})
+            if not trade:
+                return
+            
             self.collection.update_one(
                 {"id": trade_id},
                 {
@@ -227,6 +244,40 @@ class TradeRepository:
                 }
             )
             logger.info(f"TradeRepository: Trade #{trade_id} Position Reduced by {reduction_qty}.")
+
+            # Log partial exit to journal!
+            try:
+                from bot.utils.trade_journal import TradeJournal
+                
+                entry_p = float(trade.get('entry_price') or 0.0)
+                exit_p = float(exit_price or 0.0)
+                qty_val = int(reduction_qty)
+                pnl_val = float(pnl_segment)
+                pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                
+                trade_record = {
+                    "strategy": trade.get('strategy', 'MOMENTUM'),
+                    "symbol": trade.get('symbol'),
+                    "action": "SELL",
+                    "qty": qty_val,
+                    "entry_price": entry_p,
+                    "exit_price": exit_p,
+                    "pnl": round(pnl_val, 2),
+                    "pnl_percent": pnl_pct,
+                    "result": "WIN" if pnl_val > 0 else "LOSS",
+                    "exit_reason": f"PARTIAL_{reason}"
+                }
+                
+                # Copy context indicator fields
+                for field in ["entry_ema9", "entry_ema21", "entry_rsi", "entry_adx", "htf_trend",
+                              "entry_atr", "entry_bbw", "oi_pcr", "oi_sentiment"]:
+                    if field in trade:
+                        trade_record[field] = trade[field]
+                        
+                TradeJournal.log_trade(trade_record)
+            except Exception as j_err:
+                logger.error(f"TradeRepository central journaling error for Trade reduction #{trade_id}: {j_err}")
+                
         except Exception as e:
             logger.error(f"TradeRepository Reduce Position Error: {e}")
 
@@ -242,15 +293,29 @@ class TradeRepository:
         if not self.client: return
 
         try:
-            if trade_id and pnl is None and exit_price > 0:
-                # Auto-calculate the final-close segment and accumulate
+            # We want to keep track of which trades are being closed, so we can journal them
+            trades_to_close = []
+            if trade_id:
                 trade = self.collection.find_one({"id": trade_id})
-                if trade:
+                if trade and trade.get('status') != 'CLOSED':
+                    trades_to_close.append(trade)
+            elif symbol:
+                cursor = self.collection.find({"symbol": symbol, "status": "OPEN"})
+                trades_to_close = list(cursor)
+
+            if not trades_to_close:
+                # No open trade to close
+                return
+
+            for trade in trades_to_close:
+                tid = trade['id']
+                if pnl is None:
+                    # Auto-calculate the final-close segment and accumulate
                     entry_price = float(trade.get('entry_price') or 0)
                     qty = int(trade.get('qty') or 0)
                     pnl_segment = round((exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
                     self.collection.update_one(
-                        {"id": trade_id},
+                        {"id": tid},
                         {
                             "$set": {
                                 "status": "CLOSED",
@@ -263,35 +328,60 @@ class TradeRepository:
                         }
                     )
                     final_pnl = round((trade.get('pnl') or 0) + pnl_segment, 2)
-                    logger.info(f"TradeRepository: Trade Closed (PnL: {final_pnl:+.2f}).")
-                    return
-                # Fall through if trade not found
+                else:
+                    # Explicit PnL path
+                    self.collection.update_one(
+                        {"id": tid},
+                        {
+                            "$set": {
+                                "status": "CLOSED",
+                                "exit_price": exit_price,
+                                "pnl": pnl,
+                                "exit_reason": exit_reason,
+                                "closed_at": datetime.datetime.now(),
+                                "updated_at": datetime.datetime.now()
+                            }
+                        }
+                    )
+                    final_pnl = pnl
 
-            # Explicit pnl path (reconcile / force-close / symbol-based close)
-            if pnl is None:
-                pnl = 0.0
+                # Retrieve the updated document to log to the CSV trade journal
+                updated_trade = self.collection.find_one({"id": tid})
+                if updated_trade:
+                    logger.info(f"TradeRepository: Trade #{tid} Closed (PnL: {final_pnl:+.2f}).")
+                    
+                    try:
+                        from bot.utils.trade_journal import TradeJournal
+                        
+                        entry_p = float(updated_trade.get('entry_price') or 0.0)
+                        exit_p = float(updated_trade.get('exit_price') or exit_price or 0.0)
+                        qty_val = int(updated_trade.get('qty') or 0)
+                        pnl_val = float(updated_trade.get('pnl') or final_pnl or 0.0)
+                        pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                        
+                        trade_record = {
+                            "strategy": updated_trade.get('strategy', 'MOMENTUM'),
+                            "symbol": updated_trade.get('symbol'),
+                            "action": "SELL",
+                            "qty": qty_val,
+                            "entry_price": entry_p,
+                            "exit_price": exit_p,
+                            "pnl": round(pnl_val, 2),
+                            "pnl_percent": pnl_pct,
+                            "result": "WIN" if pnl_val > 0 else "LOSS",
+                            "exit_reason": updated_trade.get('exit_reason', exit_reason)
+                        }
+                        
+                        # Copy context indicator fields if they exist in updated_trade
+                        for field in ["entry_ema9", "entry_ema21", "entry_rsi", "entry_adx", "htf_trend",
+                                      "entry_atr", "entry_bbw", "oi_pcr", "oi_sentiment"]:
+                            if field in updated_trade:
+                                trade_record[field] = updated_trade[field]
+                                
+                        TradeJournal.log_trade(trade_record)
+                    except Exception as j_err:
+                        logger.error(f"TradeRepository central journaling error for Trade #{tid}: {j_err}")
 
-            update_fields = {
-                "status": "CLOSED",
-                "exit_price": exit_price,
-                "pnl": pnl,
-                "exit_reason": exit_reason,
-                "closed_at": datetime.datetime.now(),
-                "updated_at": datetime.datetime.now()
-            }
-
-            if trade_id:
-                self.collection.update_one(
-                    {"id": trade_id},
-                    {"$set": update_fields}
-                )
-            elif symbol:
-                self.collection.update_many(
-                    {"symbol": symbol, "status": "OPEN"},
-                    {"$set": update_fields}
-                )
-
-            logger.info(f"TradeRepository: Trade Closed (PnL: {pnl:+.2f}).")
         except Exception as e:
             logger.error(f"TradeRepository Close Error: {e}")
 
@@ -332,7 +422,11 @@ class TradeRepository:
         """Returns all trades (OPEN and CLOSED) created today."""
         if not self.client: return []
         try:
-            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Timezone-robust calculation of Indian Standard Time (IST) start of day
+            ist_tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+            now_ist = datetime.datetime.now(ist_tz)
+            today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = today_start_ist.astimezone().replace(tzinfo=None)
             
             query = {"created_at": {"$gte": today_start}}
             if mode:
@@ -353,7 +447,11 @@ class TradeRepository:
         """
         if not self.client: return 0
         try:
-            today_start = datetime.datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Timezone-robust calculation of Indian Standard Time (IST) start of day
+            ist_tz = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+            now_ist = datetime.datetime.now(ist_tz)
+            today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+            today_start = today_start_ist.astimezone().replace(tzinfo=None)
             
             result = self.collection.update_many(
                 {

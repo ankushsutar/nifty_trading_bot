@@ -1,4 +1,5 @@
 import time
+import os
 import datetime
 import pandas as pd
 from bot.config.settings import Config
@@ -207,6 +208,29 @@ class GammaBlastStrategy:
                 )
                 break # Monitoring finished or trade closed
 
+            # Check Shared Intelligence Freshness
+            state_file = "data/market_analysis.json"
+            if not self.dry_run and os.path.exists(state_file):
+                file_age = time.time() - os.path.getmtime(state_file)
+                if file_age > 600:  # 10 minutes
+                    logger.warning(f"Gamma Blast: 🛑 Skipped setup check because shared market analysis is stale ({file_age / 60:.1f} mins old).")
+                    time.sleep(30)
+                    continue
+
+            # Check Candle Data Freshness
+            if not self.dry_run:
+                try:
+                    _df_fresh = self.data_fetcher.fetch_latest_candles("99926000")
+                    if _df_fresh is not None and not _df_fresh.empty:
+                        _last_ts = _df_fresh.iloc[-1]['timestamp']
+                        _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
+                        if _age_mins > 15:
+                            logger.warning(f"Gamma Blast: 🛑 Skipped setup check because candle data is stale (age: {_age_mins:.1f} mins).")
+                            time.sleep(30)
+                            continue
+                except Exception as e:
+                    logger.warning(f"Failed to verify candle freshness: {e}")
+
             # 2. Market analysis & Final Confirmation
             # (Though DecisionEngine already checked, we double check local indicators)
             from backend.market_service import market_service
@@ -224,12 +248,38 @@ class GammaBlastStrategy:
                 adx = self.calculate_adx(df).iloc[-1]
                 ema9 = df['close'].ewm(span=9, adjust=False).mean().iloc[-1]
                 ema21 = df['close'].ewm(span=21, adjust=False).mean().iloc[-1]
+                
+                self.last_analysis = {
+                    'entry_ema9': ema9,
+                    'entry_ema21': ema21,
+                    'entry_rsi': 50.0,
+                    'entry_adx': adx,
+                    'entry_atr': 20.0,
+                    'regime': 'UNKNOWN',
+                    'htf_trend': 'N/A',
+                    'entry_bbw': 0.0,
+                    'oi_pcr': 0.0,
+                    'oi_sentiment': 'NEUTRAL'
+                }
             else:
                 ltp = market_data.get('nifty', 0)
                 adx = analysis.get('adx', 0)
                 ema9 = analysis.get('ema9', 0)
                 ema21 = analysis.get('ema21', 0)
                 logger.info(f"Gamma Blast: Using Shared Analysis (ADX: {adx:.1f} | Regime: {analysis.get('regime')})")
+                
+                self.last_analysis = {
+                    'entry_ema9': ema9,
+                    'entry_ema21': ema21,
+                    'entry_rsi': analysis.get('rsi', 50.0),
+                    'entry_adx': adx,
+                    'entry_atr': analysis.get('atr', 20.0),
+                    'regime': analysis.get('regime', 'UNKNOWN'),
+                    'htf_trend': analysis.get('htf_trend', 'N/A'),
+                    'entry_bbw': analysis.get('bbw', 0.0),
+                    'oi_pcr': analysis.get('pcr', 0.0),
+                    'oi_sentiment': analysis.get('sentiment', 'NEUTRAL')
+                }
 
             if not ltp or ltp <= 0:
                 logger.warning("Gamma Blast: NIFTY LTP is 0 or unavailable. Skipping.")
@@ -617,6 +667,10 @@ class GammaBlastStrategy:
         trade_id = self.order_manager.update_trade_fill(symbol, "GAMMA_BLAST", fill_price, expected_price=quote_ltp)
         if trade_id:
             trade_repo.update_sl(trade_id, sl_price)
+            # Save strategy indicators context!
+            if hasattr(self, 'last_analysis') and self.last_analysis:
+                trade_repo.update_trade_context(trade_id, self.last_analysis)
+            
             # Architecturally persist true initial risk for long-term adaptive scaling guarantees
             trade_repo.collection.update_one({"id": trade_id}, {"$set": {"initial_risk": float(sl_points)}})
         else:
