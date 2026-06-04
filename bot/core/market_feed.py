@@ -38,6 +38,7 @@ class MarketFeedService:
         self.subscribed_tokens = set() # Set of tokens currently subscribed
         self.last_subscription_time = 0
         self.current_atm = 0
+        self.last_tick_time = time.time()
         
         # Real-Time Candle Construction
         self.candle_cache = {} # Key: Token, Value: current forming 1-min candle
@@ -126,6 +127,7 @@ class MarketFeedService:
         logger.info(">>> [MarketFeed] Connected! ✅")
         self.is_connected = True
         self.subscribed_tokens.clear()
+        self.last_tick_time = time.time()
         
         # 1. Subscribe to Nifty 50 Spot (Token 99926000)
         try:
@@ -142,21 +144,49 @@ class MarketFeedService:
     def _manage_dynamic_subscriptions(self):
         """
         Periodically checks Nifty Spot Price and configures Option Subscriptions.
+        Includes a Connection Watchdog to reboot the socket if it goes silent during market hours.
         """
         while self.is_connected and self.running:
             try:
-                # 1. Get Nifty Spot Price
+                # 1. Watchdog: Check for silent connection drop during market hours (09:15 - 15:30 IST)
+                now_utc = datetime.datetime.utcnow()
+                now_ist = now_utc + datetime.timedelta(hours=5, minutes=30)
+                is_market = now_ist.weekday() < 5 and datetime.time(9, 15) <= now_ist.time() <= datetime.time(15, 30)
+                
+                if is_market and time.time() - self.last_tick_time > 30:
+                    logger.critical("⚠️ [MarketFeed Watchdog] No tick data received for 30s during market hours! Silent drop detected. Force closing connection to trigger reconnect.")
+                    self.is_connected = False
+                    try:
+                        self.sws.close_connection()
+                    except Exception as e:
+                        logger.error(f"Failed to force close connection: {e}")
+                    time.sleep(2)
+                    continue
+
+                # 2. Get Nifty Spot Price
                 spot_price = self.get_ltp("99926000")
+                if not spot_price:
+                    # Fallback to REST API for Spot price to avoid dynamic subscription lock
+                    try:
+                        api = get_angel_session()
+                        if api:
+                            res = api.ltpData("NSE", "Nifty 50", "99926000")
+                            if res and res.get('status') == True:
+                                spot_price = float(res['data']['ltp'])
+                                logger.info(f">>> [MarketFeed] Dynamic Sub: REST Spot Fallback = {spot_price}")
+                    except Exception as e:
+                        logger.error(f"Failed to fetch REST Spot price for subscriptions: {e}")
+
                 if not spot_price:
                     # Wait for data
                     time.sleep(2)
                     continue
                     
-                # 2. Calculate ATM
+                # 3. Calculate ATM
                 strike_diff = 50
                 atm = round(spot_price / strike_diff) * strike_diff
                 
-                # 3. Check if ATM changed or forced refresh (every 60s)
+                # 4. Check if ATM changed or forced refresh (every 60s)
                 if atm != self.current_atm or time.time() - self.last_subscription_time > 60:
                     logger.info(f">>> [MarketFeed] Updating Subscriptions. Nifty: {spot_price}, ATM: {atm}")
                     self._update_subscriptions(atm)
@@ -222,6 +252,7 @@ class MarketFeedService:
 
     def _process_tick(self, tick):
         if 'token' in tick:
+            self.last_tick_time = time.time()
             token = tick['token']
             ltp = tick.get('last_traded_price')
             

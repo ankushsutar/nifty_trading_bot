@@ -2,6 +2,7 @@ import sys
 import os
 import unittest
 import datetime
+import time
 from unittest.mock import MagicMock, patch
 
 # Mock pymongo before importing anything that uses trade_repo
@@ -278,6 +279,60 @@ class TestSafetyRefactoring(unittest.TestCase):
             )
             # Verify market order exit was NOT placed
             strategy.order_manager.place_order.assert_not_called()
+
+    def test_market_feed_watchdog(self):
+        """Verify MarketFeedService triggers connection watchdog on silence during market hours."""
+        from bot.core.market_feed import MarketFeedService
+        
+        feed = MarketFeedService()
+        feed.is_connected = True
+        feed.running = True
+        feed.last_tick_time = time.time() - 40 # 40s ago (stale)
+        feed.sws = MagicMock()
+        
+        class MockDateTimeClass(datetime.datetime):
+            @classmethod
+            def utcnow(cls):
+                return datetime.datetime(2026, 6, 4, 4, 30) # 4:30 AM UTC = 10:00 AM IST
+                
+        with patch('bot.core.market_feed.datetime.datetime', MockDateTimeClass), \
+             patch('time.sleep') as mock_sleep:
+            
+            feed._manage_dynamic_subscriptions()
+            
+            # Watchdog should set is_connected to False and close connection
+            self.assertFalse(feed.is_connected)
+            feed.sws.close_connection.assert_called_once()
+
+    def test_market_feed_rest_fallback(self):
+        """Verify dynamic subscriptions fallback to REST when LTP is not in cache."""
+        from bot.core.market_feed import MarketFeedService
+        
+        feed = MarketFeedService()
+        feed.is_connected = True
+        feed.running = True
+        feed.last_tick_time = time.time() # Fresh tick time (no watchdog)
+        feed.latest_data.clear() # No cached LTP
+        
+        mock_api = MagicMock()
+        mock_api.ltpData.return_value = {
+            "status": True,
+            "data": {"ltp": 22000.50}
+        }
+        
+        # Patch get_angel_session to return mock_api
+        with patch('bot.core.market_feed.get_angel_session', return_value=mock_api), \
+             patch('bot.core.market_feed.get_next_weekly_expiry', return_value="11JUN26"), \
+             patch.object(feed.token_lookup, 'get_option_bucket', return_value={}) as mock_bucket, \
+             patch('time.sleep', side_effect=InterruptedError("stop")):
+             
+            try:
+                feed._manage_dynamic_subscriptions()
+            except InterruptedError:
+                pass
+            
+            # Verify REST API was called
+            mock_api.ltpData.assert_called_once_with("NSE", "Nifty 50", "99926000")
 
 if __name__ == "__main__":
     unittest.main()
