@@ -133,6 +133,39 @@ class TestSafetyRefactoring(unittest.TestCase):
         # Total expected P&L = 2000 - 1000 = 1000.0
         self.assertEqual(pnl, 1000.0)
 
+    def test_profit_protection_configurable(self):
+        """Verify check_profit_protection honors new config controls."""
+        from bot.config.settings import Config
+        mock_api = MagicMock()
+        gatekeeper = SafetyGatekeeper(mock_api, dry_run=False)
+        
+        # Mock track_peak_profit and get_daily_realized_pnl
+        gatekeeper.track_peak_profit = MagicMock(return_value=1500.0)
+        gatekeeper.get_daily_realized_pnl = MagicMock(return_value=600.0)
+        
+        # Test Case 1: Enabled (Default) - Should trigger protection (600 < 750)
+        Config.PROFIT_PROTECTION_ENABLED = True
+        Config.PROFIT_PROTECTION_THRESHOLD = 1000.0
+        Config.PROFIT_PROTECTION_DRAWDOWN_PCT = 0.50
+        
+        res = gatekeeper.check_profit_protection(active_unrealized_pnl=0.0)
+        self.assertFalse(res)
+        
+        # Test Case 2: Disabled - Should NOT trigger protection
+        Config.PROFIT_PROTECTION_ENABLED = False
+        res = gatekeeper.check_profit_protection(active_unrealized_pnl=0.0)
+        self.assertTrue(res)
+        
+        # Test Case 3: Custom Threshold (Threshold is higher than peak) - Should NOT trigger
+        Config.PROFIT_PROTECTION_ENABLED = True
+        Config.PROFIT_PROTECTION_THRESHOLD = 2000.0
+        res = gatekeeper.check_profit_protection(active_unrealized_pnl=0.0)
+        self.assertTrue(res)
+        
+        # Reset config to defaults
+        Config.PROFIT_PROTECTION_ENABLED = True
+        Config.PROFIT_PROTECTION_THRESHOLD = 1000.0
+
     def test_instrument_cooldown_detection(self):
         """Verify check_instrument_cooldown handles descending sort index and closed_at correctly."""
         # Setup mock trades sorted descending (index 0 is the most recent trade)

@@ -324,14 +324,17 @@ class SafetyGatekeeper:
             except Exception:
                 pass
 
+        if not Config.PROFIT_PROTECTION_ENABLED:
+            return True
+
         realized_pnl = self.get_daily_realized_pnl()
         total_pnl = realized_pnl + active_unrealized_pnl
         
         peak = self.track_peak_profit(total_pnl)
         
-        # Only activate protection if peak was significant (> ₹1000)
-        PROTECTION_THRESHOLD = 1000.0 
-        DRAWDOWN_ALLOWED = 0.5 # 50% of peak
+        # Only activate protection if peak was significant
+        PROTECTION_THRESHOLD = Config.PROFIT_PROTECTION_THRESHOLD
+        DRAWDOWN_ALLOWED = Config.PROFIT_PROTECTION_DRAWDOWN_PCT
         
         if peak >= PROTECTION_THRESHOLD:
             min_allowed_pnl = peak * (1 - DRAWDOWN_ALLOWED)

@@ -204,6 +204,11 @@ class Config:
     LIVE_TRADE_ENABLED = os.getenv("LIVE_TRADE_ENABLED", "FALSE").upper() == "TRUE"
     TRADE_FULL_DAY     = os.getenv("TRADE_FULL_DAY", "FALSE").upper() == "TRUE"
 
+    # ── Profit Protection (Elite Rule) ──────────────────────────────────────
+    PROFIT_PROTECTION_ENABLED      = os.getenv("PROFIT_PROTECTION_ENABLED", "TRUE").upper() == "TRUE"
+    PROFIT_PROTECTION_THRESHOLD    = float(os.getenv("PROFIT_PROTECTION_THRESHOLD", "1000.0"))
+    PROFIT_PROTECTION_DRAWDOWN_PCT = float(os.getenv("PROFIT_PROTECTION_DRAWDOWN_PCT", "0.50"))
+
     # ── Time configuration ─────────────────────────────────────────────────
     BLACKOUT_START_TIME      = (11, 30)   # (hour, minute)
     BLACKOUT_END_TIME        = (13, 0)
