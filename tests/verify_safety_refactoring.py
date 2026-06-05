@@ -334,5 +334,83 @@ class TestSafetyRefactoring(unittest.TestCase):
             # Verify REST API was called
             mock_api.ltpData.assert_called_once_with("NSE", "Nifty 50", "99926000")
 
+    def test_data_fetcher_cache_sync_and_child_short_cache(self):
+        """Verify DataFetcher cache synchronization and child-process cache bypass."""
+        import pandas as pd
+        from bot.core.data_fetcher import DataFetcher
+        
+        # Instantiate and mock/backup state
+        fetcher = DataFetcher(MagicMock())
+        orig_cache = fetcher.data_cache.copy()
+        orig_disk_path = fetcher.disk_cache_path
+        orig_disk_lock = fetcher.disk_cache_lock
+        orig_cache_duration = fetcher.cache_duration
+        
+        # Setup temporary cache files
+        temp_cache_path = os.path.join(os.getcwd(), "data", "test_cache_candles.json")
+        temp_cache_lock = os.path.join(os.getcwd(), "data", "test_cache_candles.lock")
+        fetcher.disk_cache_path = temp_cache_path
+        fetcher.disk_cache_lock = temp_cache_lock
+        fetcher.data_cache.clear()
+        
+        if os.path.exists(temp_cache_path):
+            try: os.remove(temp_cache_path)
+            except: pass
+        if os.path.exists(temp_cache_lock):
+            try: os.remove(temp_cache_lock)
+            except: pass
+            
+        try:
+            # Set up mock dataframe and cache duration
+            df_mock = pd.DataFrame([
+                {"timestamp": datetime.datetime.now() - datetime.timedelta(minutes=5), "open": 100.0, "high": 110.0, "low": 90.0, "close": 105.0, "volume": 1000.0}
+            ])
+            fetcher.cache_duration = 300
+            
+            # --- 1. Master Process (BACKEND) Behavior ---
+            with patch.dict(os.environ, {"PROCESS_TYPE": "BACKEND"}):
+                # Put df into in-memory cache
+                cache_key = "99926000_FIVE_MINUTE_1"
+                fetcher.data_cache[cache_key] = (time.time(), df_mock)
+                
+                # Mock _write_disk_cache
+                fetcher._write_disk_cache = MagicMock()
+                
+                # Call fetch_latest_candles (hits in-memory cache)
+                fetcher.fetch_latest_candles("99926000")
+                
+                # Verify that _write_disk_cache was called to sync with disk
+                fetcher._write_disk_cache.assert_called_once_with(cache_key, df_mock)
+                
+            # --- 2. Child Process (Non-BACKEND) Behavior ---
+            with patch.dict(os.environ, {"PROCESS_TYPE": "BOT"}):
+                fetcher.data_cache.clear()
+                # Put df in in-memory cache with last_time = now - 6 seconds (so older than 5s but within cache_duration=300s)
+                fetcher.data_cache[cache_key] = (time.time() - 6, df_mock)
+                
+                # Mock _read_disk_cache to return df_mock to simulate finding fresh data on disk
+                fetcher._read_disk_cache = MagicMock(return_value=df_mock)
+                
+                # Call fetch_latest_candles
+                res = fetcher.fetch_latest_candles("99926000")
+                
+                # Verify it bypassed in-memory (since age 6s > 5s in-memory limit for child)
+                # and read from disk cache
+                fetcher._read_disk_cache.assert_called_once_with(cache_key)
+                self.assertIsNotNone(res)
+                
+        finally:
+            # Restore original state
+            fetcher.data_cache = orig_cache
+            fetcher.disk_cache_path = orig_disk_path
+            fetcher.disk_cache_lock = orig_disk_lock
+            fetcher.cache_duration = orig_cache_duration
+            if os.path.exists(temp_cache_path):
+                try: os.remove(temp_cache_path)
+                except: pass
+            if os.path.exists(temp_cache_lock):
+                try: os.remove(temp_cache_lock)
+                except: pass
+
 if __name__ == "__main__":
     unittest.main()

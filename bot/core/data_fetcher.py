@@ -105,7 +105,10 @@ class DataFetcher:
         cache_key = f"{symbol_token}_{interval}_{days}"
         if cache_key in self.data_cache:
             last_time, cached_df = self.data_cache[cache_key]
-            if time.time() - last_time < self.cache_duration:
+            # For child processes, we only trust in-memory cache for a very short duration (e.g., 5s)
+            # to ensure we pick up fresh updates written to the shared disk cache by the master.
+            in_memory_duration = 5 if os.getenv("PROCESS_TYPE") != "BACKEND" else self.cache_duration
+            if time.time() - last_time < in_memory_duration:
                 # If we are the BACKEND (master) process, keep the shared disk cache in sync
                 # so child processes don't see it as expired/stale.
                 if os.getenv("PROCESS_TYPE") == "BACKEND":
