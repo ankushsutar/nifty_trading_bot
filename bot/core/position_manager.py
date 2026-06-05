@@ -122,6 +122,12 @@ class LadderedTrailingManager:
                 active_position['ladder_stage'] = 4
                 current_stage = 4
 
+        # Target Price Exit Check (Absolute Take-Profit)
+        target_price = active_position.get('target_price', 0.0)
+        if target_price > 0 and ltp >= target_price:
+            logger.info(f"🎯 Take-Profit Target Hit! LTP: {ltp} >= Target: {target_price}")
+            return True, "TARGET"
+
         # Exit Check
         if ltp <= active_position.get('sl_price', 0):
             logger.info(f"🛑 Laddered SL Hit! LTP: {ltp} <= SL: {active_position['sl_price']}")

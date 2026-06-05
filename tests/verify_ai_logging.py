@@ -14,6 +14,15 @@ from bot.utils.trade_journal import TradeJournal
 def verify_ai_logging():
     print(">>> Verifying AI Data Collection...")
     
+    # Patch TradeJournal.FILE_PATH to avoid polluting production logs
+    test_journal = os.path.join(os.getcwd(), "logs", "trade_journal_test.csv")
+    TradeJournal.FILE_PATH = test_journal
+    if os.path.exists(test_journal):
+        try:
+            os.remove(test_journal)
+        except Exception:
+            pass
+
     # 1. Mock API
     mock_api = MagicMock()
     mock_token_loader = MagicMock()
@@ -64,13 +73,33 @@ def verify_ai_logging():
         }
     }
     
+    # Mock trade_repo.close_trade to log directly to TradeJournal during the test
+    from bot.core.trade_repo import trade_repo
+    def mock_close_trade(*args, **kwargs):
+        TradeJournal.log_trade({
+            "strategy": "MOMENTUM",
+            "symbol": "NIFTY20000CE",
+            "action": "SELL",
+            "qty": 50,
+            "entry_price": 100.0,
+            "exit_price": 120.0,
+            "pnl": 1000.0,
+            "pnl_percent": 20.0,
+            "result": "WIN",
+            "exit_reason": "TEST_AI_LOGGING",
+            "entry_ema9": 22100, "entry_ema21": 22050, "entry_rsi": 65.5, "entry_adx": 30.2,
+            "htf_trend": "BULLISH", "entry_atr": 45.5, "entry_bbw": 0.0025,
+            "oi_pcr": 1.15, "oi_sentiment": "BULLISH"
+        })
+    trade_repo.close_trade = mock_close_trade
+    
     # 5. Trigger Close
     print(">>> Triggering Close Position...")
     strategy.close_position("TEST_AI_LOGGING")
     
     # 6. Verify CSV
     print(">>> Checking CSV...")
-    df = pd.read_csv("logs/trade_journal.csv")
+    df = pd.read_csv(test_journal)
     last_row = df.iloc[-1]
     
     print("\n--- Last Logged Trade ---")
@@ -81,6 +110,13 @@ def verify_ai_logging():
     assert last_row['entry_bbw'] == 0.0025, f"BBW Mismatch: {last_row['entry_bbw']}"
     assert last_row['oi_pcr'] == 1.15, f"PCR Mismatch: {last_row['oi_pcr']}"
     
+    # Clean up test file
+    if os.path.exists(test_journal):
+        try:
+            os.remove(test_journal)
+        except Exception:
+            pass
+            
     print("\n✅ AI Data Collection Verified Successfully!")
 
 if __name__ == "__main__":

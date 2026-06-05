@@ -26,8 +26,12 @@ class TestSafetyRefactoring(unittest.TestCase):
         self.repo_patcher = patch('bot.core.trade_repo.trade_repo', self.trade_repo)
         self.repo_patcher.start()
 
-        # Clean up trade journal file if it exists
-        self.journal_file = os.path.join(os.getcwd(), "logs", "trade_journal.csv")
+        # Patch TradeJournal.FILE_PATH to prevent deleting/overwriting live journal
+        self.journal_file = os.path.join(os.getcwd(), "logs", "trade_journal_test.csv")
+        self.journal_patcher = patch('bot.utils.trade_journal.TradeJournal.FILE_PATH', self.journal_file)
+        self.journal_patcher.start()
+
+        # Clean up test trade journal file if it exists
         if os.path.exists(self.journal_file):
             try:
                 os.remove(self.journal_file)
@@ -36,6 +40,7 @@ class TestSafetyRefactoring(unittest.TestCase):
 
     def tearDown(self):
         self.repo_patcher.stop()
+        self.journal_patcher.stop()
         if os.path.exists(self.journal_file):
             try:
                 os.remove(self.journal_file)

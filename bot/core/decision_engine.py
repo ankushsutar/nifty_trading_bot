@@ -250,17 +250,14 @@ class DecisionEngine:
         is_power_hour = (datetime.time(13, 15) <= datetime.datetime.now().time() <= datetime.time(15, 0))
         
         # --- X-FACTOR: Institutional Panic Check (AlphaEngine) ---
-        # Fetch ATM strike for NIFTY to check OI Velocity
+        # Consume pre-calculated panic data from Master process to avoid REST calls in child
+        panic_data = market_data.get('panic_data', {"panic_score": 50, "confidence": "NEUTRAL"})
         nifty_ltp = market_data.get('nifty', 0)
-        panic_data = {"panic_score": 50, "confidence": "NEUTRAL"}
-        if nifty_ltp > 0:
-            atm_strike = round(nifty_ltp / 50) * 50
-            panic_data = self.alpha_engine.analyze_panic(expiry_calc, atm_strike)
-            
-            # Confidence multiplier from AlphaEngine
-            alpha_multiplier = self.alpha_engine.get_confidence_multiplier(panic_data)
-            risk_multiplier *= alpha_multiplier
-            logger.info(f">>> [Brain] AlphaEngine Multiplier: {alpha_multiplier}x (Confidence: {panic_data.get('confidence')})")
+        
+        # Confidence multiplier from AlphaEngine
+        alpha_multiplier = self.alpha_engine.get_confidence_multiplier(panic_data)
+        risk_multiplier *= alpha_multiplier
+        logger.info(f">>> [Brain] AlphaEngine Multiplier: {alpha_multiplier}x (Confidence: {panic_data.get('confidence')})")
 
         # 6. Hybrid Strategy Switcher (Time + Regime + Panic)
         adx = regime_data.get('adx', 0)
@@ -309,8 +306,13 @@ class DecisionEngine:
             logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
             selected_strategy = "GAMMA_BLAST"
 
-        elif adx >= 25:
+        # Check chop hours (10:30-11:30 and 13:00-13:30) and boost required ADX to 30.0 for MOMENTUM
+        elif adx >= (30.0 if ((datetime.time(10, 30) <= now < datetime.time(11, 30)) or (datetime.time(13, 0) <= now < datetime.time(13, 30))) else 25.0):
             # NORMAL TRENDING
+            is_chop_hours = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
+                            (datetime.time(13, 0) <= now < datetime.time(13, 30))
+            if is_chop_hours:
+                logger.info(f"⚡ Trend confirmed during chop hours (ADX: {adx:.1f} >= 30.0). Selected: MOMENTUM")
             selected_strategy = "MOMENTUM"
         
         elif is_morning and adx < 20:

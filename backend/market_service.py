@@ -37,6 +37,7 @@ class MarketService:
             cls._instance.analysis_data = {}
             cls._instance.oi_data = {}
             cls._instance.levels_data = {}
+            cls._instance.panic_data = {"panic_score": 50, "confidence": "NEUTRAL"}
             cls._instance.last_analysis_time = 0
             
             # --- STARTUP WARM-UP: Load Last Known Intelligence ---
@@ -49,6 +50,7 @@ class MarketService:
                         cls._instance.analysis_data = shared_state.get('analysis', {})
                         cls._instance.oi_data = shared_state.get('oi_data', {})
                         cls._instance.levels_data = shared_state.get('levels', {})
+                        cls._instance.panic_data = shared_state.get('panic_data', {"panic_score": 50, "confidence": "NEUTRAL"})
                         logger.info("MarketService: Startup Intelligence Loaded from disk 💾")
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
@@ -155,6 +157,8 @@ class MarketService:
                                 # Read oi_data dict (new format) or fall back to legacy flat keys
                                 if 'oi_data' in shared_state:
                                     self.oi_data = shared_state['oi_data']
+                                if 'panic_data' in shared_state:
+                                    self.panic_data = shared_state['panic_data']
                                 if 'levels' in shared_state:
                                     self.levels_data = shared_state['levels']
                                 else:
@@ -176,7 +180,8 @@ class MarketService:
                 "nifty": 0, "vix": 0, "pnl": 0, "error": "No API Connection",
                 "analysis": self.analysis_data,
                 "oi_data": self.oi_data,
-                "levels": self.levels_data
+                "levels": self.levels_data,
+                "panic_data": self.panic_data
             }
 
         try:
@@ -195,7 +200,8 @@ class MarketService:
                 "pnl": 0.0,
                 "analysis": self.analysis_data,
                 "oi_data": self.oi_data,
-                "levels": self.levels_data
+                "levels": self.levels_data,
+                "panic_data": self.panic_data
             }
             
             # Update Cache
@@ -352,7 +358,7 @@ class MarketService:
                             # Generate Institutional Panic Metric
                             panic_analysis = {}
                             try:
-                                panic_analysis = self.alpha_engine.analyze_panic(expiry, base_atm)
+                                panic_analysis = self.alpha_engine.analyze_panic(expiry, base_atm, current_oi=analysis)
                             except Exception as alpha_err:
                                 logger.warning(f"Centralized Panic Analysis Failed: {alpha_err}")
 

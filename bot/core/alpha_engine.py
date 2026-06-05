@@ -54,7 +54,7 @@ class AlphaEngine:
         except Exception as e:
             logger.error(f"AlphaEngine History Write Error: {e}")
 
-    def analyze_panic(self, expiry: str, atm_strike: int) -> Dict:
+    def analyze_panic(self, expiry: str, atm_strike: int, current_oi: Optional[Dict] = None) -> Dict:
         """
         Calculates the "Panic Score" (0-100) based on OI unwinding.
         - High Score (> 75): Extreme Institutional Panic (Short Covering / Long Unwinding)
@@ -62,7 +62,8 @@ class AlphaEngine:
         - Low Score (< 30): Stagnant / Retail Only
         """
         try:
-            current_oi = self.oi_analyzer.get_oi_velocity(expiry, atm_strike)
+            if current_oi is None:
+                current_oi = self.oi_analyzer.get_oi_velocity(expiry, atm_strike)
             timestamp = time.time()
             
             # Store history

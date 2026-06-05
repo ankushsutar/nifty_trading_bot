@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 import datetime
 from bot.core.decision_engine import DecisionEngine
+import bot.core.trade_repo
 
 class TestDecisionEngine(unittest.TestCase):
     def setUp(self):
@@ -35,9 +36,9 @@ class TestDecisionEngine(unittest.TestCase):
     @patch('backend.market_service.market_service.get_market_data')
     @patch('datetime.datetime')
     def test_vwap_selection(self, mock_datetime, mock_market_data):
-        print("\n--- Testing VWAP Selection (10:30) ---")
+        print("\n--- Testing VWAP Selection (10:15) ---")
         mock_now = MagicMock()
-        mock_now.time.return_value = datetime.time(10, 30)
+        mock_now.time.return_value = datetime.time(10, 15)
         mock_datetime.now.return_value = mock_now
         
         mock_market_data.return_value = {
@@ -84,6 +85,26 @@ class TestDecisionEngine(unittest.TestCase):
         # SIDEWAYS regime fallback resolves to STRADDLE_SCALP in current engine
         self.assertEqual(strat, "STRADDLE_SCALP")
         print("✅ Straddle Scalp selection verified for Sideways market.")
+
+    @patch('backend.market_service.market_service.get_market_data')
+    @patch('datetime.datetime')
+    def test_panic_data_pass_through(self, mock_datetime, mock_market_data):
+        print("\n--- Testing Panic Data Pass-Through (AlphaEngine) ---")
+        mock_now = MagicMock()
+        mock_now.time.return_value = datetime.time(10, 30)
+        mock_datetime.now.return_value = mock_now
+        
+        # Test that high confidence A+ panic data scales the risk multiplier
+        mock_market_data.return_value = {
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'panic_data': {'panic_score': 85, 'confidence': 'A+'}
+        }
+        
+        strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "GAMMA_BLAST")
+        self.assertAlmostEqual(risk, 0.75)
+        print("✅ Pre-calculated A+ Panic Data successfully scales the risk multiplier.")
 
 if __name__ == "__main__":
     unittest.main()

@@ -405,11 +405,19 @@ class MomentumStrategy:
                         # Phase 3: STRICT Multi-Timeframe Confluence Tracking
                         checks = []
                         
-                        # 1. ADX Strength
-                        if _adx_now >= _tier_now.min_adx_to_trade:
+                        # 1. ADX Strength (dynamic chop hours boost)
+                        current_time = datetime.datetime.now().time()
+                        is_chop_hours = (datetime.time(10, 30) <= current_time < datetime.time(11, 30)) or \
+                                         (datetime.time(13, 0) <= current_time < datetime.time(13, 30))
+                        required_adx = _tier_now.min_adx_to_trade
+                        if is_chop_hours:
+                            required_adx += 5.0
+                        
+                        if _adx_now >= required_adx:
                             checks.append(("ADX Strength", True, f"{_adx_now:.1f}"))
                         else:
-                            checks.append(("ADX Strength", False, f"{_adx_now:.1f} < {_tier_now.min_adx_to_trade}"))
+                            label = f"{_adx_now:.1f} < {required_adx:.1f} (Chop Hour Boosted)" if is_chop_hours else f"{_adx_now:.1f} < {required_adx:.1f}"
+                            checks.append(("ADX Strength", False, label))
 
                         # 2. Trend Presence
                         if trend in ("BULLISH", "BEARISH"):
@@ -564,6 +572,8 @@ class MomentumStrategy:
     def analyze_market_trend(self):
         from backend.market_service import market_service
         market_data = market_service.get_market_data()
+        if market_data and 'oi_data' in market_data:
+            self.oi_data = market_data['oi_data']
         analysis = market_data.get('analysis', {})
         
         if analysis and analysis.get('regime') != 'UNKNOWN':
@@ -1025,7 +1035,8 @@ class MomentumStrategy:
         if risk_per_trade < tier.min_risk_floor:
             risk_per_trade = tier.min_risk_floor
 
-        option_sl_points = atr
+        # Standard proxy: Weekly Nifty option ATR is approximately 0.5x Index ATR
+        option_sl_points = atr * 0.5
         if option_sl_points < 5: option_sl_points = 5
 
         # Calculate actual margin per lot. Fallback to half the tier threshold if LTP unknown.
@@ -1135,7 +1146,7 @@ class MomentumStrategy:
                 'sl_price': sl_price,
                 'target_price': target_price,
                 'dynamic_rr': dynamic_rr,
-                'atr': atr,
+                'atr': option_sl_points,
                 'context': trade_context
             }
 
@@ -1215,7 +1226,7 @@ class MomentumStrategy:
                 'sl_price': actual_sl,
                 'target_price': actual_target,
                 'dynamic_rr': dynamic_rr,
-                'atr': atr,
+                'atr': option_sl_points,
                 'context': trade_context,
                 'initial_risk': actual_sl_points
             }
@@ -1303,11 +1314,12 @@ class MomentumStrategy:
 
         if not self.dry_run:
             try:
+                broker_ordertype = "LIMIT" if exit_type == "LIMIT" else "MARKET"
                 orderparams = {
                     "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
                     "transactiontype": "SELL", "exchange": "NFO", 
-                    "ordertype": exit_type,
-                    "price": self.active_position.get('sl_price', 0) if exit_type == "LIMIT" else 0,
+                    "ordertype": broker_ordertype,
+                    "price": self.active_position.get('sl_price', 0) if broker_ordertype == "LIMIT" else 0,
                     "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
                 }
                 oid = self.order_manager.place_order(orderparams)
