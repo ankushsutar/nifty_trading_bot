@@ -106,6 +106,10 @@ class DataFetcher:
         if cache_key in self.data_cache:
             last_time, cached_df = self.data_cache[cache_key]
             if time.time() - last_time < self.cache_duration:
+                # If we are the BACKEND (master) process, keep the shared disk cache in sync
+                # so child processes don't see it as expired/stale.
+                if os.getenv("PROCESS_TYPE") == "BACKEND":
+                    self._write_disk_cache(cache_key, cached_df)
                 return self._merge_live_candle(cached_df.copy(), symbol_token, interval)
 
         # 2. Check Disk Cache (for sharing across processes)
