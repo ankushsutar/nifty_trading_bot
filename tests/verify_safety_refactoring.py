@@ -382,6 +382,15 @@ class TestSafetyRefactoring(unittest.TestCase):
                 # Verify that _write_disk_cache was called to sync with disk
                 fetcher._write_disk_cache.assert_called_once_with(cache_key, df_mock)
                 
+                # Clear in-memory cache to trigger cold path
+                fetcher.data_cache.clear()
+                fetcher._read_disk_cache = MagicMock(return_value=df_mock)
+                fetcher.api.getCandleData = MagicMock(return_value={"status": True, "data": [["2026-06-05 11:00:00", 100.0, 110.0, 90.0, 105.0, 1000.0]]})
+                
+                # Call fetch_latest_candles (should bypass disk cache read and go directly to mock REST fetch)
+                fetcher.fetch_latest_candles("99926000")
+                fetcher._read_disk_cache.assert_not_called()
+                
             # --- 2. Child Process (Non-BACKEND) Behavior ---
             with patch.dict(os.environ, {"PROCESS_TYPE": "BOT"}):
                 fetcher.data_cache.clear()

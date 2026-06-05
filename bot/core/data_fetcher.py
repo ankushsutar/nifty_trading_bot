@@ -64,16 +64,25 @@ class DataFetcher:
             if time.time() - last_time < 15: # LTP cache is longer (15s) to avoid AB1004
                 return cached_ltp
 
-        try:
-            from bot.utils.rate_limiter import rate_limiter
-            rate_limiter.wait()
-            resp = self.api.ltpData(exchange, "SYMBOL", token)
-            if resp and resp.get('status'):
-                ltp = float(resp['data']['ltp'])
-                self.data_cache[cache_key] = (time.time(), ltp)
-                return ltp
-        except Exception as e:
-            logger.error(f"DataFetcher LTP Error: {e}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                from bot.utils.rate_limiter import rate_limiter
+                rate_limiter.wait()
+                resp = self.api.ltpData(exchange, "SYMBOL", token)
+                if resp and resp.get('status'):
+                    ltp = float(resp['data']['ltp'])
+                    self.data_cache[cache_key] = (time.time(), ltp)
+                    return ltp
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(0.5)
+                        continue
+            except Exception as e:
+                if attempt == max_retries - 1:
+                    logger.error(f"DataFetcher LTP Error: {e}")
+                else:
+                    time.sleep(0.5)
         
         return 0.0
 
@@ -116,12 +125,13 @@ class DataFetcher:
                 return self._merge_live_candle(cached_df.copy(), symbol_token, interval)
 
         # 2. Check Disk Cache (for sharing across processes)
-        disk_data = self._read_disk_cache(cache_key)
-        if disk_data is not None:
-            logger.info(f"Using Disk-Cached Data for {symbol_token}_{interval}")
-            # Update in-memory cache
-            self.data_cache[cache_key] = (time.time(), disk_data)
-            return self._merge_live_candle(disk_data.copy(), symbol_token, interval)
+        if os.getenv("PROCESS_TYPE") != "BACKEND":
+            disk_data = self._read_disk_cache(cache_key)
+            if disk_data is not None:
+                logger.info(f"Using Disk-Cached Data for {symbol_token}_{interval}")
+                # Update in-memory cache
+                self.data_cache[cache_key] = (time.time(), disk_data)
+                return self._merge_live_candle(disk_data.copy(), symbol_token, interval)
 
         # 3. AB1004 Cool-down: If we recently hit a rate limit for this token, 
         # return stale data immediately instead of hammering the API again.

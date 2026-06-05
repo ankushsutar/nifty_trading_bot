@@ -195,7 +195,21 @@ class SafetyGatekeeper:
                 logger.warning(">>> [Gatekeeper] Broker API is not initialized. Falling back to DB realized PnL.")
                 return self.get_daily_realized_pnl()
 
-            pos_resp = self.api.position()
+            pos_resp = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    from bot.utils.rate_limiter import rate_limiter
+                    rate_limiter.wait()
+                    pos_resp = self.api.position()
+                    if pos_resp and pos_resp.get('status'):
+                        break
+                except Exception as ex:
+                    if attempt == max_retries - 1:
+                        logger.warning(f">>> [Gatekeeper] Broker position API error: {ex}")
+                if attempt < max_retries - 1:
+                    time.sleep(0.5)
+
             if not pos_resp or not pos_resp.get('status'):
                 logger.warning(">>> [Gatekeeper] Broker position fetch failed. Falling back to DB-based PnL.")
                 return self.get_daily_realized_pnl()
