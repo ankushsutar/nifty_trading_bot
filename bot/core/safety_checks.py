@@ -196,9 +196,14 @@ class SafetyGatekeeper:
                 return self.get_daily_realized_pnl()
 
             pos_resp = self.api.position()
-            if not pos_resp or not pos_resp.get('status') or not pos_resp.get('data'):
-                logger.warning(">>> [Gatekeeper] Broker position fetch failed or returned empty. Falling back to DB-based PnL.")
+            if not pos_resp or not pos_resp.get('status'):
+                logger.warning(">>> [Gatekeeper] Broker position fetch failed. Falling back to DB-based PnL.")
                 return self.get_daily_realized_pnl()
+
+            positions = pos_resp.get('data')
+            if not positions:
+                # Successful response but no positions are active/closed yet (normal before trading)
+                return 0.0
 
             total_realized_pnl = 0.0
             for pos in pos_resp.get('data', []):
