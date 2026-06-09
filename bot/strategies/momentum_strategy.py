@@ -347,10 +347,12 @@ class MomentumStrategy:
                             time.sleep(10)
                             continue
 
-                    # 3. Check Candle Data Freshness
                     if not self.dry_run:
                         try:
-                            _df_fresh = self.data_fetcher.fetch_latest_candles("99926000")
+                            from bot.config.settings import Config
+                            from bot.config.instruments import get_instrument
+                            spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                            _df_fresh = self.data_fetcher.fetch_latest_candles(spot_tok)
                             if _df_fresh is not None and not _df_fresh.empty:
                                 _last_ts = _df_fresh.iloc[-1]['timestamp']
                                 _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
@@ -457,7 +459,10 @@ class MomentumStrategy:
                             
                             # 7. PRO-TRADER: Volume Confirmation
                             # Fetch fresh 5m candles for volume analysis
-                            _df_vol = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=1)
+                            from bot.config.settings import Config
+                            from bot.config.instruments import get_instrument
+                            spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                            _df_vol = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE", days=1)
                             if _df_vol is not None and not _df_vol.empty:
                                 avg_vol = _df_vol['volume'].tail(6).iloc[:-1].mean()
                                 curr_vol = _df_vol['volume'].iloc[-1]
@@ -501,7 +506,10 @@ class MomentumStrategy:
                         # --- INSTITUTIONAL LEVEL AWARENESS & EXIT LOGIC ---
                         if self.active_position:
                             levels = levels_provider.get_levels()
-                            nifty_ltp = self.data_fetcher.get_ltp("99926000")
+                            from bot.config.settings import Config
+                            from bot.config.instruments import get_instrument
+                            spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                            nifty_ltp = self.data_fetcher.get_ltp(spot_tok)
                             is_retesting_level = False
                             current_leg = self.active_position['leg']
                             current_stage = self.active_position.get('ladder_stage', 0)
@@ -593,7 +601,10 @@ class MomentumStrategy:
         if is_mock_api:
             df = self.get_mock_df()
         else:
-            df = self.data_fetcher.fetch_latest_candles("99926000")
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+            df = self.data_fetcher.fetch_latest_candles(spot_tok)
             # Cache df for reuse within the same analysis cycle (e.g., BBW calculation)
             self._last_df = df
             
@@ -610,7 +621,10 @@ class MomentumStrategy:
                     self.last_oi_scan = now
                 else:
                     ltp = df.iloc[-1]['close']
-                    strike = int(round(ltp / 50) * 50)
+                    from bot.config.settings import Config
+                    from bot.config.instruments import get_instrument
+                    instr = get_instrument(Config.ACTIVE_SYMBOL)
+                    strike = int(round(ltp / instr.strike_step) * instr.strike_step)
                     expiry = get_next_weekly_expiry()
                     self.oi_data = self.oi_analyzer.get_market_sentiment(expiry, strike)
                     self.last_oi_scan = now
@@ -659,13 +673,10 @@ class MomentumStrategy:
         except Exception as e:
             logger.warning(f"[HTF] Could not read shared state: {e}")
 
-        # --- FALLBACK: REST call (only if shared file unavailable/stale) ---
-        from bot.utils.rate_limiter import rate_limiter
-        if rate_limiter.check_circuit_breaker() > 0:
-            logger.warning("[HTF] Circuit breaker active — returning NEUTRAL")
-            return "NEUTRAL"
-
-        df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIFTEEN_MINUTE")
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+        df = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIFTEEN_MINUTE")
 
         if df is None or len(df) < 3:
             return "NEUTRAL"
@@ -850,7 +861,10 @@ class MomentumStrategy:
         # that flips the EMAs without real sustained momentum behind it.
         _df_entry = None
         try:
-            _df_entry = self.data_fetcher.fetch_latest_candles("99926000")
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+            _df_entry = self.data_fetcher.fetch_latest_candles(spot_tok)
             if _df_entry is not None and len(_df_entry) >= 3:
                 _last3 = _df_entry.tail(3)
                 _bull_count = (_last3['close'] > _last3['open']).sum()
@@ -971,15 +985,26 @@ class MomentumStrategy:
         # Phase 3: Delta-Based Strike Selection (Target: 0.40 Delta)
         target_delta = 0.40
         from backend.market_service import market_service
-        vix = market_service.get_market_data().get('vix', 15.0)
-        if vix <= 0: vix = 15.0
+        vix_data = market_service.get_market_data()
+        if isinstance(vix_data, dict):
+            vix = vix_data.get('vix', 15.0)
+        else:
+            vix = 15.0
+        if not isinstance(vix, (int, float)) or vix <= 0:
+            vix = 15.0
         
         from bot.utils.greeks import select_strike_by_delta
-        strike, token, symbol = select_strike_by_delta(self.token_loader, nifty_ltp, expiry, vix, leg, target_delta)
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        active_sym = Config.ACTIVE_SYMBOL
+        instr = get_instrument(active_sym)
+        strike_diff = instr.strike_step
+
+        strike, token, symbol = select_strike_by_delta(self.token_loader, nifty_ltp, expiry, vix, leg, target_delta, active_sym)
         
         if not strike or not token:
             logger.warning("⚠️ Delta-based strike selection failed. Falling back to ATR-based calculation.")
-            atm_strike = round(nifty_ltp / 50) * 50
+            atm_strike = round(nifty_ltp / strike_diff) * strike_diff
             if atr < 15:
                 otm_offset = 0
             elif atr < 30:
@@ -998,8 +1023,7 @@ class MomentumStrategy:
                 otm_offset = 1
 
             strike_direction = 1 if leg == "CE" else -1
-            strike = atm_strike + strike_direction * otm_offset * 50
-            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            strike = atm_strike + strike_direction * otm_offset * strike_diff
             token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
 
         if not token: 

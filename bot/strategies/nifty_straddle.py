@@ -323,12 +323,14 @@ class NiftyStrategy:
              exit_price = fill.get('price', 0.0)
              trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
 
-    # --- Helpers ---
     def get_atm_strike(self):
         try:
-            ltp = self.data_fetcher.get_ltp("99926000")
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            ltp = self.data_fetcher.get_ltp(instr.analysis_token)
             if ltp and ltp > 0: 
-                return int(round(ltp / 50) * 50)
+                return int(round(ltp / instr.strike_step) * instr.strike_step)
         except Exception as e:
             logger.warning(f"Straddle get_atm_strike error: {e}")
         return None

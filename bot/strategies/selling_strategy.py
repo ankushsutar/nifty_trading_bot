@@ -189,7 +189,11 @@ class SellingStrategy:
                             
                             # Resolve details
                             for k, v in new_legs_to_open.items():
-                                token, symbol = self.token_loader.get_token("NIFTY", expiry, v["strike"], v["type"])
+                                from bot.config.settings import Config
+                                from bot.config.instruments import get_instrument
+                                active_sym = Config.ACTIVE_SYMBOL
+                                instr = get_instrument(active_sym)
+                                token, symbol = self.token_loader.get_token(active_sym, expiry, v["strike"], v["type"], instrument_type=instr.instrument_type, exchange=instr.option_exchange)
                                 v.update({"token": token, "symbol": symbol, "initial_price": 10.0}) # Placeholder price
                             
                             logger.info(f">>> [Selling] [LIVE] Opening New {adj_info['side']} legs at {new_strike}...")
@@ -243,8 +247,12 @@ class SellingStrategy:
                 }
             }.get(strategy, {})
 
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            active_sym = Config.ACTIVE_SYMBOL
+            instr = get_instrument(active_sym)
             for key, (strike, opt_type) in mapping.items():
-                token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, opt_type)
+                token, symbol = self.token_loader.get_token(active_sym, expiry, strike, opt_type, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
                 if not token:
                     return None
                 legs[key] = {

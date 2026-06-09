@@ -5,6 +5,17 @@ from bot.utils.logger import logger
 
 _lookup = None
 
+SPOT_TOKEN_MAP = {
+    "99926000": {"kite_token": 256265, "symbol": "NIFTY 50", "exchange": "NSE"},
+    "99926009": {"kite_token": 260105, "symbol": "NIFTY BANK", "exchange": "NSE"},
+    "99926037": {"kite_token": 257801, "symbol": "NIFTY FIN SERVICE", "exchange": "NSE"},
+    "99926017": {"kite_token": 264969, "symbol": "INDIA VIX", "exchange": "NSE"},
+}
+
+REVERSE_SPOT_TOKEN_MAP = {
+    str(v["kite_token"]): k for k, v in SPOT_TOKEN_MAP.items()
+}
+
 def get_lookup():
     global _lookup
     if _lookup is None:
@@ -349,10 +360,9 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             lookup = get_lookup()
             symbol_name, exch = lookup.get_instrument_by_token(token)
             if not symbol_name:
-                if str(token) == '99926000':
-                    symbol_name, exch = "NIFTY 50", "NSE"
-                elif str(token) == '99926017':
-                    symbol_name, exch = "INDIA VIX", "NSE"
+                tok_str = str(token)
+                if tok_str in SPOT_TOKEN_MAP:
+                    symbol_name, exch = SPOT_TOKEN_MAP[tok_str]["symbol"], SPOT_TOKEN_MAP[tok_str]["exchange"]
                 else:
                     symbol_name, exch = symbol, exchange
             
@@ -377,8 +387,9 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
     def getCandleData(self, historicParam):
         try:
             token = historicParam['symboltoken']
-            if str(token) == '99926000':
-                instrument_token = 256265 # Kite NIFTY 50
+            tok_str = str(token)
+            if tok_str in SPOT_TOKEN_MAP:
+                instrument_token = SPOT_TOKEN_MAP[tok_str]["kite_token"]
             else:
                 instrument_token = int(token)
 
@@ -458,10 +469,9 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 for token in tokens:
                     symbol_name, exch_seg = lookup.get_instrument_by_token(token)
                     if not symbol_name:
-                        if str(token) == '99926000':
-                            symbol_name, exch_seg = "NIFTY 50", "NSE"
-                        elif str(token) == '99926017':
-                            symbol_name, exch_seg = "INDIA VIX", "NSE"
+                        tok_str = str(token)
+                        if tok_str in SPOT_TOKEN_MAP:
+                            symbol_name, exch_seg = SPOT_TOKEN_MAP[tok_str]["symbol"], SPOT_TOKEN_MAP[tok_str]["exchange"]
                         else:
                             continue
                     
@@ -556,9 +566,8 @@ class KiteTickerMarketWrapper:
             mapped_ticks = []
             for t in ticks:
                 token_str = str(t['instrument_token'])
-                # Map Zerodha Nifty spot to Angel Spot
-                if token_str == '256265':
-                    token_str = '99926000'
+                if token_str in REVERSE_SPOT_TOKEN_MAP:
+                    token_str = REVERSE_SPOT_TOKEN_MAP[token_str]
                     
                 last_price = t.get('last_price')
                 if last_price is not None:
@@ -608,8 +617,9 @@ class KiteTickerMarketWrapper:
         tokens = []
         for item in token_list:
             for t in item.get('tokens', []):
-                if str(t) == '99926000':
-                    tokens.append(256265)
+                tok_str = str(t)
+                if tok_str in SPOT_TOKEN_MAP:
+                    tokens.append(SPOT_TOKEN_MAP[tok_str]["kite_token"])
                 else:
                     tokens.append(int(t))
         if tokens:
@@ -622,8 +632,9 @@ class KiteTickerMarketWrapper:
         tokens = []
         for item in token_list:
             for t in item.get('tokens', []):
-                if str(t) == '99926000':
-                    tokens.append(256265)
+                tok_str = str(t)
+                if tok_str in SPOT_TOKEN_MAP:
+                    tokens.append(SPOT_TOKEN_MAP[tok_str]["kite_token"])
                 else:
                     tokens.append(int(t))
         if tokens:

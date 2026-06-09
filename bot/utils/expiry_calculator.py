@@ -55,22 +55,27 @@ def is_trading_day(date=None):
     return True
 
 
-def get_next_weekly_expiry():
+def get_next_weekly_expiry(symbol_name=None):
     """
-    Returns the next NIFTY weekly expiry as 'DDMMMYYYY' (e.g. '06JAN2026').
-    NIFTY expiry is Tuesday (weekday=1) as of Sep 2025.
-
-    Holiday handling: if Tuesday is an NSE holiday OR a weekend, walk
+    Returns the next weekly expiry for the active or given symbol as 'DDMMMYYYY' (e.g. '06JAN2026').
+    
+    Holiday handling: if target weekday is an NSE holiday OR a weekend, walk
     backwards one day at a time until a valid trading day is found.
-    Uses is_trading_day() so both holiday AND weekend cases are covered.
     """
+    from bot.config.settings import Config
+    from bot.config.instruments import get_instrument
+
+    if symbol_name is None:
+        symbol_name = Config.ACTIVE_SYMBOL
+
+    instr = get_instrument(symbol_name)
+    target_weekday = instr.expiry_day  # 1=Tue, 2=Wed, etc.
+
     today = datetime.date.today()
-    target_weekday = 1  # Tuesday
     days_ahead = (target_weekday - today.weekday()) % 7
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
     # Walk backwards until we land on a valid trading day.
-    # Handles: holiday-only, holiday+weekend (e.g. Tuesday+Monday both off → Friday).
     while not is_trading_day(next_expiry):
         next_expiry -= datetime.timedelta(days=1)
 

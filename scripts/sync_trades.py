@@ -12,7 +12,7 @@ import sys, os, datetime, argparse, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(override=True)
 
 from bot.core.angel_connect import get_angel_session
 from bot.core.trade_repo import trade_repo

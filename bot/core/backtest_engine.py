@@ -190,7 +190,15 @@ class BacktestEngine:
         fn = dispatch.get(strategy_name)
         if fn is None:
             raise ValueError(f"Unknown strategy: {strategy_name}")
-        return fn()
+        
+        raw_signals = fn()
+        if raw_signals.empty:
+            return raw_signals
+
+        # Warmup protection: Discard signals from the first 2 trading days
+        # (approx 150 5-minute bars) to let indicators warm up.
+        first_valid_time = self.df_5m.index[min(len(self.df_5m) - 1, 150)]
+        return raw_signals[raw_signals["timestamp"] >= first_valid_time].reset_index(drop=True)
 
     # ---- MOMENTUM (EMA9/EMA21 crossover + RSI + HTF) ---- #
 
@@ -322,18 +330,25 @@ class BacktestEngine:
         and simulate trade outcomes using the 1m candle data.
         """
         df1 = self.df_1m
+        if "adx" not in self.df_5m.columns:
+            self.df_5m["adx"] = self._adx(self.df_5m, 14)
 
         capital   = self.initial_capital
         equity_curve: list[dict] = [{"ts": df1.index[0], "capital": capital}]
         trades:    list[dict] = []
         daily_pnl = {}   # date → float
         daily_count = {} # date → int
+        last_exit_time = None
 
         for _, signal in signals.iterrows():
             ts        = signal["timestamp"]
             direction = signal["direction"]
             atr       = signal["atr"] if signal["atr"] > 0 else 20.0
             date      = ts.date()
+
+            # Ignore overlapping signals if we are already in a trade
+            if last_exit_time is not None and ts < last_exit_time:
+                continue
 
             # --- Daily caps (SafetyGatekeeper parity) ---
             d_pnl   = daily_pnl.get(date, 0.0)
@@ -353,9 +368,11 @@ class BacktestEngine:
 
             # --- Option premium & sizing ---
             if direction == "STRADDLE":
-                # Combined premium of CE + PE (ATM)
-                entry_premium = 2 * (atr * self.option_premium_atr_mult)
-                delta, sl_mult, tgt_mult = 0.50, 0.15, 0.20   # 15% SL, 20% Target (Combined)
+                # Combined premium of CE + PE (OTM legs of Iron Condor)
+                entry_premium = max(25.0, atr * 2.5)
+                delta, sl_mult, tgt_mult = 0.08, 1.00, 0.50   # 100% SL, 50% TP target
+                sl_price     = entry_premium * (1 + sl_mult)  # Stop loss is higher (e.g. doubles)
+                target_price = entry_premium * (1 - tgt_mult) # Target is lower (e.g. halves)
             else:
                 entry_premium = max(5.0, atr * self.option_premium_atr_mult)
                 # Volatility-adjusted strike: high ATR → deeper OTM (lower premium ÷ higher leverage)
@@ -369,44 +386,54 @@ class BacktestEngine:
                 else:
                     # High vol: 2 OTM (delta 0.25) — bigger swings expected
                     delta, sl_mult, tgt_mult = 0.25, self.tier_sl_pct * 1.5, 0.70
-
-            sl_price     = entry_premium * (1 - sl_mult)
-            target_price = entry_premium * (1 + tgt_mult)
+                sl_price     = entry_premium * (1 - sl_mult)
+                target_price = entry_premium * (1 + tgt_mult)
 
             # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
-            if 30000 <= capital <= 40000:
-                if entry_premium <= 80:
-                    lots = 2
-                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} <= 80. Trading 2 lots.")
-                elif entry_premium > 100:
-                    lots = 1
-                    logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} > 100. Trading 1 lot.")
-                else:
-                    lots = 1
+            if direction == "STRADDLE":
+                lots = max(1, int(capital / 35000.0))
+                lots = min(lots, self.max_lots)
+                qty = lots * self.lot_size
+                estimated_cost = lots * 35000.0
+                if estimated_cost > capital:
+                    continue
             else:
-                # Default position sizing: risk-based
-                risk_amount  = capital * self.risk_per_trade_pct
-                max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
-                lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
-            
-            # Realistic Cap: Never trade more than max_lots
-            lots = min(lots, self.max_lots)
-            qty  = lots * self.lot_size
-
-            # Margin check: estimated cost <= 90% of capital
-            estimated_cost = entry_premium * qty
-            if estimated_cost > capital * 0.90:
-                lots = max(1, int(capital * 0.90 / (entry_premium * self.lot_size)))
+                if 30000 <= capital <= 40000:
+                    if entry_premium <= 80:
+                        lots = 2
+                        logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} <= 80. Trading 2 lots.")
+                    elif entry_premium > 100:
+                        lots = 1
+                        logger.debug(f"[Backtest] Sizing: Premium ₹{entry_premium:.1f} > 100. Trading 1 lot.")
+                    else:
+                        lots = 1
+                else:
+                    # Default position sizing: risk-based
+                    risk_amount  = capital * self.risk_per_trade_pct
+                    max_loss_per_lot = (entry_premium - sl_price) * self.lot_size
+                    lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
+                
+                # Realistic Cap: Never trade more than max_lots
+                lots = min(lots, self.max_lots)
                 qty  = lots * self.lot_size
-                estimated_cost = entry_premium * qty
 
-            if estimated_cost > capital:
-                continue  # Genuinely unaffordable
+                # Margin check: estimated cost <= 90% of capital
+                estimated_cost = entry_premium * qty
+                if estimated_cost > capital * 0.90:
+                    lots = max(1, int(capital * 0.90 / (entry_premium * self.lot_size)))
+                    qty  = lots * self.lot_size
+                    estimated_cost = entry_premium * qty
+
+                if estimated_cost > capital:
+                    continue  # Genuinely unaffordable
 
             # --- Apply Entry Slippage ---
             # Straddles trade TWO instruments, effectively doubling bid-ask friction
             slip_mult = 2.0 if direction == "STRADDLE" else 1.0
-            entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
+            if direction == "STRADDLE":
+                entry_premium_slippage = entry_premium * (1 - self.slippage_pct * slip_mult)
+            else:
+                entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
 
             # Brokerage + Realistic Taxes (STT, GST, Transaction Charges ≈ 0.1% of turnover)
             # Straddles involve two legs, doubling the total transaction instances
@@ -436,16 +463,21 @@ class BacktestEngine:
 
             exit_price, exit_reason, exit_time = self._find_exit(
                 future_day, direction, entry_premium, sl_price, target_price,
-                atr, delta, qty, use_progressive_trail=use_progressive
+                atr, delta, qty, use_progressive_trail=use_progressive,
+                adx_series=self.df_5m["adx"]
             )
 
             # --- Apply Exit Slippage ---
-            exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
-
-            pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
+            if direction == "STRADDLE":
+                exit_price_slippage = exit_price * (1 + self.slippage_pct * slip_mult)
+                pnl = (entry_premium_slippage - exit_price_slippage) * qty - total_cost
+            else:
+                exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
+                pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
             capital += pnl
             daily_pnl[date]   = daily_pnl.get(date, 0.0) + pnl
             daily_count[date] = d_count + 1
+            last_exit_time = exit_time
 
             trade_record = {
                 "date":         str(date),
@@ -479,7 +511,7 @@ class BacktestEngine:
 
     def _find_exit(
         self, future_bars, direction, entry_price, sl_price, target_price, atr, delta, qty,
-        use_progressive_trail=False
+        use_progressive_trail=False, adx_series=None
     ):
         """
         Walk through 1m bars after entry to find the first exit.
@@ -503,17 +535,29 @@ class BacktestEngine:
 
         for ts, row in future_bars.iterrows():
             if direction == "STRADDLE":
-                entry_leg = entry_price / 2
-                # CE leg: move up is profit
-                move_ce = (row["close"] - entry_index)
-                adj_delta_ce = max(0.05, min(1.0, current_delta + (move_ce * gamma_factor)))
-                price_ce = entry_leg + (move_ce * (current_delta + adj_delta_ce) / 2)
-                # PE leg: move down is profit
-                move_pe = (entry_index - row["close"])
-                adj_delta_pe = max(0.05, min(1.0, current_delta + (move_pe * gamma_factor)))
-                price_pe = entry_leg + (move_pe * (current_delta + adj_delta_pe) / 2)
+                # For short Iron Condor:
+                index_move = abs(row["close"] - entry_index)
+                # Option price increases with index move (loss) and decreases with time decay (profit)
+                elapsed_min = (ts - start_ts).total_seconds() / 60
+                decayed_premium = entry_price * (0.24 * (elapsed_min / 375.0)) # ~24% decay per day
+                option_price = entry_price + (index_move * delta) - decayed_premium
+                option_price = max(0.01, option_price)
                 
-                option_price = max(0.1, price_ce + price_pe)
+                # Exits
+                if ts.time() >= dtime(15, 10): # Exits at 3:10 PM
+                    return option_price, "TIME_EXIT", ts
+                if option_price >= current_sl:
+                    return current_sl, "STOPLOSS", ts
+                if option_price <= target_price:
+                    return target_price, "TARGET", ts
+                # Trend-Kill Exit for Option Writing (STRADDLE)
+                if adx_series is not None:
+                    ts_floor = ts.floor("5min")
+                    if ts_floor in adx_series.index:
+                        if adx_series.loc[ts_floor] >= 30.0:
+                            # Exit with current simulated option price at Trend-Kill time
+                            return option_price, "TREND_KILL", ts
+                continue
             else:
                 index_move = (row["close"] - entry_index) if direction == "CE" else (entry_index - row["close"])
                 

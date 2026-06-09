@@ -4,7 +4,7 @@ from typing import List, Optional
 # pyrefly: ignore [missing-import]
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -189,11 +189,44 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
 }
 
 
+import datetime
+
+class ConfigMeta(type):
+    _active_symbol_override = None
+    _lot_size_override = None
+
+    @property
+    def ACTIVE_SYMBOL(cls):
+        if cls._active_symbol_override:
+            return cls._active_symbol_override.upper()
+        override = os.getenv("ACTIVE_SYMBOL")
+        if override:
+            return override.upper()
+        # Default fallback is always NIFTY
+        return "NIFTY"
+
+    @ACTIVE_SYMBOL.setter
+    def ACTIVE_SYMBOL(cls, val):
+        cls._active_symbol_override = val
+
+    @property
+    def NIFTY_LOT_SIZE(cls):
+        if cls._lot_size_override is not None:
+            return cls._lot_size_override
+        sym = cls.ACTIVE_SYMBOL
+        from bot.config.instruments import get_instrument
+        return get_instrument(sym).lot_size
+
+    @NIFTY_LOT_SIZE.setter
+    def NIFTY_LOT_SIZE(cls, val):
+        cls._lot_size_override = val
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CONFIG CLASS
 # ─────────────────────────────────────────────────────────────────────────────
 
-class Config:
+class Config(metaclass=ConfigMeta):
     # ── Broker Toggle ──────────────────────────────────────────────────────
     BROKER       = os.getenv("BROKER", "ANGEL").upper()
 
@@ -227,8 +260,6 @@ class Config:
     STRATEGY_EXIT_TIME       = (15, 10)
 
     # ── NIFTY constants ────────────────────────────────────────────────────
-    ACTIVE_SYMBOL = os.getenv("ACTIVE_SYMBOL", "NIFTY")
-    NIFTY_LOT_SIZE = 65                   # Updated for 2026
     SCRIP_MASTER_URL = (
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     )

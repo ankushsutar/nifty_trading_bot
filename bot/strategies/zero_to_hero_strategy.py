@@ -65,13 +65,19 @@ class ZeroToHeroStrategy:
         Uses Delta-based strike selection to find a deep OTM contract (Target Delta: 0.20).
         """
         target_delta = 0.20
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        active_sym = Config.ACTIVE_SYMBOL
+        instr = get_instrument(active_sym)
+        strike_diff = instr.strike_step
+
         try:
             from backend.market_service import market_service
             vix = market_service.get_market_data().get('vix', 15.0)
             if vix <= 0: vix = 15.0
             
             from bot.utils.greeks import select_strike_by_delta
-            strike, token, symbol = select_strike_by_delta(self.token_loader, ltp, expiry, vix, leg, target_delta)
+            strike, token, symbol = select_strike_by_delta(self.token_loader, ltp, expiry, vix, leg, target_delta, active_sym)
             
             if strike and token:
                 prem = self.data_fetcher.get_ltp(token, "NFO")
@@ -83,13 +89,13 @@ class ZeroToHeroStrategy:
             logger.warning(f"Z2H Delta selection error: {e}")
 
         logger.warning("⚠️ Z2H Delta-based strike selection failed or bypassed. Falling back to price scanner.")
-        atm_strike = round(ltp / 50) * 50
+        atm_strike = round(ltp / strike_diff) * strike_diff
         direction = 1 if leg == "CE" else -1
         
         # Start scanning at 4 strikes OTM (Deep) up to 12 strikes (Extremely Deep)
         for depth in range(3, 12):
-            target_strike = atm_strike + (depth * 50 * direction)
-            token, symbol = self.token_loader.get_token("NIFTY", expiry, target_strike, leg)
+            target_strike = atm_strike + (depth * strike_diff * direction)
+            token, symbol = self.token_loader.get_token(active_sym, expiry, target_strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
             if not token: continue
             
             prem = self.data_fetcher.get_ltp(token, "NFO")
@@ -101,8 +107,8 @@ class ZeroToHeroStrategy:
             # If it is already cheaper than MIN, we've gone too deep! Walk back one step.
             if prem and prem < self.MIN_TARGET_PREMIUM:
                 # Walk back to previous depth if valid
-                prev_strike = atm_strike + ((depth - 1) * 50 * direction)
-                t_prev, s_prev = self.token_loader.get_token("NIFTY", expiry, prev_strike, leg)
+                prev_strike = atm_strike + ((depth - 1) * strike_diff * direction)
+                t_prev, s_prev = self.token_loader.get_token(active_sym, expiry, prev_strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
                 p_prev = self.data_fetcher.get_ltp(t_prev, "NFO")
                 logger.warning(f"Z2H Warning: Went too deep (₹{prem}). Retracting one step to {s_prev} @ ₹{p_prev}")
                 return t_prev, s_prev, p_prev, prev_strike

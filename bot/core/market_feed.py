@@ -108,11 +108,15 @@ class MarketFeedService:
         self.subscribed_tokens.clear()
         self.last_tick_time = time.time()
         
-        # 1. Subscribe to Nifty 50 Spot (Token 99926000)
+        # 1. Subscribe to Active Spot
         try:
-            token_list = [{"exchangeType": 1, "tokens": ["99926000"]}]
-            self.sws.subscribe("cor_id_nifty_spot", 3, token_list)
-            logger.info(">>> [MarketFeed] Subscribed to Nifty 50 Spot")
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            spot_token = instr.analysis_token
+            token_list = [{"exchangeType": 1, "tokens": [spot_token]}]
+            self.sws.subscribe(f"cor_id_{instr.name.lower()}_spot", 3, token_list)
+            logger.info(f">>> [MarketFeed] Subscribed to {instr.name} Spot ({spot_token})")
             
             # 2. Trigger Dynamic Subscription (in separate thread to not block on_open)
             threading.Thread(target=self._manage_dynamic_subscriptions, daemon=True).start()
@@ -142,14 +146,21 @@ class MarketFeedService:
                     time.sleep(2)
                     continue
 
-                # 2. Get Nifty Spot Price
-                spot_price = self.get_ltp("99926000")
+                from bot.config.settings import Config
+                from bot.config.instruments import get_instrument
+                instr = get_instrument(Config.ACTIVE_SYMBOL)
+                spot_token = instr.analysis_token
+                spot_symbol = instr.spot_symbol
+                strike_diff = instr.strike_step
+
+                # 2. Get Spot Price
+                spot_price = self.get_ltp(spot_token)
                 if not spot_price:
                     # Fallback to REST API for Spot price to avoid dynamic subscription lock
                     try:
                         api = get_session()
                         if api:
-                            res = api.ltpData("NSE", "Nifty 50", "99926000")
+                            res = api.ltpData(instr.exchange, spot_symbol, spot_token)
                             if res and res.get('status') == True:
                                 spot_price = float(res['data']['ltp'])
                                 logger.info(f">>> [MarketFeed] Dynamic Sub: REST Spot Fallback = {spot_price}")
@@ -162,12 +173,11 @@ class MarketFeedService:
                     continue
                     
                 # 3. Calculate ATM
-                strike_diff = 50
                 atm = round(spot_price / strike_diff) * strike_diff
                 
                 # 4. Check if ATM changed or forced refresh (every 60s)
                 if atm != self.current_atm or time.time() - self.last_subscription_time > 60:
-                    logger.info(f">>> [MarketFeed] Updating Subscriptions. Nifty: {spot_price}, ATM: {atm}")
+                    logger.info(f">>> [MarketFeed] Updating Subscriptions. {instr.name}: {spot_price}, ATM: {atm}")
                     self._update_subscriptions(atm)
                     self.current_atm = atm
                     self.last_subscription_time = time.time()
@@ -181,8 +191,14 @@ class MarketFeedService:
         expiry = get_next_weekly_expiry()
         # logger.info(f"Fetching Options for Expiry: {expiry}")
         
-        # Get Bucket: ATM +/- 5 strikes (250 points)
-        bucket = self.token_lookup.get_option_bucket(Config.ACTIVE_SYMBOL, expiry, atm_strike, range_points=250)
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        spot_token = instr.analysis_token
+        range_pts = 5 * instr.strike_step
+        
+        # Get Bucket: ATM +/- 5 strikes
+        bucket = self.token_lookup.get_option_bucket(Config.ACTIVE_SYMBOL, expiry, atm_strike, range_points=range_pts)
         
         if not bucket:
             logger.warning("No Options found for subscription!")
@@ -192,8 +208,8 @@ class MarketFeedService:
         for key, info in bucket.items():
             new_tokens.add(info['token'])
 
-        # Always keep Nifty Spot
-        new_tokens.add("99926000")
+        # Always keep Spot
+        new_tokens.add(spot_token)
 
         # Safely preserve subscriptions for any currently open trades in DB to prevent them from drifting out
         try:
@@ -207,7 +223,7 @@ class MarketFeedService:
             logger.error(f"Error fetching open trades for subscription safeguarding: {e}")
 
         # Unsubscribe tokens that have drifted out of range
-        to_unsubscribe = self.subscribed_tokens - new_tokens - {"99926000"}
+        to_unsubscribe = self.subscribed_tokens - new_tokens - {spot_token}
         if to_unsubscribe:
             unsub_list = [{"exchangeType": 2, "tokens": list(to_unsubscribe)}]
             try:

@@ -220,7 +220,10 @@ class GammaBlastStrategy:
             # Check Candle Data Freshness
             if not self.dry_run:
                 try:
-                    _df_fresh = self.data_fetcher.fetch_latest_candles("99926000")
+                    from bot.config.settings import Config
+                    from bot.config.instruments import get_instrument
+                    spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                    _df_fresh = self.data_fetcher.fetch_latest_candles(spot_tok)
                     if _df_fresh is not None and not _df_fresh.empty:
                         _last_ts = _df_fresh.iloc[-1]['timestamp']
                         _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
@@ -240,7 +243,10 @@ class GammaBlastStrategy:
             if not analysis or analysis.get('regime') == 'UNKNOWN':
                 logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
                 # Final fallback to direct fetch only if market_service is failing
-                df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE")
+                from bot.config.settings import Config
+                from bot.config.instruments import get_instrument
+                spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                df = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE")
                 if df is None or len(df) < 20:
                     time.sleep(30)
                     continue
@@ -396,7 +402,10 @@ class GammaBlastStrategy:
             # Enforced at all times to prevent buying/selling at trend climax/exhaustion points.
             _df_gb = None
             try:
-                _df_gb = self.data_fetcher.fetch_latest_candles("99926000")
+                from bot.config.settings import Config
+                from bot.config.instruments import get_instrument
+                spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                _df_gb = self.data_fetcher.fetch_latest_candles(spot_tok)
                 if _df_gb is not None and len(_df_gb) >= 3:
                     _l3 = _df_gb.tail(3)
                     _bull = (_l3['close'] > _l3['open']).sum()
@@ -511,8 +520,13 @@ class GammaBlastStrategy:
                     elif iv_rank > 0.60 and otm_depth > 1:
                         otm_depth = otm_depth - 1
                 
-                strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
-                token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+                from bot.config.settings import Config
+                from bot.config.instruments import get_instrument
+                active_sym = Config.ACTIVE_SYMBOL
+                instr = get_instrument(active_sym)
+                strike_diff = instr.strike_step
+                strike = atm_strike + (otm_depth * strike_diff * (1 if leg == "CE" else -1))
+                token, symbol = self.token_loader.get_token(active_sym, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
                 
             if not token:
                 logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
@@ -563,7 +577,11 @@ class GammaBlastStrategy:
             time.sleep(30) # Throttle loop
 
     def place_entry(self, expiry, strike, leg, qty, quote_ltp):
-        token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        active_sym = Config.ACTIVE_SYMBOL
+        instr = get_instrument(active_sym)
+        token, symbol = self.token_loader.get_token(active_sym, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
         if not token:
             logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
             return

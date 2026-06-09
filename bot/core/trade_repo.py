@@ -395,7 +395,7 @@ class TradeRepository:
             if strategy:
                 query["strategy"] = strategy
             if symbol:
-                query["symbol"] = symbol
+                query["symbol"] = {"$regex": f"^{symbol}"}
                 
             return self.collection.find_one(query, sort=[("id", DESCENDING)])
         except Exception as e:
@@ -455,7 +455,7 @@ class TradeRepository:
             
             result = self.collection.update_many(
                 {
-                    "status": "OPEN",
+                    "status": {"$in": ["OPEN", "PLACED"]},
                     "created_at": {"$lt": today_start}
                 },
                 {

@@ -10,9 +10,17 @@ class OIAnalyzer:
     def __init__(self, api, token_lookup):
         self.api = api
         self.token_lookup = token_lookup
-        self.snapshot_file = os.path.join(os.getcwd(), "data", "oi_snapshot.json")
-        self.history_file = os.path.join(os.getcwd(), "data", "oi_history.json")
         self._history = self._load_history()
+
+    @property
+    def snapshot_file(self):
+        from bot.config.settings import Config
+        return os.path.join(os.getcwd(), "data", f"oi_snapshot_{Config.ACTIVE_SYMBOL.lower()}.json")
+
+    @property
+    def history_file(self):
+        from bot.config.settings import Config
+        return os.path.join(os.getcwd(), "data", f"oi_history_{Config.ACTIVE_SYMBOL.lower()}.json")
 
     def _load_history(self):
         """Loads persistence history from disk."""
@@ -62,14 +70,16 @@ class OIAnalyzer:
             json.dump(data, f)
 
     def get_market_sentiment(self, expiry, atm_strike):
-        """
-        Analyzes OI sentiment using Batch Quote API.
-        This replaces 10 historical fetches with 1 Quote fetch.
-        """
         try:
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            active_symbol = Config.ACTIVE_SYMBOL
+            instr = get_instrument(active_symbol)
+            strike_diff = instr.strike_step
+
             # 1. Determine Strikes (5 above, 5 below)
-            base_strike = round(atm_strike / 50) * 50
-            strikes = [base_strike + (i * 50) for i in range(-5, 6)]
+            base_strike = round(atm_strike / strike_diff) * strike_diff
+            strikes = [base_strike + (i * strike_diff) for i in range(-5, 6)]
             
             # 2. Map Strikes to Tokens
             tokens_to_fetch = []
@@ -77,7 +87,7 @@ class OIAnalyzer:
             
             for strike in strikes:
                 for opt_type in ['CE', 'PE']:
-                    token, symbol = self.token_lookup.get_token("NIFTY", expiry, strike, opt_type)
+                    token, symbol = self.token_lookup.get_token(active_symbol, expiry, strike, opt_type)
                     if token:
                         tokens_to_fetch.append(token)
                         token_map[token] = {"strike": strike, "type": opt_type, "symbol": symbol}

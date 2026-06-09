@@ -15,6 +15,11 @@ class LevelsProvider:
             cls._instance._levels_cache = {} # Key: date, Value: levels dict
         return cls._instance
 
+    @property
+    def levels_file_path(self):
+        from bot.config.settings import Config
+        return f"data/institutional_levels_{Config.ACTIVE_SYMBOL.lower()}.json"
+
     def get_levels(self):
         """
         Returns institutional levels (Camarilla + PDH/L/C) for the current session.
@@ -28,7 +33,7 @@ class LevelsProvider:
             return self._levels_cache[today]
 
         # 2. Check disk cache
-        levels_file = "data/institutional_levels.json"
+        levels_file = self.levels_file_path
         if os.path.exists(levels_file):
             try:
                 with open(levels_file, "r") as f:
@@ -62,8 +67,10 @@ class LevelsProvider:
         """
         try:
             # Use 1 day; DataFetcher automatically pads it to include the full previous session.
-            # Standardizing to 1 ensures we hit the shared unified cache key on startup.
-            df = self.data_fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=1)
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            df = self.data_fetcher.fetch_latest_candles(instr.analysis_token, interval="FIVE_MINUTE", days=1)
             
             if df is None or df.empty:
                 logger.error("[Levels] Failed to fetch data for level calculation.")

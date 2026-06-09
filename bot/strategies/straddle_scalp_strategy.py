@@ -202,30 +202,37 @@ class StraddleScalpStrategy:
         3. Place SELL orders for premium wings (Short Call & Short Put)
         4. Wait for SELL orders to fill.
         """
-        nifty_ltp = self.data_fetcher.get_ltp("99926000", exchange="NSE")
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        active_sym = Config.ACTIVE_SYMBOL
+        instr = get_instrument(active_sym)
+        strike_diff = instr.strike_step
+        spot_token = instr.analysis_token
+
+        nifty_ltp = self.data_fetcher.get_ltp(spot_token, exchange=instr.exchange)
         if not nifty_ltp:
-            logger.error("Straddle Scalp: Cannot fetch NIFTY LTP. Aborting.")
+            logger.error(f"Straddle Scalp: Cannot fetch {active_sym} LTP. Aborting.")
             return
 
-        atm_strike = round(nifty_ltp / 50) * 50
+        atm_strike = round(nifty_ltp / strike_diff) * strike_diff
         
-        # Calculate strikes (100pt offset, 100pt wing gap)
-        short_call = atm_strike + 100
-        long_call  = short_call + 100
-        short_put  = atm_strike - 100
-        long_put   = short_put - 100
+        # Calculate strikes (2 * strike_step offset, 2 * strike_step wing gap)
+        offset = 2 * strike_diff
+        short_call = atm_strike + offset
+        long_call  = short_call + offset
+        short_put  = atm_strike - offset
+        long_put   = short_put - offset
 
         logger.info(
-            f"Straddle Scalp: NIFTY={nifty_ltp:.1f} | ATM={atm_strike}\n"
+            f"Straddle Scalp: {active_sym}={nifty_ltp:.1f} | ATM={atm_strike}\n"
             f"    Call Side: Short {short_call} CE | Long {long_call} CE (Hedge)\n"
             f"    Put Side:  Short {short_put} PE | Long {long_put} PE (Hedge)"
         )
 
-        # Resolve Tokens
-        lc_token, lc_symbol = self.token_loader.get_token("NIFTY", expiry, long_call, "CE")
-        sc_token, sc_symbol = self.token_loader.get_token("NIFTY", expiry, short_call, "CE")
-        sp_token, sp_symbol = self.token_loader.get_token("NIFTY", expiry, short_put, "PE")
-        lp_token, lp_symbol = self.token_loader.get_token("NIFTY", expiry, long_put, "PE")
+        lc_token, lc_symbol = self.token_loader.get_token(active_sym, expiry, long_call, "CE", instrument_type=instr.instrument_type, exchange=instr.option_exchange)
+        sc_token, sc_symbol = self.token_loader.get_token(active_sym, expiry, short_call, "CE", instrument_type=instr.instrument_type, exchange=instr.option_exchange)
+        sp_token, sp_symbol = self.token_loader.get_token(active_sym, expiry, short_put, "PE", instrument_type=instr.instrument_type, exchange=instr.option_exchange)
+        lp_token, lp_symbol = self.token_loader.get_token(active_sym, expiry, long_put, "PE", instrument_type=instr.instrument_type, exchange=instr.option_exchange)
 
         if not all([lc_token, sc_token, sp_token, lp_token]):
             logger.error("Straddle Scalp: Strike token resolution failed. Aborting.")

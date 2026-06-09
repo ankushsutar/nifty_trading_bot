@@ -186,9 +186,10 @@ class MarketService:
             }
 
         try:
-            # 2. Fetch LTPs using centralized DataFetcher (with 5s Cache)
-            # This prevents 1 req/sec polling from UI saturating the API
-            nifty_ltp = self.get_ltp("NSE", "Nifty 50", "99926000")
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            nifty_ltp = self.get_ltp(instr.exchange, instr.spot_symbol, instr.analysis_token)
             
             vix_ltp = 0.0
             try:
@@ -296,17 +297,19 @@ class MarketService:
                     # 0. Levels Analysis (S&R)
                     self.levels_data = levels_provider.get_levels() or {}
                     
-                    # 1. Regime Analysis
-                    # fetch_latest_candles handles 5-min caching AND real-time WebSocket hybrid-merge.
-                    df = self.data_fetcher.fetch_latest_candles("99926000") # Nifty 50
+                    from bot.config.settings import Config
+                    from bot.config.instruments import get_instrument
+                    instr = get_instrument(Config.ACTIVE_SYMBOL)
+                    analysis_tok = instr.analysis_token
+                    df = self.data_fetcher.fetch_latest_candles(analysis_tok) # Active symbol
                     
                     if df is None:
                         # EMERGENCY FALLBACK: If API is blocked (AB1004), use ANY cache for up to 4h
                         logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
-                        cache_key = "99926000_FIVE_MINUTE_1"
+                        cache_key = f"{analysis_tok}_FIVE_MINUTE_1"
                         df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
                         if df is not None:
-                            df = self.data_fetcher._merge_live_candle(df, "99926000", "FIVE_MINUTE")
+                            df = self.data_fetcher._merge_live_candle(df, analysis_tok, "FIVE_MINUTE")
                     
                     if df is not None:
                         self.analysis_data = self.regime_engine.classify(df)
@@ -348,7 +351,10 @@ class MarketService:
                         
                         # 2. OI & Panic Sentiment Analysis
                         ltp = df.iloc[-1]['close']
-                        base_atm = int(round(ltp / 50) * 50)
+                        from bot.config.settings import Config
+                        from bot.config.instruments import get_instrument
+                        instr = get_instrument(Config.ACTIVE_SYMBOL)
+                        base_atm = int(round(ltp / instr.strike_step) * instr.strike_step)
                         from bot.utils.expiry_calculator import get_next_weekly_expiry
                         expiry = get_next_weekly_expiry()
                         

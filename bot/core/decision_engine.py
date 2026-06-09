@@ -476,7 +476,10 @@ class DecisionEngine:
             from bot.core.market_feed import market_feed
             from bot.core.regime_classifier import RegimeClassifier
 
-            df = market_feed.get_1min_candles("99926000")  # NIFTY spot token
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            active_instr = get_instrument(Config.ACTIVE_SYMBOL)
+            df = market_feed.get_1min_candles(active_instr.analysis_token)
             if df is None or len(df) < 10:
                 return {"regime": "UNKNOWN", "trend": "NEUTRAL"}
 

@@ -1,0 +1,238 @@
+2026-06-09 15:25:25 - [INFO] - TradeRepository: Connected to MongoDB (Direct Mode).
+2026-06-09 15:25:26 - [INFO] - >>> [System] SDK Patched. Detected IP: 122.179.138.43 🌐
+2026-06-09 15:25:26 - [INFO] - >>> [Data] Loading Scrip Master (ANGEL) from disk cache (instant)...
+2026-06-09 15:25:27 - [INFO] - >>> [Data] Scrip Master loaded from cache (166,775 instruments).
+2026-06-09 15:25:27 - [INFO] - MarketService: Startup Intelligence Loaded from disk 💾
+2026-06-09 15:25:27 - [INFO] - MarketService: [MASTER] Starting Intelligence Loop... 🛰️
+2026-06-09 15:25:27 - [INFO] - MarketService: [MASTER] Starting Session Heartbeat... 💓
+2026-06-09 15:25:27 - [WARNING] - >>> [System] Telegram Notifications DISABLED (Token/ChatID missing).
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Gatekeeper] 🛡️ PROFIT PROTECTION TRIGGERED!
+2026-06-09 15:25:27 - [CRITICAL] -     Peak Profit: ₹10000.00 | Current: ₹3000.00 | Floor: ₹6000.00
+2026-06-09 15:25:27 - [CRITICAL] -     Stopping to preserve remaining gains. Pro-Trader Mode: Locked.
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT! [MEDIUM tier]
+2026-06-09 15:25:27 - [CRITICAL] -     Realized: ₹-10000.00 | Unrealized: ₹0.00 | Total: ₹-10000.00 | Limit: ₹-6000.00 (6%)
+2026-06-09 15:25:27 - [CRITICAL] -     Halting Operations.
+.2026-06-09 15:25:27 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Gatekeeper] 🛑 GLOBAL MAX DAILY LOSS HIT! [MEDIUM tier]
+2026-06-09 15:25:27 - [CRITICAL] -     Realized: ₹-20000.00 | Unrealized: ₹0.00 | Total: ₹-20000.00 | Limit: ₹-6000.00 (6%)
+2026-06-09 15:25:27 - [CRITICAL] -     Halting Operations.
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Brain] 🛑 Decision Blocked: Max Daily Loss reached.
+2026-06-09 15:25:27 - [CRITICAL] - 🛑 KILL SWITCH ACTIVATED: .stop_signal created.
+2026-06-09 15:25:27 - [INFO] - ✅ KILL SWITCH DEACTIVATED: .stop_signal removed.
+.2026-06-09 15:25:27 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Gatekeeper] 🛡️ PROFIT PROTECTION TRIGGERED!
+2026-06-09 15:25:27 - [CRITICAL] -     Peak Profit: ₹5000.00 | Current: ₹2000.00 | Floor: ₹3000.00
+2026-06-09 15:25:27 - [CRITICAL] -     Stopping to preserve remaining gains. Pro-Trader Mode: Locked.
+2026-06-09 15:25:27 - [CRITICAL] - >>> [Brain] 🛑 Decision Blocked: Profit Protection has locked the session.
+2026-06-09 15:25:27 - [CRITICAL] - 🛑 KILL SWITCH ACTIVATED: .stop_signal created.
+2026-06-09 15:25:27 - [INFO] - ✅ KILL SWITCH DEACTIVATED: .stop_signal removed.
+.2026-06-09 15:25:27 - [INFO] - >>> [Gatekeeper] 📈 Initialized Starting Capital for today (paper): ₹50,000.00
+2026-06-09 15:25:27 - [INFO] - >>> [Gatekeeper] 📈 Initialized Starting Capital for today (live): ₹150,000.00
+2026-06-09 15:25:27 - [INFO] - >>> [Gatekeeper] 🏆 New Peak Profit Reached (paper): ₹1000.00
+2026-06-09 15:25:27 - [INFO] - >>> [Gatekeeper] 🏆 New Peak Profit Reached (live): ₹5000.00
+.2026-06-09 15:25:27 - [CRITICAL] - 🛑 KILL SWITCH ACTIVATED: .stop_signal created.
+2026-06-09 15:25:27 - [INFO] - ✅ KILL SWITCH DEACTIVATED: .stop_signal removed.
+..2026-06-09 15:25:27 - [CRITICAL] - 🛑 KILL SWITCH ACTIVATED: .stop_signal created.
+2026-06-09 15:25:27 - [CRITICAL] - 🛑 KILL SWITCH ACTIVE. Order Rejected.
+............2026-06-09 15:25:28 - [ERROR] - OI Batch Fetch Failed: <MagicMock name='mock.getMarketData()' id='127765216510320'>
+2026-06-09 15:25:28 - [INFO] - 🔍 Fresh OI at entry: bias=NEUTRAL | PCR=1.0 | Vel=0.0000
+2026-06-09 15:25:28 - [INFO] - [SMALL tier] OTM depth capped: 2 → 1 (max 1-OTM for small accounts).
+2026-06-09 15:25:28 - [INFO] - ⚡ Vol-Adjusted Strike: ATR=50.0 → 1 OTM | Strike=22050
+2026-06-09 15:25:28 - [INFO] - ⚖️ Sizing: ATR=50.00 | Method=Exponential Compounding | Multiplier=1.0x | Qty=65 (1 lots)
+2026-06-09 15:25:28 - [INFO] - >>> [Momentum] Entry Signal Confirmed for NIFTY22000CE @ ₹1.0
+2026-06-09 15:25:28 - [INFO] - 📐 Dynamic RR (UNKNOWN): SL=25.0pts | Target=37.5pts | Mode=RANGEBOUND_1.5:1
+2026-06-09 15:25:28 - [WARNING] - 🛡️ Hard SL Triggered: Truncating 25.0pts to 0.5pts (Cap: 35.0% | Floor: 0.5pts)
+2026-06-09 15:25:28 - [INFO] - ⚡ Placing LIMIT Order for NIFTY22000CE @ 1.0
+2026-06-09 15:25:29 - [INFO] - TradeRepository: Trade Saved (ID: 219, Mode: LIVE, Strategy: MOMENTUM)
+2026-06-09 15:25:30 - [WARNING] - ⚠️ Order 1001 fill TIMEOUT via WebSocket. Falling back to REST API...
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:110: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1  # Disable TLS 1.0
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:111: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1_1  # Disable TLS 1.1
+[I 260609 15:25:30 smartConnect:124] in pool
+[I 260609 15:25:30 smartConnect:140] in pool
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:110: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1  # Disable TLS 1.0
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:111: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1_1  # Disable TLS 1.1
+[I 260609 15:25:30 smartConnect:124] in pool
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/logzero/__init__.py:433: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/cwd/ankush/agent/nifty_trading_bot/logs/2026-06-09/app.log' mode='a' encoding='UTF-8'>
+  __remove_internal_loggers(logger, disableStderrLogger)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2026-06-09 15:25:30 - [INFO] - 🚶 Walking Smart-Limit [RAPID]: NIFTY22000CE -> New Price: 1.50 (Attempt 2)
+2026-06-09 15:25:31 - [WARNING] - ⚠️ Walk failed: Modification error. Aborting walk.
+2026-06-09 15:25:31 - [ERROR] - >>> [OrderFeed] Order 1001 NOT FOUND in events registry. Registered IDs: ['12345']
+2026-06-09 15:25:31 - [WARNING] - ⚠️ Smart-Limit timed out after walking. Status: ERROR. Attempting cancellation of order 1001...
+2026-06-09 15:25:31 - [INFO] - 🚫 Cancelled Order: 1001 (Attempt 1)
+2026-06-09 15:25:31 - [ERROR] - ❌ Smart-Limit Order Placement Failed! (API returned None).
+.2026-06-09 15:25:32 - [INFO] - >>> [Momentum] Waiting for WebSocket Fill Event (1001)...
+2026-06-09 15:25:32 - [WARNING] - ⚠️ Order 1001 fill TIMEOUT via WebSocket. Falling back to REST API...
+.2026-06-09 15:25:33 - [INFO] - >>> [Momentum] Waiting for WebSocket Fill Event (1002)...
+2026-06-09 15:25:33 - [WARNING] - ⚠️ Order 1002 fill TIMEOUT via WebSocket. Falling back to REST API...
+.2026-06-09 15:25:34 - [INFO] - >>> [Momentum] Waiting for WebSocket Fill Event (1003)...
+2026-06-09 15:25:34 - [WARNING] - ⚠️ Order 1003 fill TIMEOUT via WebSocket. Falling back to REST API...
+2026-06-09 15:25:35 - [WARNING] - ⚠️ Order 1003 fill TIMEOUT via WebSocket.
+.2026-06-09 15:25:35 - [INFO] - ✅ Order Placed Successfully: 12345
+2026-06-09 15:25:35 - [INFO] - TradeRepository: Trade Saved (ID: 220, Mode: PAPER, Strategy: TEST_STRAT)
+.2026-06-09 15:25:35 - [WARNING] - TradeRepository Save Attempt 1 failed: DB Fail. Retrying...
+2026-06-09 15:25:36 - [WARNING] - TradeRepository Save Attempt 2 failed: DB Fail. Retrying...
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:110: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1  # Disable TLS 1.0
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:111: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1_1  # Disable TLS 1.1
+[I 260609 15:25:36 smartConnect:124] in pool
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/logzero/__init__.py:433: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/cwd/ankush/agent/nifty_trading_bot/logs/2026-06-09/app.log' mode='a' encoding='UTF-8'>
+  __remove_internal_loggers(logger, disableStderrLogger)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+[I 260609 15:25:36 smartConnect:140] in pool
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:110: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1  # Disable TLS 1.0
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/SmartApi/smartConnect.py:111: DeprecationWarning: ssl.OP_NO_SSL*/ssl.OP_NO_TLS* options are deprecated
+  self.ssl_context.options |= ssl.OP_NO_TLSv1_1  # Disable TLS 1.1
+[I 260609 15:25:36 smartConnect:124] in pool
+/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/logzero/__init__.py:433: ResourceWarning: unclosed file <_io.TextIOWrapper name='/home/cwd/ankush/agent/nifty_trading_bot/logs/2026-06-09/app.log' mode='a' encoding='UTF-8'>
+  __remove_internal_loggers(logger, disableStderrLogger)
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+2026-06-09 15:25:36 - [INFO] - MarketService: Connected to ANGEL 🟢
+2026-06-09 15:25:36 - [INFO] - [Levels] Loaded from disk cache for 2026-06-09: {'pdh': 23267.3, 'pdl': 23070.15, 'pdc': 23103.7, 'cam_h4': 23212.13, 'cam_h3': 23157.92, 'cam_l3': 23049.48, 'cam_l4': 22995.27}
+2026-06-09 15:25:37 - [ERROR] - Hybrid Merge Error: '>' not supported between instances of 'MagicMock' and 'int'
+2026-06-09 15:25:37 - [INFO] - TradeRepository: Trade Saved (ID: 1, Mode: PAPER, Strategy: RETRY_TEST)
+..2026-06-09 15:25:37 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current available capital: ₹50,000.00 [SMALL tier]
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current Time: 09:45:00
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 📊 Fetching Market Data from Service Layer...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Detected Regime: TRENDING | Trend: BULLISH | ADX: 35
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Option Chain Bias: BULLISH (PCR: 1.2)
+2026-06-09 15:25:37 - [WARNING] - >>> [Risk] VIX shared read error: could not convert string to float: "<MagicMock name='mock.market_feed.get_ltp()' id='125816668558048'>"
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🎯 Confluence: 5/7 | Scale=0.5x | Confidence=HIGH
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] AlphaEngine Multiplier: 1.0x (Confidence: NEUTRAL)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Confidence for MOMENTUM: N/A (only 0 trades, need 10). Passing through.
+2026-06-09 15:25:37 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current available capital: ₹50,000.00 [SMALL tier]
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current Time: 11:00:00
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 📊 Fetching Market Data from Service Layer...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Detected Regime: TRENDING | Trend: BULLISH | ADX: 35
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Option Chain Bias: BULLISH (PCR: 1.2)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🎯 Confluence: 5/7 | Scale=0.5x | Confidence=HIGH
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] AlphaEngine Multiplier: 1.0x (Confidence: NEUTRAL)
+2026-06-09 15:25:37 - [INFO] - ⚡ Trend confirmed during chop hours (ADX: 35.0 >= 30.0). Selected: MOMENTUM
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Confidence for MOMENTUM: N/A (only 0 trades, need 10). Passing through.
+2026-06-09 15:25:37 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current available capital: ₹50,000.00 [SMALL tier]
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current Time: 11:00:00
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 📊 Fetching Market Data from Service Layer...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Detected Regime: TRENDING | Trend: BULLISH | ADX: 50
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Option Chain Bias: BULLISH (PCR: 1.2)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🎯 Confluence: 5/7 | Scale=0.5x | Confidence=HIGH
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] AlphaEngine Multiplier: 1.0x (Confidence: NEUTRAL)
+2026-06-09 15:25:37 - [INFO] - 🚀 PARABOLIC MOVE (ADX: 50.0 >= 42.0). Selected: GAMMA_BLAST
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Confidence for GAMMA_BLAST: N/A (only 0 trades, need 10). Passing through.
+2026-06-09 15:25:37 - [INFO] - 
+>>> [Brain] 🧠 Analyzing Market Conditions...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current available capital: ₹50,000.00 [SMALL tier]
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🍼 SMALL ACCOUNT MODE ACTIVE (Focus on A+ Setups)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Current Time: 11:00:00
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 📊 Fetching Market Data from Service Layer...
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Detected Regime: SIDEWAYS | Trend: BULLISH | ADX: 20
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Option Chain Bias: BULLISH (PCR: 1.2)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] 🎯 Confluence: 3/7 | Scale=0.2x | Confidence=NORMAL
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Small Account: Allowing sideways/chop setup through A+ filter for potential Scalp/Selling.
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] AlphaEngine Multiplier: 1.0x (Confidence: NEUTRAL)
+2026-06-09 15:25:37 - [INFO] - >>> [Brain] Confidence for STRADDLE_SCALP: N/A (only 0 trades, need 10). Passing through.
+.
+----------------------------------------------------------------------
+Ran 26 tests in 10.764s
+
+OK
+>>> [Startup] Found 12 Open Trades for today in MongoDB.
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+    - None | NIFTY | Qty: 50 | Status: OPEN
+>>> [System] Connecting to Angel One...
+>>> [System] Reusing Session (age: 0.5h) ✅
+>>> [System] Connecting to Angel One...
+>>> [System] Reusing Session (age: 0.5h) ✅
+✅ TradeRepository retry logic verified (and 'time' is imported!)
+9:45 AM, ADX 35 -> Expected: MOMENTUM, Got: MOMENTUM
+11:00 AM, ADX 35 -> Expected: MOMENTUM, Got: MOMENTUM
+11:00 AM, ADX 50 -> Expected: GAMMA_BLAST, Got: GAMMA_BLAST
+11:00 AM, ADX 20 -> Expected: STRADDLE_SCALP, Got: STRADDLE_SCALP
+sys:1: ResourceWarning: Unclosed MongoClient opened at:
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/usr/lib/python3.12/unittest/__main__.py", line 18, in <module>
+    main(module=None)
+  File "/usr/lib/python3.12/unittest/main.py", line 104, in __init__
+    self.parseArgs(argv)
+  File "/usr/lib/python3.12/unittest/main.py", line 130, in parseArgs
+    self._do_discovery(argv[2:])
+  File "/usr/lib/python3.12/unittest/main.py", line 253, in _do_discovery
+    self.createTests(from_discovery=True, Loader=Loader)
+  File "/usr/lib/python3.12/unittest/main.py", line 160, in createTests
+    self.test = loader.discover(self.start, self.pattern, self.top)
+  File "/usr/lib/python3.12/unittest/loader.py", line 309, in discover
+    tests = list(self._find_tests(start_dir, pattern))
+  File "/usr/lib/python3.12/unittest/loader.py", line 364, in _find_tests
+    tests, should_recurse = self._find_test_path(full_path, pattern)
+  File "/usr/lib/python3.12/unittest/loader.py", line 394, in _find_test_path
+    module = self._get_module_from_name(name)
+  File "/usr/lib/python3.12/unittest/loader.py", line 337, in _get_module_from_name
+    __import__(name)
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/cwd/ankush/agent/nifty_trading_bot/tests/test_api.py", line 6, in <module>
+    from backend.server import app
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/cwd/ankush/agent/nifty_trading_bot/backend/server.py", line 14, in <module>
+    from backend.bot_manager import bot_manager
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/cwd/ankush/agent/nifty_trading_bot/backend/bot_manager.py", line 232, in <module>
+    bot_manager = BotManager()
+  File "/home/cwd/ankush/agent/nifty_trading_bot/backend/bot_manager.py", line 18, in __new__
+    from bot.core.trade_repo import trade_repo
+  File "<frozen importlib._bootstrap>", line 1360, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1331, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 935, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 995, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/home/cwd/ankush/agent/nifty_trading_bot/bot/core/trade_repo.py", line 660, in <module>
+    trade_repo = TradeRepository()
+  File "/home/cwd/ankush/agent/nifty_trading_bot/bot/core/trade_repo.py", line 16, in __new__
+    cls._instance._init_db()
+  File "/home/cwd/ankush/agent/nifty_trading_bot/bot/core/trade_repo.py", line 21, in _init_db
+    self.client = MongoClient(
+  File "/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 891, in __init__
+    self._get_topology()  # type: ignore[unused-coroutine]
+  File "/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 1758, in _get_topology
+    self._resolve_srv()
+  File "/home/cwd/ankush/agent/nifty_trading_bot/venv/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 960, in _resolve_srv
+    self._init_based_on_options(seeds, srv_max_hosts, srv_service_name)
+Call MongoClient.close() to safely shut down your client and free up resources.

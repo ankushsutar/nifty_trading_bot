@@ -97,8 +97,9 @@ def run_bot():
     # 3. Smart Auto-Selection (The Brain)
     # Check for Orphaned Trades first for auto-resumption
     from bot.core.trade_repo import trade_repo  # Guaranteed import (test + live paths)
+    from bot.config.settings import Config
     mode = "PAPER" if args.dry_run else "LIVE"
-    orphaned_trade = trade_repo.get_active_trade(mode=mode)
+    orphaned_trade = trade_repo.get_active_trade(mode=mode, symbol=Config.ACTIVE_SYMBOL)
     
     if orphaned_trade:
         strategy_name = orphaned_trade.get('strategy', 'STRADDLE')

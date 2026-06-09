@@ -55,12 +55,21 @@ def calculate_black_scholes_delta(spot: float, strike: float, days_to_expiry: fl
     else:
         return norm_cdf(d1) - 1.0
 
-def select_strike_by_delta(token_lookup, spot: float, expiry: str, vix: float, option_type: str, target_delta: float):
+def select_strike_by_delta(token_lookup, spot: float, expiry: str, vix: float, option_type: str, target_delta: float, symbol_name: str = None):
     """
     Selects the option strike from TokenLookup option bucket closest to target_delta.
     target_delta: positive float (e.g. 0.40)
     """
     try:
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+
+        if symbol_name is None:
+            symbol_name = Config.ACTIVE_SYMBOL
+
+        instr = get_instrument(symbol_name)
+        strike_diff = instr.strike_step
+
         expiry_date = parse_expiry(expiry)
         today = datetime.date.today()
         days_to_expiry = float((expiry_date - today).days)
@@ -75,9 +84,10 @@ def select_strike_by_delta(token_lookup, spot: float, expiry: str, vix: float, o
             else:
                 days_to_expiry = 0.001  # Small positive number for after-market queries
 
-        atm_strike = round(spot / 50) * 50
-        # Search a wide range of strikes (up to 800 points away) to find optimal delta
-        bucket = token_lookup.get_option_bucket("NIFTY", expiry, atm_strike, range_points=800)
+        atm_strike = round(spot / strike_diff) * strike_diff
+        # Search a wide range of strikes (up to 16 strikes away) to find optimal delta
+        range_pts = 16 * strike_diff
+        bucket = token_lookup.get_option_bucket(symbol_name, expiry, atm_strike, range_points=range_pts)
         
         best_strike = None
         best_token = None
@@ -99,7 +109,7 @@ def select_strike_by_delta(token_lookup, spot: float, expiry: str, vix: float, o
                 best_symbol = info["symbol"]
                 
         if best_strike is None:
-            logger.error(f"[Greeks] No matching option found in bucket for {expiry} {option_type} target delta {target_delta}")
+            logger.error(f"[Greeks] No matching option found in bucket for {symbol_name} {expiry} {option_type} target delta {target_delta}")
             return None, None, None
             
         logger.info(f"[Greeks] Selected strike {best_strike} for delta {target_delta:.2f} (est. delta: {calculate_black_scholes_delta(spot, best_strike, days_to_expiry, vix, option_type):.2f})")

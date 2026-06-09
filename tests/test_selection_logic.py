@@ -2,6 +2,7 @@ import datetime
 from datetime import datetime as real_datetime
 import unittest
 from unittest.mock import MagicMock, patch
+from bot.core.trade_repo import trade_repo
 from bot.core.decision_engine import DecisionEngine
 
 class TestSelection(unittest.TestCase):
@@ -19,7 +20,7 @@ class TestSelection(unittest.TestCase):
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')
-    @patch('datetime.datetime')
+    @patch('bot.core.decision_engine.datetime.datetime')
     def test_logic(self, mock_dt, mock_market, mock_trades):
         # Case 1: 9:45 AM, ADX 35 (Should be ORB)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 9, 45)

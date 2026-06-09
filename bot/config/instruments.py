@@ -17,6 +17,7 @@ class Instrument:
     expiry_day: int = 1    # 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri (weekly only)
     expiry_type: str = "WEEKLY"   # "WEEKLY" or "MONTHLY"
     expiry_day_of_month: int = 20  # For MONTHLY: day of month (e.g. 20 for MCX)
+    spot_symbol: str = ""  # Spot index symbol name
 
 # Registry for supported instruments
 # Expiry Days as of 2026: Nifty (Tue), BankNifty (Wed), Midcap (Mon), FinNifty (Tue)
@@ -32,7 +33,8 @@ INSTRUMENTS: Dict[str, Instrument] = {
         option_exchange="NFO",
         market_start="09:15",
         market_end="15:30",
-        expiry_day=1 # Tuesday
+        expiry_day=1, # Tuesday
+        spot_symbol="Nifty 50"
     ),
     "BANKNIFTY": Instrument(
         name="BANKNIFTY",
@@ -45,7 +47,22 @@ INSTRUMENTS: Dict[str, Instrument] = {
         option_exchange="NFO",
         market_start="09:15",
         market_end="15:30",
-        expiry_day=2 # Wednesday
+        expiry_day=2, # Wednesday
+        spot_symbol="Nifty Bank"
+    ),
+    "FINNIFTY": Instrument(
+        name="FINNIFTY",
+        analysis_token="99926037",
+        lot_size=60,
+        strike_step=50,
+        asset_type="INDEX",
+        instrument_type="OPTIDX",
+        exchange="NSE",
+        option_exchange="NFO",
+        market_start="09:15",
+        market_end="15:30",
+        expiry_day=1, # Tuesday
+        spot_symbol="Nifty Fin Service"
     ),
     "CRUDEOIL": Instrument(
         name="CRUDEOIL",
