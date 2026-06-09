@@ -152,14 +152,35 @@ class OrderManager:
                     logger.error(f"❌ Smart-Limit Failed: Order {result['status']}")
                     return None
 
-                # If TIMEOUT, walk the price one tick
-                if transaction_type == "BUY":
-                    current_price += walk_step 
-                else:
-                    current_price -= walk_step
+                # If TIMEOUT, walk the price using L1 book depth
+                l1 = {"bid": 0.0, "ask": 0.0, "ltp": 0.0}
+                try:
+                    l1 = self.api.get_order_book_l1("NFO", symbol, token)
+                except Exception as ex:
+                    logger.warning(f"Failed to fetch L1 depth for walk: {ex}")
                 
-                speed_label = "RAPID" if is_fast_strategy else "SLOW"
+                bid = float(l1.get("bid", 0.0))
+                ask = float(l1.get("ask", 0.0))
+                
+                if transaction_type == "BUY":
+                    if bid > 0 and ask > 0:
+                        # Track the best bid upward, capping at ask to avoid market buy penalty
+                        next_price = max(bid + 0.05, current_price + walk_step)
+                        current_price = min(ask, next_price)
+                    else:
+                        current_price += walk_step
+                else:
+                    if bid > 0 and ask > 0:
+                        # Track the best ask downward, flooring at bid to avoid market sell penalty
+                        next_price = min(ask - 0.05, current_price - walk_step)
+                        current_price = max(bid, next_price)
+                    else:
+                        current_price -= walk_step
+                
+                current_price = round(round(current_price / 0.05) * 0.05, 2)
+                speed_label = "L1-ADAPTIVE" if is_fast_strategy else "SLOW"
                 logger.info(f"🚶 Walking Smart-Limit [{speed_label}]: {symbol} -> New Price: {current_price:.2f} (Attempt {attempt+2})")
+
                 
                 # Modify existing order
                 success = self.modify_order_price(oid, current_price, symbol, token, qty)
@@ -195,7 +216,7 @@ class OrderManager:
     def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL"):
         """Utility for Smart-Limit to change price of an open order."""
         try:
-            price = round(new_price / 0.05) * 0.05
+            price = round(round(new_price / 0.05) * 0.05, 2)
             orderparams = {
                 "variety": variety,
                 "orderid": order_id,

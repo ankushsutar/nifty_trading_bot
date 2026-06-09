@@ -34,7 +34,7 @@ The bot calls `Config.get_tier(capital)` at runtime to get the active tier.
 | `bot/core/safety_checks.py` | SafetyGatekeeper — 9 hard rules, never bypass |
 | `bot/core/decision_engine.py` | Strategy selection logic (ADX gate + whitelist) |
 | `bot/core/order_manager.py` | Smart-Limit execution, SL placement |
-| `bot/core/market_feed.py` | WebSocket singleton, candle construction |
+| `bot/core/market_feed.py` | WebSocket singleton, candle construction | 
 | `bot/core/trade_repo.py` | MongoDB persistence, crash recovery |
 | `bot/core/backtest_engine.py` | Vectorized backtester (Pandas) |
 | `bot/core/metrics_exporter.py` | JSON metrics writer → data/metrics.json |

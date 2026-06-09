@@ -3,6 +3,7 @@ import threading
 import datetime
 
 from bot.core.angel_connect import get_angel_session
+from bot.config.settings import Config
 from bot.core.regime_classifier import RegimeClassifier
 from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.alpha_engine import AlphaEngine
@@ -106,7 +107,7 @@ class MarketService:
             try:
                 self.api = get_angel_session()
                 if self.api:
-                    logger.info("MarketService: Connected to Angel One 🟢")
+                    logger.info(f"MarketService: Connected to {Config.BROKER} 🟢")
                     if not self.data_fetcher:
                         self.data_fetcher = DataFetcher(self.api)
                     else:
@@ -269,6 +270,13 @@ class MarketService:
                     break
                 self._ensure_connection()
                 if self.api:
+                    # Background Trade Reconciliation (syncs DB trades with broker tradeBook)
+                    try:
+                        from bot.core.trade_repo import trade_repo
+                        trade_repo.reconcile_with_broker(self.api)
+                    except Exception as rec_err:
+                        logger.error(f"MarketService Background Reconciliation Error: {rec_err}")
+
                     if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
                     if not hasattr(self, 'alpha_engine') or self.alpha_engine is None:

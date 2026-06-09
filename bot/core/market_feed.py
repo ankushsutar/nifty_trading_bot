@@ -4,11 +4,9 @@ import threading
 import json
 import datetime
 import pandas as pd
-# pyrefly: ignore [missing-import]
-from SmartApi.smartWebSocketV2 import SmartWebSocketV2
 from bot.config.settings import Config
 from bot.utils.logger import logger
-from bot.core.angel_connect import get_angel_session
+from bot.core.session import get_session
 from bot.utils.token_lookup import TokenLookup
 from bot.utils.expiry_calculator import get_next_weekly_expiry
 
@@ -77,52 +75,32 @@ class MarketFeedService:
         while self.running:
             try:
                 # 1. Get Valid Session
-                api = get_angel_session()
+                api = get_session()
                 if not api:
                     logger.error(">>> [MarketFeed] No Valid API Session. Retrying in 5s...")
                     time.sleep(5)
                     continue
 
-                # 2. Extract Tokens
-                auth_token = api.access_token 
-                feed_token = getattr(api, 'feed_token', None)
-                if not feed_token:
-                    try:
-                        with open("data/session.json", "r") as f:
-                            data = json.load(f)
-                            feed_token = data.get('feedToken')
-                            auth_token = data.get('jwtToken')
-                    except: pass
-                
-                if not auth_token or not feed_token:
-                     logger.error(">>> [MarketFeed] Missing Auth/Feed Tokens.")
-                     time.sleep(10)
-                     continue
+                # 2. Get Ticker
+                self.sws = api.get_market_ticker()
 
-                # 3. Init WebSocket
-                self.sws = SmartWebSocketV2(
-                    auth_token, 
-                    Config.API_KEY, 
-                    Config.CLIENT_ID, 
-                    feed_token
-                )
-
-                # 4. Bind Callbacks
+                # 3. Bind Callbacks
                 self.sws.on_open = self._on_open
                 self.sws.on_data = self._on_data
                 self.sws.on_error = self._on_error
                 self.sws.on_close = self._on_close
 
-                # 5. Connect
-                logger.info(">>> [MarketFeed] Connecting to Angel One WebSocket...")
+                # 4. Connect
+                logger.info(f">>> [MarketFeed] Connecting to {Config.BROKER} WebSocket...")
                 self.sws.connect()
                 
-                logger.warning(">>> [MarketFeed] Connection Closed. Reconnecting in 5s...")
+                logger.warning(f">>> [MarketFeed] Connection Closed. Reconnecting in 5s...")
                 time.sleep(5)
 
             except Exception as e:
                 logger.error(f">>> [MarketFeed] Crash: {e}. Rebooting in 5s...")
                 time.sleep(5)
+
 
     def _on_open(self, ws):
         logger.info(">>> [MarketFeed] Connected! ✅")
@@ -169,7 +147,7 @@ class MarketFeedService:
                 if not spot_price:
                     # Fallback to REST API for Spot price to avoid dynamic subscription lock
                     try:
-                        api = get_angel_session()
+                        api = get_session()
                         if api:
                             res = api.ltpData("NSE", "Nifty 50", "99926000")
                             if res and res.get('status') == True:
@@ -216,6 +194,17 @@ class MarketFeedService:
 
         # Always keep Nifty Spot
         new_tokens.add("99926000")
+
+        # Safely preserve subscriptions for any currently open trades in DB to prevent them from drifting out
+        try:
+            from bot.core.trade_repo import trade_repo
+            open_trades = trade_repo.get_open_trades()
+            for t in open_trades:
+                tok = t.get('token')
+                if tok:
+                    new_tokens.add(str(tok))
+        except Exception as e:
+            logger.error(f"Error fetching open trades for subscription safeguarding: {e}")
 
         # Unsubscribe tokens that have drifted out of range
         to_unsubscribe = self.subscribed_tokens - new_tokens - {"99926000"}

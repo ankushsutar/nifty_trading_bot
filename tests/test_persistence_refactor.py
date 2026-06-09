@@ -3,6 +3,11 @@ import os
 import unittest
 from unittest.mock import MagicMock, patch
 
+# Save original modules to prevent pollution
+orig_pymongo = sys.modules.get('pymongo')
+orig_trade_repo = sys.modules.get('bot.core.trade_repo')
+orig_order_manager = sys.modules.get('bot.core.order_manager')
+
 # CRITICAL: Mock pymongo before importing anything that uses trade_repo
 sys.modules['pymongo'] = MagicMock()
 
@@ -12,9 +17,21 @@ sys.path.append(os.getcwd())
 from bot.core.order_manager import OrderManager
 from bot.core.trade_repo import TradeRepository
 
-# Mock is_kill_switch_active
-import bot.core.order_manager
-bot.core.order_manager.is_kill_switch_active = MagicMock(return_value=False)
+# Restore original modules so other tests get fresh/real modules
+if orig_pymongo is not None:
+    sys.modules['pymongo'] = orig_pymongo
+else:
+    sys.modules.pop('pymongo', None)
+
+if orig_trade_repo is not None:
+    sys.modules['bot.core.trade_repo'] = orig_trade_repo
+else:
+    sys.modules.pop('bot.core.trade_repo', None)
+
+if orig_order_manager is not None:
+    sys.modules['bot.core.order_manager'] = orig_order_manager
+else:
+    sys.modules.pop('bot.core.order_manager', None)
 
 class TestPersistenceFlow(unittest.TestCase):
     def setUp(self):
@@ -33,8 +50,13 @@ class TestPersistenceFlow(unittest.TestCase):
         self.patcher = patch('bot.core.order_manager.trade_repo', self.trade_repo)
         self.patcher.start()
 
+        # Patch is_kill_switch_active cleanly to avoid module pollution
+        self.kill_switch_patcher = patch('bot.core.order_manager.is_kill_switch_active', return_value=False)
+        self.kill_switch_patcher.start()
+
     def tearDown(self):
         self.patcher.stop()
+        self.kill_switch_patcher.stop()
 
     def test_place_order_with_persistence(self):
         """Verify that place_order calls save_trade when strategy_name is provided."""

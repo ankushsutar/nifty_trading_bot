@@ -62,8 +62,27 @@ class ZeroToHeroStrategy:
 
     def _find_deep_otm_contract(self, leg, ltp, expiry):
         """
-        Iterates dynamically away from ATM until finding the sweet spot (₹5 - ₹15 premium).
+        Uses Delta-based strike selection to find a deep OTM contract (Target Delta: 0.20).
         """
+        target_delta = 0.20
+        try:
+            from backend.market_service import market_service
+            vix = market_service.get_market_data().get('vix', 15.0)
+            if vix <= 0: vix = 15.0
+            
+            from bot.utils.greeks import select_strike_by_delta
+            strike, token, symbol = select_strike_by_delta(self.token_loader, ltp, expiry, vix, leg, target_delta)
+            
+            if strike and token:
+                prem = self.data_fetcher.get_ltp(token, "NFO")
+                if not prem:
+                    prem = 10.0
+                logger.info(f"🎯 Found Z2H Contract by Delta: {symbol} @ ₹{prem} (Strike: {strike})")
+                return token, symbol, prem, strike
+        except Exception as e:
+            logger.warning(f"Z2H Delta selection error: {e}")
+
+        logger.warning("⚠️ Z2H Delta-based strike selection failed or bypassed. Falling back to price scanner.")
         atm_strike = round(ltp / 50) * 50
         direction = 1 if leg == "CE" else -1
         
@@ -89,6 +108,7 @@ class ZeroToHeroStrategy:
                 return t_prev, s_prev, p_prev, prev_strike
                 
         return None, None, None, None
+
 
     def execute(self, expiry, action="BUY"):
         logger.info(f"⚡ --- ZERO-TO-HERO WILDCARD INITIATED ({expiry}) --- 🚀")

@@ -1,15 +1,26 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from bot.core.safety_checks import SafetyGatekeeper
-from bot.core.trade_repo import trade_repo
+from bot.core.trade_repo import TradeRepository
 
 class TestBreakerClassification(unittest.TestCase):
+    def setUp(self):
+        # Patch both class and instance to be immune to singleton resets and instance overrides
+        from bot.core.trade_repo import trade_repo
+        self.patchers = [
+            patch.object(TradeRepository, 'get_open_trades', return_value=[]),
+            patch.object(trade_repo, 'get_open_trades', return_value=[])
+        ]
+        for p in self.patchers:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patchers:
+            p.stop()
+
     def test_breaker_classification(self):
         api = MagicMock()
         gatekeeper = SafetyGatekeeper(api, dry_run=True)
-        
-        # Mock trade_repo.get_open_trades to avoid recovery shield activation
-        trade_repo.get_open_trades = MagicMock(return_value=[])
         
         # Mock starting capital to 100,000 (MEDIUM tier)
         # MEDIUM tier max daily loss pct is 0.06 -> max_loss = -6,000

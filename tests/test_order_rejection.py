@@ -16,11 +16,24 @@ class TestOrderRejection(unittest.TestCase):
         
         # Mock internal components to avoid side effects
         self.strategy.gatekeeper = MagicMock()
+        self.strategy.gatekeeper.get_iv_rank.return_value = 0.5
+        self.strategy.gatekeeper.get_current_capital.return_value = 50000.0
+        
+        from bot.config.settings import CAPITAL_TIERS
+        tier = CAPITAL_TIERS["MICRO"]
+        self.strategy.gatekeeper.get_tier.return_value = tier
+        self.strategy.gatekeeper.get_compounded_lots.return_value = 1
         self.strategy.data_fetcher = MagicMock()
         self.strategy.trade_repo = MagicMock()
         
-    def test_wait_for_fill_rejection(self):
+    @patch('bot.core.order_feed.get_session')
+    @patch('threading.Event.wait', return_value=False)
+    def test_wait_for_fill_rejection(self, mock_event_wait, mock_get_session):
         """Test that wait_for_fill correctly parses a rejected order."""
+        mock_get_session.return_value = self.mock_api
+        from bot.core.order_feed import order_feed
+        order_feed.register_order('1001')
+        
         # Mock orderBook response
         self.mock_api.orderBook.return_value = {
             'status': True,
@@ -33,8 +46,14 @@ class TestOrderRejection(unittest.TestCase):
         self.assertEqual(result['status'], 'REJECTED')
         self.assertEqual(result['message'], 'Margin Shortfall')
 
-    def test_wait_for_fill_success(self):
+    @patch('bot.core.order_feed.get_session')
+    @patch('threading.Event.wait', return_value=False)
+    def test_wait_for_fill_success(self, mock_event_wait, mock_get_session):
         """Test that wait_for_fill correctly parses a filled order."""
+        mock_get_session.return_value = self.mock_api
+        from bot.core.order_feed import order_feed
+        order_feed.register_order('1002')
+        
         self.mock_api.orderBook.return_value = {
             'status': True,
             'data': [
@@ -46,8 +65,14 @@ class TestOrderRejection(unittest.TestCase):
         self.assertEqual(result['status'], 'FILLED')
         self.assertEqual(result['price'], 150.5)
 
-    def test_wait_for_fill_timeout(self):
+    @patch('bot.core.order_feed.get_session')
+    @patch('threading.Event.wait', return_value=False)
+    def test_wait_for_fill_timeout(self, mock_event_wait, mock_get_session):
         """Test that wait_for_fill returns TIMEOUT if order is not found/pending long."""
+        mock_get_session.return_value = self.mock_api
+        from bot.core.order_feed import order_feed
+        order_feed.register_order('1003')
+        
         self.mock_api.orderBook.return_value = {
             'status': True,
             'data': [
@@ -60,7 +85,7 @@ class TestOrderRejection(unittest.TestCase):
             result = self.strategy.wait_for_fill('1003')
             
         self.assertEqual(result['status'], 'TIMEOUT')
-        self.assertIsNone(result['price'])
+        self.assertIsNone(result.get('price'))
         
     @patch('bot.strategies.momentum_strategy.trade_repo')
     def test_enter_position_aborts_on_rejection(self, mock_repo):

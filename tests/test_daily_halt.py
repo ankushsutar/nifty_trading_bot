@@ -22,8 +22,19 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
                 self.stats_backup = f.read()
             os.remove(self.stats_file)
 
+        # Class-level and instance-level patch to avoid singleton mismatch/state leakage and querying DB for open trades
+        from bot.core.trade_repo import TradeRepository, trade_repo
+        self.patchers = [
+            patch.object(TradeRepository, 'get_open_trades', return_value=[]),
+            patch.object(trade_repo, 'get_open_trades', return_value=[])
+        ]
+        for p in self.patchers:
+            p.start()
+
     def tearDown(self):
         deactivate_kill_switch()
+        for p in self.patchers:
+            p.stop()
         # Restore session_stats.json backup
         if self.stats_backup is not None:
             os.makedirs(os.path.dirname(self.stats_file), exist_ok=True)
@@ -74,7 +85,9 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
         """Verify that hitting the daily loss limit activates the global kill switch."""
         engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
         
-        # Mock safety gatekeeper checks to fail daily loss check
+        # Mock safety gatekeeper checks to pass time checks and fail daily loss check
+        engine.gatekeeper.is_market_open = MagicMock(return_value=True)
+        engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
         engine.gatekeeper.get_starting_capital = MagicMock(return_value=100000.0)
         engine.gatekeeper.get_daily_realized_pnl = MagicMock(return_value=-20000.0) # -20% PnL (breaches limit)
         
@@ -90,6 +103,10 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
     def test_profit_protection_activates_kill_switch(self):
         """Verify that triggering profit protection activates the global kill switch."""
         engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
+        
+        # Mock safety gatekeeper checks to pass time checks
+        engine.gatekeeper.is_market_open = MagicMock(return_value=True)
+        engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
         
         # Setup stats file with a high peak profit
         today = datetime.date.today().isoformat()

@@ -2,10 +2,9 @@
 import time
 import threading
 import json
-from SmartApi.smartWebSocketOrderUpdate import SmartWebSocketOrderUpdate
 from bot.config.settings import Config
 from bot.utils.logger import logger
-from bot.core.angel_connect import get_angel_session
+from bot.core.session import get_session
 
 class OrderFeedService:
     _instance = None
@@ -109,67 +108,49 @@ class OrderFeedService:
             logger.error(f">>> [OrderFeed] Order {order_id} NOT FOUND in events registry. Registered IDs: {list(self.order_events.keys())}")
             return {'status': 'ERROR', 'message': f'Order {order_id} not registered in feed'}
 
-        # Wait for the WebSocket callback to signal the event
-        signaled = event.wait(timeout=timeout)
-        
-        if not signaled:
-            logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket. Falling back to REST API...")
-            try:
-                from bot.utils.rate_limiter import rate_limiter
-                api = get_angel_session()
-                if api:
-                    rate_limiter.wait()
-                    ob_res = api.orderBook()
-                    if ob_res and isinstance(ob_res, dict) and ob_res.get('status') == True:
-                        orders = ob_res.get('data', [])
-                        if orders:
-                            for ord_info in orders:
-                                if ord_info.get('orderid') == order_id:
-                                    ws_status = ord_info.get('status', '').lower()
-                                    if ws_status == 'complete':
-                                        return {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
-                                    elif ws_status in ['rejected', 'cancelled']:
-                                        return {'status': ws_status.upper(), 'price': 0}
-            except Exception as e:
-                logger.error(f">>> [OrderFeed] REST Fallback Error: {e}")
-            return {'status': 'TIMEOUT'}
+        try:
+            # Wait for the WebSocket callback to signal the event
+            signaled = event.wait(timeout=timeout)
             
-        return self.get_order_status(order_id)
+            if not signaled:
+                logger.warning(f"⚠️ Order {order_id} fill TIMEOUT via WebSocket. Falling back to REST API...")
+                try:
+                    from bot.utils.rate_limiter import rate_limiter
+                    api = get_session()
+                    if api:
+                        rate_limiter.wait()
+                        ob_res = api.orderBook()
+                        if ob_res and isinstance(ob_res, dict) and ob_res.get('status') == True:
+                            orders = ob_res.get('data', [])
+                            if orders:
+                                for ord_info in orders:
+                                    if ord_info.get('orderid') == order_id:
+                                        ws_status = ord_info.get('status', '').lower()
+                                        if ws_status == 'complete':
+                                            return {'status': 'FILLED', 'price': float(ord_info.get('averageprice', 0))}
+                                        elif ws_status in ['rejected', 'cancelled']:
+                                            return {'status': ws_status.upper(), 'price': 0, 'message': ord_info.get('text', '')}
+                except Exception as e:
+                    logger.error(f">>> [OrderFeed] REST Fallback Error: {e}")
+                return {'status': 'TIMEOUT'}
+                
+            return self.get_order_status(order_id)
+        finally:
+            with self.registry_lock:
+                self.order_events.pop(order_id, None)
 
     def _run_loop(self):
         while self.running:
             try:
-                api = get_angel_session()
+                api = get_session()
                 if not api:
                     time.sleep(5)
                     continue
 
-                feed_token = getattr(api, 'feed_token', None)
-                if not feed_token:
-                    try:
-                        with open("data/session.json", "r") as f:
-                            data = json.load(f)
-                            feed_token = data.get('feedToken')
-                    except: pass
-                
-                if not feed_token:
-                    time.sleep(10)
-                    continue
-
-                auth_token = api.access_token
-                if not auth_token:
-                    logger.warning(">>> [OrderFeed] Session token is None — session may have expired. Retrying in 10s.")
-                    time.sleep(10)
-                    continue
-                if not auth_token.startswith("Bearer "):
-                    auth_token = f"Bearer {auth_token}"
-
-                self.sws = SmartWebSocketOrderUpdate(
-                    auth_token, Config.API_KEY, Config.CLIENT_ID, feed_token
-                )
+                self.sws = api.get_order_ticker()
 
                 self.sws.on_open = self._on_open
-                # SmartWebSocketOrderUpdate uses on_message instead of directly passing generic dicts like V2
+                # SmartWebSocketOrderUpdate and KiteTickerOrderWrapper both use on_message
                 self.sws.on_message = self._on_message
                 self.sws.on_error = self._on_error
                 self.sws.on_close = self._on_close
@@ -183,6 +164,7 @@ class OrderFeedService:
             except Exception as e:
                 logger.error(f">>> [OrderFeed] Crash: {e}. Retrying...")
                 time.sleep(5)
+
 
     def _on_open(self, ws):
         logger.info(">>> [OrderFeed] Connected! ✅")

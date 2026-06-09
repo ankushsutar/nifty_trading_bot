@@ -348,6 +348,18 @@ class DecisionEngine:
             )
             return None, 1.0
 
+        # ── BOLLINGER BAND WIDTH (BBW) SQUEEZE GATE ──────────────────────────
+        # Allow entry into trending strategies (GAMMA_BLAST and MOMENTUM) only if
+        # the current BBW is expanding from a coiling squeeze.
+        if selected_strategy in ["MOMENTUM", "GAMMA_BLAST"]:
+            is_squeeze_expansion = regime_data.get('is_squeeze_expansion', True)
+            if not is_squeeze_expansion:
+                logger.warning(
+                    f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
+                    f"Market is not expanding from a coiling BBW squeeze (BBW={regime_data.get('bbw', 0.0):.4f})."
+                )
+                return None, 1.0
+
         # BUDGET CHECK — minimum viable margin for 1 lot (tier-aware)
         required = tier.min_capital_threshold * 0.5
         if not self.gatekeeper.check_funds(required_margin_per_lot=required, silent=True):

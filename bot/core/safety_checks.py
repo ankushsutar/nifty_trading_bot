@@ -546,17 +546,17 @@ class SafetyGatekeeper:
             except Exception as e:
                 logger.error(f">>> [Risk] VIX ltpData fallback error: {e}")
 
-        # 4. Apply rule and cache result — threshold and multiplier from capital tier
-        from bot.config.settings import Config
-        capital    = self.get_current_capital()
-        tier       = Config.get_tier(capital)
+        # 4. Apply rule and cache result — dynamic VIX scaling
+        if vix <= 0:
+            vix = 15.0  # default neutral VIX
+
         multiplier = 1.0
-        if vix > tier.vix_reduction_threshold:
+        if vix > 18.0:
+            multiplier = min(1.0, 15.0 / vix)
             logger.warning(
-                f">>> [Risk] ⚠️ High VIX ({vix:.1f} > {tier.vix_reduction_threshold}). "
-                f"Reducing Quantity by {int((1 - tier.vix_qty_multiplier)*100)}% [{tier.name} tier]."
+                f">>> [Risk] ⚠️ Dynamic VIX Scaling Active (VIX={vix:.1f} > 18.0). "
+                f"Sizing Multiplier: {multiplier:.2f}x"
             )
-            multiplier = tier.vix_qty_multiplier
 
         SafetyGatekeeper._vix_cache_time = time.time()
         SafetyGatekeeper._vix_multiplier = multiplier

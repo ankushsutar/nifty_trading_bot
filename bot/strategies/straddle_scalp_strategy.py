@@ -432,17 +432,32 @@ class StraddleScalpStrategy:
     def _wait_fill(self, order_id, fallback: float = 50.0) -> dict:
         if self.dry_run or order_id is None:
             return {'status': 'FILLED', 'price': fallback}
-        for _ in range(20):
-            time.sleep(1)
-            try:
-                from bot.utils.rate_limiter import rate_limiter
-                rate_limiter.wait()
-                ob = self.api.orderBook()
-                if ob and ob.get('data'):
-                    for o in ob['data']:
-                        if str(o.get('orderid')) == str(order_id) and o.get('status') == 'complete':
+        
+        from bot.core.order_feed import order_feed
+        # 1. Quick check memory-based registry first (from WebSocket order feed)
+        status = order_feed.get_order_status(order_id)
+        if status and status.get('status') == 'FILLED':
+            return {'status': 'FILLED', 'price': status.get('price', fallback)}
+            
+        # 2. Wait using WebSocket event
+        res = order_feed.wait_for_fill(order_id, timeout=10)
+        if res.get('status') == 'FILLED':
+            return {'status': 'FILLED', 'price': res.get('price', fallback)}
+            
+        # 3. Fallback to REST API
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            ob = self.api.orderBook()
+            if ob and ob.get('data'):
+                for o in ob['data']:
+                    if str(o.get('orderid')) == str(order_id):
+                        if o.get('status') == 'complete':
                             return {'status': 'FILLED', 'price': float(o.get('averageprice', fallback))}
-            except Exception:
-                pass
+                        else:
+                            return {'status': o.get('status', '').upper(), 'price': float(o.get('averageprice', 0.0) or 0.0)}
+        except Exception as e:
+            logger.error(f"Error checking order book fallback: {e}")
+            
         logger.warning(f"Straddle Scalp: Fill timeout for {order_id}. Using fallback ₹{fallback:.1f}")
         return {'status': 'TIMEOUT', 'price': fallback}

@@ -1,4 +1,5 @@
 import datetime
+from datetime import datetime as real_datetime
 import unittest
 from unittest.mock import MagicMock, patch
 from bot.core.decision_engine import DecisionEngine
@@ -21,7 +22,7 @@ class TestSelection(unittest.TestCase):
     @patch('datetime.datetime')
     def test_logic(self, mock_dt, mock_market, mock_trades):
         # Case 1: 9:45 AM, ADX 35 (Should be ORB)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 9, 45)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 9, 45)
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
@@ -33,7 +34,7 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(strat, "MOMENTUM")
 
         # Case 2: 11:00 AM, ADX 35 (Should be MOMENTUM)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
@@ -45,10 +46,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(strat, "MOMENTUM")
 
         # Case 3: 11:00 AM, ADX 50 (Should be GAMMA_BLAST)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 50},
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 50, 'rsi': 80.0},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }
@@ -56,11 +57,11 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 50 -> Expected: GAMMA_BLAST, Got: {strat}")
         self.assertEqual(strat, "GAMMA_BLAST")
 
-        # Case 4: 11:00 AM, ADX 20 (Should be VWAP)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        # Case 4: 11:00 AM, ADX 20 (Should be STRADDLE_SCALP via Sideways exception)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20},
+            'analysis': {'regime': 'SIDEWAYS', 'trend': 'BULLISH', 'adx': 20},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }

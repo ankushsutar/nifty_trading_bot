@@ -6,7 +6,7 @@ import json
 import os
 
 from bot.config.settings import Config
-from bot.core.angel_connect import get_angel_session
+from bot.core.session import get_session
 from bot.core.safety_checks import SafetyGatekeeper
 from bot.core.levels_provider import levels_provider
 from bot.core.data_fetcher import DataFetcher
@@ -968,51 +968,44 @@ class MomentumStrategy:
         except Exception as e:
              logger.error(f"Expiry Guard Check Error: {e}")
 
-        # Phase 3: Volatility-Adjusted Strike Selection
-        # High ATR → go deeper OTM for more leverage (accepts lower delta).
-        # Low ATR  → stay near ATM for higher fill probability and delta.
-        atm_strike = round(nifty_ltp / 50) * 50
-        if atr < 15:
-            otm_offset = 0      # ATM — tight market, maximise delta
-        elif atr < 30:
-            otm_offset = 1      # 1 strike OTM (~50 pts)
-        else:
-            otm_offset = 2      # 2 strikes OTM (~100 pts) — high vol, wide swings expected
+        # Phase 3: Delta-Based Strike Selection (Target: 0.40 Delta)
+        target_delta = 0.40
+        from backend.market_service import market_service
+        vix = market_service.get_market_data().get('vix', 15.0)
+        if vix <= 0: vix = 15.0
+        
+        from bot.utils.greeks import select_strike_by_delta
+        strike, token, symbol = select_strike_by_delta(self.token_loader, nifty_ltp, expiry, vix, leg, target_delta)
+        
+        if not strike or not token:
+            logger.warning("⚠️ Delta-based strike selection failed. Falling back to ATR-based calculation.")
+            atm_strike = round(nifty_ltp / 50) * 50
+            if atr < 15:
+                otm_offset = 0
+            elif atr < 30:
+                otm_offset = 1
+            else:
+                otm_offset = 2
 
-        # --- IV RANK: OTM DEPTH REDUCTION ---
-        # When options are expensive (high IV Rank), going OTM means paying a fat premium
-        # for low delta. Pull back 1 strike toward ATM to improve cost vs. payoff.
-        iv_rank = self.gatekeeper.get_iv_rank()
-        if iv_rank > 0.70 and otm_offset > 0:
-            otm_offset = max(0, otm_offset - 1)
-            logger.info(
-                f"📉 IV Rank={iv_rank:.0%} (>70%): Options expensive, "
-                f"pulling OTM depth back to {otm_offset} strike(s) — prefer near-ATM."
-            )
+            # --- IV RANK: OTM DEPTH REDUCTION ---
+            iv_rank = self.gatekeeper.get_iv_rank()
+            if iv_rank > 0.70 and otm_offset > 0:
+                otm_offset = max(0, otm_offset - 1)
 
-        # ── OTM CAP FOR SMALL/MICRO TIER ───────────────────────────────────────
-        # Small accounts go max 1-OTM (50pts from ATM). Going 2-OTM requires the
-        # underlying to move 150pts+ to reach a reasonable P&L on thin capital.
-        _cap_tier = Config.get_tier(self.gatekeeper.get_current_capital())
-        if _cap_tier.name in ("MICRO", "SMALL") and otm_offset > 1:
-            logger.info(
-                f"[{_cap_tier.name} tier] OTM depth capped: {otm_offset} → 1 "
-                "(max 1-OTM for small accounts)."
-            )
-            otm_offset = 1
+            # ── OTM CAP FOR SMALL/MICRO TIER ──
+            _cap_tier = Config.get_tier(self.gatekeeper.get_current_capital())
+            if _cap_tier.name in ("MICRO", "SMALL") and otm_offset > 1:
+                otm_offset = 1
 
-        strike_direction = 1 if leg == "CE" else -1
-        strike = atm_strike + strike_direction * otm_offset * 50
-        logger.info(
-            f"⚡ Vol-Adjusted Strike: ATR={atr:.1f} → "
-            f"{'ATM' if otm_offset == 0 else f'{otm_offset} OTM'} | "
-            f"Strike={strike}"
-        )
-        instr = get_instrument(Config.ACTIVE_SYMBOL)
-        token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
+            strike_direction = 1 if leg == "CE" else -1
+            strike = atm_strike + strike_direction * otm_offset * 50
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            token, symbol = self.token_loader.get_token(instr.name, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
+
         if not token: 
             logger.error(f"Token not found for {strike} {leg}")
             return
+
         
         quote_ltp = 0
         try:
@@ -1482,7 +1475,7 @@ class MomentumStrategy:
 
     def relogin(self):
         logger.info("System: 🔄 Attempting Session Re-login...")
-        new_api = get_angel_session()
+        new_api = get_session()
         if new_api:
             self.api = new_api
             self.gatekeeper.api = new_api

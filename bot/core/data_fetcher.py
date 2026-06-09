@@ -6,6 +6,7 @@ import os
 from bot.utils.file_lock import flock, LOCK_SH, LOCK_EX, LOCK_UN
 from bot.utils.logger import logger
 from bot.utils.expiry_calculator import is_trading_day
+from bot.config.settings import Config
 
 import threading
 
@@ -214,14 +215,17 @@ class DataFetcher:
             # Optimization: For intraday (days=1), ensure we have at least ~50 candles 
             # to prime indicators (EMA, ADX, RSI) properly even at 09:15 AM.
             if days == 1:
-                # For intraday analysis, we always want at least 24 hours of data 
-                # to include yesterday's session for indicator priming (EMA, ADX).
-                # We fetch from 09:15 AM of the PREVIOUS trading day.
+                # For intraday analysis, we always want at least 48 hours of data
+                # to ensure we have a stable 100-period window for BBW squeeze calculations.
+                # We fetch starting from 09:15 AM of the 2nd previous trading day.
                 prev_day = now.date() - datetime.timedelta(days=1)
                 while not is_trading_day(prev_day):
                     prev_day -= datetime.timedelta(days=1)
+                prev_day_2 = prev_day - datetime.timedelta(days=1)
+                while not is_trading_day(prev_day_2):
+                    prev_day_2 -= datetime.timedelta(days=1)
                 
-                aligned_from = datetime.datetime.combine(prev_day, datetime.time(9, 15))
+                aligned_from = datetime.datetime.combine(prev_day_2, datetime.time(9, 15))
             else:
                 # For larger requests, use the standard timedelta
                 aligned_from = aligned_to - datetime.timedelta(days=days)
@@ -300,13 +304,13 @@ class DataFetcher:
                     # --- SESSION RELOAD CHECK ---
                     # If we encounter an error, check if the session file has been updated (by MarketService)
                     try:
-                        session_file = os.path.join(os.getcwd(), "data", "session.json")
+                        session_file = os.path.join(os.getcwd(), "data", "session_kite.json" if Config.BROKER == "ZERODHA" else "session.json")
                         if os.path.exists(session_file):
                             file_mtime = os.path.getmtime(session_file)
                             if file_mtime > self.last_session_check:
-                                logger.info(">>> [DataFetcher] Deteced New Session File! Reloading API... 🔄")
-                                from bot.core.angel_connect import get_angel_session
-                                new_api = get_angel_session()
+                                logger.info(">>> [DataFetcher] Detected New Session File! Reloading API... 🔄")
+                                from bot.core.session import get_session
+                                new_api = get_session()
                                 if new_api:
                                     self.api = new_api
                                     self.last_session_check = time.time()

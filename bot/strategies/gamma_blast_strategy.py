@@ -486,50 +486,39 @@ class GammaBlastStrategy:
             atm_strike = round(ltp / 50) * 50
             vix = market_data.get('vix', 0)
 
-            if getattr(self, '_is_squeeze', False):
-                # SQUEEZE DETECTED: Force ATM (0 depth) for max delta acceleration
-                otm_depth = 0
-                logger.info("🔥 SQUEEZE OVERRIDE: Lock strike at ATM to catch parabolic delta surge.")
-            else:
-                # A. Base Depth from ADX Scale
-                if adx < 50:
-                    otm_depth = 1
-                elif adx < 55:
-                    otm_depth = 2
+            # Delta-based strike selection
+            target_delta = 0.50 if getattr(self, '_is_squeeze', False) else 0.45
+            from bot.utils.greeks import select_strike_by_delta
+            vix_val = vix if vix > 0 else 15.0
+            strike, token, symbol = select_strike_by_delta(self.token_loader, ltp, expiry, vix_val, leg, target_delta)
+            
+            if not strike or not token:
+                logger.warning("⚠️ Delta-based strike selection failed. Falling back to ATR-based calculation.")
+                if getattr(self, '_is_squeeze', False):
+                    otm_depth = 0
                 else:
-                    otm_depth = 3
-
-                # B. Dynamic Volatility Capping (Institutional Guard)
-                # VIX > 20 signifies explosive extrinsic premium (high theta risk).
-                # Never buy >1 OTM depth when VIX is elevated; options are too rich.
-                if vix > 20 and otm_depth > 1:
-                    logger.warning(f"📉 Volatility Risk: VIX={vix:.1f} > 20. Hard-capping OTM depth to 1 to avoid Vega trap.")
-                    otm_depth = 1
+                    if adx < 50:
+                        otm_depth = 1
+                    elif adx < 55:
+                        otm_depth = 2
+                    else:
+                        otm_depth = 3
+                    if vix > 20 and otm_depth > 1:
+                        otm_depth = 1
+                    iv_rank = self.gatekeeper.get_iv_rank()
+                    if iv_rank > 0.75:
+                        otm_depth = min(1, otm_depth)
+                    elif iv_rank > 0.60 and otm_depth > 1:
+                        otm_depth = otm_depth - 1
                 
-                # C. IV Rank Convergence
-                # If IV Rank is extremely high, bias strictly towards ATM as mean-reversion crushes OTM faster.
-                iv_rank = self.gatekeeper.get_iv_rank()
-                if iv_rank > 0.75:
-                    original_depth = otm_depth
-                    otm_depth = min(1, otm_depth)
-                    if original_depth != otm_depth:
-                        logger.info(f"🛡️ IV Rank Critical ({iv_rank:.0%}): Compressing OTM depth {original_depth} -> {otm_depth}.")
-                elif iv_rank > 0.60 and otm_depth > 1:
-                     otm_depth = otm_depth - 1
-                     logger.info(f"🛡️ IV Rank Elevated ({iv_rank:.0%}): Lowering depth to {otm_depth} strikes.")
-
-            strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
-
-            logger.info(
-                f"🎯 Analysis: ADX={adx:.1f} | Leg={leg} | "
-                f"OTM depth={otm_depth} strikes | Strike={strike}"
-            )
-
-            token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+                strike = atm_strike + (otm_depth * 50 * (1 if leg == "CE" else -1))
+                token, symbol = self.token_loader.get_token("NIFTY", expiry, strike, leg)
+                
             if not token:
                 logger.error(f"Gamma Blast: Token not found for {strike} {leg}")
                 time.sleep(30)
                 continue
+
 
             # Fetch Option LTP for early record and price estimate
             quote_ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 50.0

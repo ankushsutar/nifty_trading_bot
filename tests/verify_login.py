@@ -4,10 +4,11 @@ import os
 # Add the parent directory to sys.path to allow importing 'core'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from bot.config.settings import Config
 from bot.core.angel_connect import get_angel_session
 
 def verify_credentials():
-    print("\n>>> [Verify] Attempting to login with .env credentials...")
+    print(f"\n>>> [Verify] Attempting to login to {Config.BROKER} with .env credentials...")
     
     # helper function from bot.core/angel_connect.py
     # performs login and returns the API object if successful
@@ -17,7 +18,7 @@ def verify_credentials():
         print("\n>>> [Success] Authentication Passed! ✅")
         try:
             # Fetch generic profile data to prove the session is active
-            profile = api.getProfile(api.refreshToken)
+            profile = api.getProfile(getattr(api, 'refreshToken', None))
             if profile and profile.get('status'):
                 data = profile['data']
                 print(f"    Name: {data.get('name')}")
@@ -28,10 +29,13 @@ def verify_credentials():
         except Exception as e:
             print(f"    Warning: Could not fetch profile details: {e}")
             
-        print("\n>>> You are ready for Live Trading. Run 'python3 main.py' to execute strategies.")
+        print(f"\n>>> You are ready for Live Trading. Run 'python3 main.py' to execute strategies.")
     else:
         print("\n>>> [Failed] Authentication Rejected. ❌")
-        print("    Please check your .env file for correct API_KEY, CLIENT_ID, PASSWORD, and TOTP_SECRET.")
+        if Config.BROKER == "ZERODHA":
+            print("    Please check your .env file for correct KITE_API_KEY, KITE_API_SECRET, KITE_USER_ID, KITE_PASSWORD, and KITE_TOTP_SECRET.")
+        else:
+            print("    Please check your .env file for correct API_KEY, CLIENT_ID, PASSWORD, and TOTP_SECRET.")
 
 if __name__ == "__main__":
     verify_credentials()

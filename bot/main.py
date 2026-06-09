@@ -4,7 +4,7 @@ import signal
 import datetime
 import time
 import os
-from bot.core.angel_connect import get_angel_session
+from bot.core.session import get_session
 from bot.utils.token_lookup import TokenLookup
 from bot.strategies.nifty_straddle import NiftyStrategy
 from bot.core.mock_connect import MockSmartConnect, MockTokenLookup
@@ -74,7 +74,7 @@ def run_bot():
             logger.info("\n>>> [System] STARTING IN DRY RUN MODE 🟡") 
             logger.info("    (Real Data, No Orders)")
         
-        api = get_angel_session()
+        api = get_session()
         if not api:
             logger.error(">>> [System] Failed to establish API session. Exiting.")
             return

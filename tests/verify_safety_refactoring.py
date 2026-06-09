@@ -5,6 +5,11 @@ import datetime
 import time
 from unittest.mock import MagicMock, patch
 
+# Save original modules to prevent pollution
+orig_pymongo = sys.modules.get('pymongo')
+orig_trade_repo = sys.modules.get('bot.core.trade_repo')
+orig_safety_checks = sys.modules.get('bot.core.safety_checks')
+
 # Mock pymongo before importing anything that uses trade_repo
 sys.modules['pymongo'] = MagicMock()
 
@@ -13,6 +18,22 @@ sys.path.append(os.getcwd())
 
 from bot.core.trade_repo import TradeRepository
 from bot.core.safety_checks import SafetyGatekeeper
+
+# Restore original modules so other tests get fresh/real modules
+if orig_pymongo is not None:
+    sys.modules['pymongo'] = orig_pymongo
+else:
+    sys.modules.pop('pymongo', None)
+
+if orig_trade_repo is not None:
+    sys.modules['bot.core.trade_repo'] = orig_trade_repo
+else:
+    sys.modules.pop('bot.core.trade_repo', None)
+
+if orig_safety_checks is not None:
+    sys.modules['bot.core.safety_checks'] = orig_safety_checks
+else:
+    sys.modules.pop('bot.core.safety_checks', None)
 
 class TestSafetyRefactoring(unittest.TestCase):
     def setUp(self):

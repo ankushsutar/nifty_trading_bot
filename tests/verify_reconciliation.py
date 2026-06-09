@@ -4,12 +4,39 @@ import unittest
 from unittest.mock import MagicMock, patch
 import datetime
 
+# Save original modules to prevent pollution
+orig_logger = sys.modules.get('bot.utils.logger')
+orig_rate_limiter = sys.modules.get('bot.utils.rate_limiter')
+orig_pymongo = sys.modules.get('pymongo')
+orig_trade_repo = sys.modules.get('bot.core.trade_repo')
+
 # Mock dependencies
 sys.modules['bot.utils.logger'] = MagicMock()
 sys.modules['bot.utils.rate_limiter'] = MagicMock()
 sys.modules['pymongo'] = MagicMock()
 
 from bot.core.trade_repo import TradeRepository
+
+# Restore original modules so other tests get fresh/real modules
+if orig_logger is not None:
+    sys.modules['bot.utils.logger'] = orig_logger
+else:
+    sys.modules.pop('bot.utils.logger', None)
+
+if orig_rate_limiter is not None:
+    sys.modules['bot.utils.rate_limiter'] = orig_rate_limiter
+else:
+    sys.modules.pop('bot.utils.rate_limiter', None)
+
+if orig_pymongo is not None:
+    sys.modules['pymongo'] = orig_pymongo
+else:
+    sys.modules.pop('pymongo', None)
+
+if orig_trade_repo is not None:
+    sys.modules['bot.core.trade_repo'] = orig_trade_repo
+else:
+    sys.modules.pop('bot.core.trade_repo', None)
 
 class TestReconciliation(unittest.TestCase):
     def setUp(self):

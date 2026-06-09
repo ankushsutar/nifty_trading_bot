@@ -15,7 +15,7 @@ class GlobalRateLimiter:
             cls._instance = super(GlobalRateLimiter, cls).__new__(cls)
             cls._instance.lock_file = os.path.join(os.getcwd(), "data", "api_global.lock")
             cls._instance.time_file = os.path.join(os.getcwd(), "data", "api_last_call.time")
-            cls._instance.min_interval = 5.0 # Strictly > 3s for security.
+            cls._instance.min_interval = 0.5 # Safe for both Angel One and Zerodha while enabling fast execution
             
             # Ensure data dir exists
             os.makedirs(os.path.dirname(cls._instance.lock_file), exist_ok=True)

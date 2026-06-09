@@ -194,11 +194,22 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 class Config:
+    # ── Broker Toggle ──────────────────────────────────────────────────────
+    BROKER       = os.getenv("BROKER", "ANGEL").upper()
+
     # ── Angel One API credentials ──────────────────────────────────────────
     API_KEY      = os.getenv("API_KEY")
     CLIENT_ID    = os.getenv("CLIENT_ID")
     PASSWORD     = os.getenv("PASSWORD")
     TOTP_SECRET  = os.getenv("TOTP_SECRET")
+
+    # ── Zerodha Kite credentials ───────────────────────────────────────────
+    KITE_API_KEY      = os.getenv("KITE_API_KEY")
+    KITE_API_SECRET   = os.getenv("KITE_API_SECRET")
+    KITE_USER_ID      = os.getenv("KITE_USER_ID")
+    KITE_PASSWORD     = os.getenv("KITE_PASSWORD")
+    KITE_TOTP_SECRET  = os.getenv("KITE_TOTP_SECRET")
+    KITE_ACCESS_TOKEN = os.getenv("KITE_ACCESS_TOKEN")
 
     # ── Master mode control ────────────────────────────────────────────────
     LIVE_TRADE_ENABLED = os.getenv("LIVE_TRADE_ENABLED", "FALSE").upper() == "TRUE"
@@ -206,8 +217,8 @@ class Config:
 
     # ── Profit Protection (Elite Rule) ──────────────────────────────────────
     PROFIT_PROTECTION_ENABLED      = os.getenv("PROFIT_PROTECTION_ENABLED", "TRUE").upper() == "TRUE"
-    PROFIT_PROTECTION_THRESHOLD    = float(os.getenv("PROFIT_PROTECTION_THRESHOLD", "1000.0"))
-    PROFIT_PROTECTION_DRAWDOWN_PCT = float(os.getenv("PROFIT_PROTECTION_DRAWDOWN_PCT", "0.50"))
+    PROFIT_PROTECTION_THRESHOLD    = float(os.getenv("PROFIT_PROTECTION_THRESHOLD", "2000.0"))
+    PROFIT_PROTECTION_DRAWDOWN_PCT = float(os.getenv("PROFIT_PROTECTION_DRAWDOWN_PCT", "0.40"))
 
     # ── Time configuration ─────────────────────────────────────────────────
     BLACKOUT_START_TIME      = (11, 30)   # (hour, minute)

@@ -20,7 +20,8 @@ class RegimeClassifier:
             logger.warning(f"[Regime] Insufficient candles ({len(df) if df is not None else 0}). Returning UNKNOWN.")
             return {
                 "regime": "UNKNOWN", "trend": "NEUTRAL",
-                "adx": 0, "rsi": 50, "atr": 0, "bbw": 0, "ema9": 0, "ema21": 0
+                "adx": 0, "rsi": 50, "atr": 0, "bbw": 0, "ema9": 0, "ema21": 0,
+                "is_squeeze": False, "is_squeeze_expansion": False
             }
 
         df = df.copy()
@@ -95,6 +96,23 @@ class RegimeClassifier:
         if n >= 2:
             adx_slope = df['ADX'].iloc[-1] - df['ADX'].iloc[-2]
 
+        # 5.5 Bollinger Band Width (BBW) Squeeze Check
+        is_squeeze = False
+        is_squeeze_expansion = False
+        if has_full_data and 'BBW' in df.columns:
+            window_size = min(100, len(df))
+            bbw_history = df['BBW'].iloc[-window_size:]
+            if len(bbw_history) >= 20:
+                bbw_20th = np.percentile(bbw_history, 20)
+                is_squeeze = bbw < bbw_20th
+                
+                # Check if expanding from a squeeze:
+                # 1. Any squeeze in the last 5 bars (excluding current bar)
+                was_squeezed_recently = (df['BBW'].iloc[-6:-1] < bbw_20th).any() if len(df) >= 6 else False
+                # 2. BBW is expanding (upward slope)
+                is_expanding = df['BBW'].iloc[-1] > df['BBW'].iloc[-2] if len(df) >= 2 else False
+                is_squeeze_expansion = was_squeezed_recently and is_expanding
+
         # 6. Volume Spike Detection (Institutional Activity Filter)
         volume_spike = self._calculate_volume_spike(df)
         if volume_spike:
@@ -111,7 +129,9 @@ class RegimeClassifier:
             "ema9": round(ema9, 2),
             "ema21": round(ema21, 2),
             "volume_spike": volume_spike,
-            "is_exhausted": rsi > 80 or rsi < 20
+            "is_exhausted": rsi > 80 or rsi < 20,
+            "is_squeeze": is_squeeze,
+            "is_squeeze_expansion": is_squeeze_expansion
         }
 
     def _calculate_rsi(self, df, period=14):
