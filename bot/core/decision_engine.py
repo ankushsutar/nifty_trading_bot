@@ -389,7 +389,7 @@ class DecisionEngine:
                 return None, 1.0
             
             # If 4H regime still aligns with the strategy, override the gate
-            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP")
+            strategy_is_trending = selected_strategy in ("MOMENTUM", "GAMMA_BLAST")
             regime_4h_trending   = regime_4h.get("regime") == "TRENDING"
             if strategy_is_trending == regime_4h_trending:
                 logger.info(

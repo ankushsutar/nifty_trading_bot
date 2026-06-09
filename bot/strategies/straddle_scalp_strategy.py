@@ -14,23 +14,36 @@ from backend.market_service import market_service
 
 class StraddleScalpStrategy:
     """
-    ATM Straddle Scalp — profits from sharp moves in either direction.
-    Buy ATM CE + PE together when the market is ranging (ADX < 20).
-    Exit the pair when combined premium gains 20% or loses 15%.
+    Hedged Option Writing (Iron Condor) Strategy.
+    Designed to harvest premium decay (theta) on range-bound / sideways days (ADX < 25.0).
+    
+    To trade within small accounts (e.g. ₹50,000 tier), it utilizes an Iron Condor:
+      - Short Call (SC): ATM Strike + 100 points
+      - Long Call (LC - Hedge): Short Call Strike + 100 points
+      - Short Put (SP): ATM Strike - 100 points
+      - Long Put (LP - Hedge): Short Put Strike - 100 points
 
-    Best conditions:
-      - ADX < 20 (SIDEWAYS / CHOP regime — direction unknown)
-      - Entry before 10:30 AM (theta decay accelerates after that)
-      - VIX elevated or approaching a known event (RBI, earnings, expiry)
+    Sequential Margin Protocol:
+      1. Buy protection wings (LC, LP) first to unlock margin benefit.
+      2. Sell premium wings (SC, SP) second.
+      3. If any leg fails to fill, execute emergency rollback.
+      
+    Disaster Stop Losses:
+      - Hard SL placed on broker for short legs at 150% of entry premium.
+      
+    Exit Monitoring:
+      - Monitor combined premium basket.
+      - Take Profit: Combined LTP <= 50% of net credit.
+      - Stop Loss: Combined LTP >= 200% of net credit (100% loss of credit).
     """
 
     STRATEGY_NAME      = "STRADDLE_SCALP"
-    PROFIT_TARGET_PCT  = 0.20   # Exit when combined premium rises 20%
-    STOP_LOSS_PCT      = 0.15   # Exit when combined premium falls 15%
-    MAX_ADX_TO_ENTER   = 25.0   # Relaxed from 20.0 to capture more sideways days
-    MAX_ENTRY_TIME     = datetime.time(11, 0)    # Normal days: no new entries after 11:00 AM
-    MAX_ENTRY_EXPIRY   = datetime.time(12, 30)   # Expiry days: gamma stays high till noon
-    TREND_KILL_ADX     = 30.0                    # Exit if market starts trending
+    PROFIT_TARGET_PCT  = 0.50   # Close at 50% premium decay of net credit
+    STOP_LOSS_PCT      = 1.00   # Close at 100% premium expansion (cost doubles)
+    MAX_ADX_TO_ENTER   = 25.0   # Sideways filter
+    MAX_ENTRY_TIME     = datetime.time(11, 0)
+    MAX_ENTRY_EXPIRY   = datetime.time(12, 30)
+    TREND_KILL_ADX     = 30.0   # Exit if trend starts to run
 
     def __init__(self, api, token_loader, dry_run=False):
         self.api            = api
@@ -45,30 +58,31 @@ class StraddleScalpStrategy:
         self._last_log_ts   = 0.0
         self._last_trend_check = 0.0
 
-        # Two separate leg positions — both None until entered
-        self.ce_position = None  # dict: symbol, token, qty, entry_price, id
-        self.pe_position = None
+        # Position tracking variables
+        self.lc_position = None  # Long Call Protection: symbol, token, qty, entry_price, id
+        self.sc_position = None  # Short Call Premium
+        self.sp_position = None  # Short Put Premium
+        self.lp_position = None  # Long Put Protection
 
     @property
     def active_position(self):
         """Shim used by main.py shutdown handler."""
-        return self.ce_position or self.pe_position
+        return self.lc_position or self.sc_position or self.sp_position or self.lp_position
 
     # ─────────────────────────────────────────────────────────────────────
-    # Lifecycle
+    # Lifecycle & Recovery
     # ─────────────────────────────────────────────────────────────────────
 
     def stop(self):
         self.running = False
-        if self.ce_position or self.pe_position:
-            logger.warning("Straddle Scalp: 🛑 Stop requested — closing both legs.")
-            self._close_both("USER_STOPPED")
+        if self.active_position:
+            logger.warning("Straddle Scalp: 🛑 Stop requested — closing Iron Condor legs.")
+            self._close_all("USER_STOPPED")
 
     def sync_state(self):
-        """Recover open straddle legs from DB after a restart."""
+        """Recover open Iron Condor legs from DB after a restart."""
         mode = "PAPER" if self.dry_run else "LIVE"
         try:
-            # Look for both OPEN and PLACED trades during recovery
             query = {"status": {"$in": ["OPEN", "PLACED"]}, "mode": mode, "strategy": self.STRATEGY_NAME}
             open_trades = list(trade_repo.collection.find(query))
             for t in open_trades:
@@ -80,21 +94,28 @@ class StraddleScalpStrategy:
                     'entry_price': t['entry_price'],
                     'sl_oid':      t.get('sl_order_id')
                 }
-                if t.get('leg') == 'CE' and self.ce_position is None:
-                    self.ce_position = pos
-                    logger.info(f"♻️ [Straddle] CE RECOVERY: {t['symbol']} @ ₹{t['entry_price']}")
-                elif t.get('leg') == 'PE' and self.pe_position is None:
-                    self.pe_position = pos
-                    logger.info(f"♻️ [Straddle] PE RECOVERY: {t['symbol']} @ ₹{t['entry_price']}")
+                leg_type = t.get('leg')
+                if leg_type == 'LC' and self.lc_position is None:
+                    self.lc_position = pos
+                    logger.info(f"♻️ [Straddle Scalp] Recovered Long Call: {t['symbol']} @ ₹{t['entry_price']}")
+                elif leg_type == 'SC' and self.sc_position is None:
+                    self.sc_position = pos
+                    logger.info(f"♻️ [Straddle Scalp] Recovered Short Call: {t['symbol']} @ ₹{t['entry_price']}")
+                elif leg_type == 'SP' and self.sp_position is None:
+                    self.sp_position = pos
+                    logger.info(f"♻️ [Straddle Scalp] Recovered Short Put: {t['symbol']} @ ₹{t['entry_price']}")
+                elif leg_type == 'LP' and self.lp_position is None:
+                    self.lp_position = pos
+                    logger.info(f"♻️ [Straddle Scalp] Recovered Long Put: {t['symbol']} @ ₹{t['entry_price']}")
         except Exception as e:
             logger.error(f"Straddle Scalp sync_state error: {e}")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main loop
+    # Main Loop
     # ─────────────────────────────────────────────────────────────────────
 
-    def execute(self, expiry, action="BUY"):
-        logger.info(f"🎯 --- STRADDLE SCALP STRATEGY ACTIVATED ({expiry}) ---")
+    def execute(self, expiry, action="SELL"):
+        logger.info(f"🎯 --- STRADDLE SCALP STRATEGY ACTIVE (Iron Condor, Expiry: {expiry}) ---")
         self.sync_state()
 
         today_str  = datetime.datetime.now().strftime("%d%b%Y").upper()
@@ -106,7 +127,7 @@ class StraddleScalpStrategy:
         )
 
         while self.running:
-            # Hard safety guards
+            # 1. Hard safety checks
             if not self.gatekeeper.is_market_open():
                 logger.warning("Straddle Scalp: 🛑 Market Closed. Exiting.")
                 break
@@ -117,27 +138,28 @@ class StraddleScalpStrategy:
                     logger.critical("Straddle Scalp: 🛑 Max Daily Loss hit. Halting.")
                 break
 
-            # Both legs open → monitor until exit condition
-            if self.ce_position and self.pe_position:
-                result = self._monitor_straddle()
-                if result in ("PROFIT", "LOSS", "TIME"):
+            # 2. Check if positions are established
+            has_positions = (self.lc_position and self.sc_position and self.sp_position and self.lp_position)
+            if has_positions:
+                result = self._monitor_condor()
+                if result in ("PROFIT", "LOSS", "TIME", "TREND_KILL"):
                     break
                 time.sleep(10)
                 continue
 
-            # Orphan: one leg open without the other (crash mid-entry)
-            if self.ce_position or self.pe_position:
-                logger.warning("Straddle Scalp: ⚠️ Orphan leg detected — closing for safety.")
-                self._close_both("ORPHAN")
+            # 3. Handle incomplete basket (crash recovery / execution gap)
+            if self.lc_position or self.sc_position or self.sp_position or self.lp_position:
+                logger.warning("Straddle Scalp: ⚠️ Incomplete Iron Condor basket detected. Closing all legs for safety.")
+                self._close_all("INCOMPLETE_BASKET")
                 break
 
-            # Entry time window gate
+            # 4. Entry time window gate
             now = datetime.datetime.now().time()
             if now >= entry_cutoff:
                 logger.info(f"Straddle Scalp: ⏰ Past entry window ({entry_cutoff}). No new entries allowed today.")
                 break
 
-            # ADX + regime gate (Centralized Intelligence Integration)
+            # 5. ADX + Regime Gates
             market_data = market_service.get_market_data()
             analysis    = market_data.get('analysis', {})
             regime      = analysis.get('regime', 'UNKNOWN')
@@ -151,7 +173,7 @@ class StraddleScalpStrategy:
             if adx >= self.MAX_ADX_TO_ENTER:
                 logger.info(
                     f"Straddle Scalp: ⏸️ ADX={adx:.1f} ≥ {self.MAX_ADX_TO_ENTER} "
-                    "— trending market, not a straddle day. Waiting."
+                    "— trending market, not a range-bound day. Waiting."
                 )
                 time.sleep(60)
                 continue
@@ -163,270 +185,337 @@ class StraddleScalpStrategy:
 
             logger.info(
                 f"Straddle Scalp: ✅ Entry conditions met — ADX={adx:.1f} | Regime={regime}. "
-                "Entering ATM straddle."
+                "Entering Iron Condor."
             )
-            self._enter_straddle(expiry)
+            self._enter_condor(expiry)
             time.sleep(30)
 
     # ─────────────────────────────────────────────────────────────────────
-    # Entry
+    # Entry Execution
     # ─────────────────────────────────────────────────────────────────────
 
-    def _enter_straddle(self, expiry):
-        """Buy ATM CE + ATM PE simultaneously."""
+    def _enter_condor(self, expiry):
+        """
+        Execute 4-leg Iron Condor with sequential margin protection:
+        1. Place BUY orders for protection wings (Long Call & Long Put)
+        2. Wait for BUY orders to fill.
+        3. Place SELL orders for premium wings (Short Call & Short Put)
+        4. Wait for SELL orders to fill.
+        """
         nifty_ltp = self.data_fetcher.get_ltp("99926000", exchange="NSE")
         if not nifty_ltp:
-            logger.error("Straddle Scalp: Cannot fetch NIFTY LTP. Aborting entry.")
+            logger.error("Straddle Scalp: Cannot fetch NIFTY LTP. Aborting.")
             return
 
         atm_strike = round(nifty_ltp / 50) * 50
-        logger.info(f"Straddle Scalp: NIFTY={nifty_ltp:.0f} | ATM={atm_strike}")
+        
+        # Calculate strikes (100pt offset, 100pt wing gap)
+        short_call = atm_strike + 100
+        long_call  = short_call + 100
+        short_put  = atm_strike - 100
+        long_put   = short_put - 100
 
-        ce_token, ce_symbol = self.token_loader.get_token("NIFTY", expiry, atm_strike, "CE")
-        pe_token, pe_symbol = self.token_loader.get_token("NIFTY", expiry, atm_strike, "PE")
+        logger.info(
+            f"Straddle Scalp: NIFTY={nifty_ltp:.1f} | ATM={atm_strike}\n"
+            f"    Call Side: Short {short_call} CE | Long {long_call} CE (Hedge)\n"
+            f"    Put Side:  Short {short_put} PE | Long {long_put} PE (Hedge)"
+        )
 
-        if not ce_token or not pe_token:
-            logger.error(f"Straddle Scalp: Token lookup failed for {atm_strike} CE/PE.")
+        # Resolve Tokens
+        lc_token, lc_symbol = self.token_loader.get_token("NIFTY", expiry, long_call, "CE")
+        sc_token, sc_symbol = self.token_loader.get_token("NIFTY", expiry, short_call, "CE")
+        sp_token, sp_symbol = self.token_loader.get_token("NIFTY", expiry, short_put, "PE")
+        lp_token, lp_symbol = self.token_loader.get_token("NIFTY", expiry, long_put, "PE")
+
+        if not all([lc_token, sc_token, sp_token, lp_token]):
+            logger.error("Straddle Scalp: Strike token resolution failed. Aborting.")
             return
 
-        # --- SAFETY GATE: Instrument Cooldown (Anti-Revenge Trading) ---
-        if not self.gatekeeper.check_instrument_cooldown(ce_symbol) or \
-           not self.gatekeeper.check_instrument_cooldown(pe_symbol):
+        # Cooldown check
+        for sym in [lc_symbol, sc_symbol, sp_symbol, lp_symbol]:
+            if not self.gatekeeper.check_instrument_cooldown(sym):
+                logger.warning(f"Straddle Scalp: {sym} is in cooldown. Aborting.")
+                return
+
+        # Get LTPs to initialize smart limit order prices
+        lc_ltp = self.data_fetcher.get_ltp(lc_token, exchange="NFO") or 0.0
+        sc_ltp = self.data_fetcher.get_ltp(sc_token, exchange="NFO") or 0.0
+        sp_ltp = self.data_fetcher.get_ltp(sp_token, exchange="NFO") or 0.0
+        lp_ltp = self.data_fetcher.get_ltp(lp_token, exchange="NFO") or 0.0
+
+        if any(ltp <= 0 for ltp in [lc_ltp, sc_ltp, sp_ltp, lp_ltp]):
+            logger.error("Straddle Scalp: Cannot fetch LTPs for all legs. Aborting.")
             return
 
-
-        ce_ltp = self.data_fetcher.get_ltp(ce_token, exchange="NFO") or 0.0
-        pe_ltp = self.data_fetcher.get_ltp(pe_token, exchange="NFO") or 0.0
-
-        if ce_ltp <= 0 or pe_ltp <= 0:
-            logger.error(f"Straddle Scalp: Bad LTPs — CE=₹{ce_ltp}, PE=₹{pe_ltp}. Aborting.")
-            return
-
-        # Size: combined cost per lot = (CE + PE) premium × lot size.
-        # Use 0.5× multiplier because we're deploying capital into TWO legs.
-        _tier = Config.get_tier(self.gatekeeper.get_current_capital())
-        combined_cost_per_lot = (ce_ltp + pe_ltp) * Config.NIFTY_LOT_SIZE
+        # Size Position (using ₹35,000 margin per lot for Iron Condor)
+        margin_per_lot = 35000.0
         qty_lots = int(
             self.gatekeeper.get_compounded_lots(
-                margin_per_lot=combined_cost_per_lot,
-                multiplier=self.risk_multiplier * 0.5
+                margin_per_lot=margin_per_lot,
+                multiplier=self.risk_multiplier
             )
         )
         qty_lots = max(1, qty_lots)
         qty_units = qty_lots * Config.NIFTY_LOT_SIZE
 
-        if not self.gatekeeper.check_trade_viability(ce_ltp, qty_units) or \
-           not self.gatekeeper.check_trade_viability(pe_ltp, qty_units):
-            logger.warning("Straddle Scalp: Viability check failed — brokerage too high vs premium.")
+        # Margin check on live/simulation balance
+        required_margin = qty_lots * margin_per_lot
+        if not self.dry_run and not self.gatekeeper.check_trade_margin(required_margin):
+            logger.warning(f"Straddle Scalp: ❌ Insufficient funds. Required: ₹{required_margin:,.2f}")
             return
 
-        # Margin Check before placing orders
-        total_estimated_cost = (ce_ltp + pe_ltp) * qty_units
-        if not self.dry_run and not self.gatekeeper.check_trade_margin(total_estimated_cost):
-            logger.warning(f"Straddle Scalp: ❌ Insufficient Funds for Straddle. Required: ₹{total_estimated_cost:,.2f}")
-            return
-
-        logger.info(
-            f"Straddle Scalp: 🎯 {qty_lots} lot(s) | "
-            f"CE={ce_symbol}@₹{ce_ltp} | PE={pe_symbol}@₹{pe_ltp} | "
-            f"Combined=₹{ce_ltp+pe_ltp:.1f}/unit | Total cost≈₹{combined_cost_per_lot*qty_lots:,.0f}"
-        )
-
+        logger.info(f"Straddle Scalp: Placing Iron Condor Basket. Size: {qty_lots} lot(s) ({qty_units} units)")
         mode = "PAPER" if self.dry_run else "LIVE"
 
-        # Place both legs — CE first, then PE
-        ce_oid = self.order_manager.place_smart_limit(
-            ce_symbol, ce_token, qty_units, ce_ltp, "BUY",
-            strategy_name=self.STRATEGY_NAME, mode=mode
-        )
-        pe_oid = self.order_manager.place_smart_limit(
-            pe_symbol, pe_token, qty_units, pe_ltp, "BUY",
-            strategy_name=self.STRATEGY_NAME, mode=mode
-        )
+        # -----------------------------------------------------------------
+        # STEP 1: Place Long protection legs first (to secure margin)
+        # -----------------------------------------------------------------
+        logger.info("🛡️ Step 1/2: Placing Long Hedges (LC and LP) to unlock margin...")
+        lc_oid = self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_ltp, "BUY", self.STRATEGY_NAME, mode)
+        lp_oid = self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_ltp, "BUY", self.STRATEGY_NAME, mode)
 
-        if not ce_oid or not pe_oid:
-            logger.error("Straddle Scalp: Order placement failed for one or both legs. Rolling back.")
-            if ce_oid:
-                self.order_manager.cancel_order(ce_oid, variety="NORMAL")
-            if pe_oid:
-                self.order_manager.cancel_order(pe_oid, variety="NORMAL")
+        if not lc_oid or not lp_oid:
+            logger.error("Straddle Scalp: Long leg placement failed. Cancelling.")
+            if lc_oid: self.order_manager.cancel_order(lc_oid)
+            if lp_oid: self.order_manager.cancel_order(lp_oid)
             return
 
-        ce_fill = self._wait_fill(ce_oid, fallback=ce_ltp)
-        pe_fill = self._wait_fill(pe_oid, fallback=pe_ltp)
+        lc_fill = self._wait_fill(lc_oid, fallback=lc_ltp)
+        lp_fill = self._wait_fill(lp_oid, fallback=lp_ltp)
 
-        # Handle Timeout/Failure on fill for either leg to prevent orphan positions
-        if ce_fill['status'] != 'FILLED' or pe_fill['status'] != 'FILLED':
-            logger.warning(
-                f"Straddle Scalp: ⚠️ One or both legs failed to fill. "
-                f"CE Status: {ce_fill['status']} | PE Status: {pe_fill['status']}. Rolling back."
-            )
-            # Cancel both orders
-            self.order_manager.cancel_order(ce_oid, variety="NORMAL")
-            self.order_manager.cancel_order(pe_oid, variety="NORMAL")
-
-            # Emergency Sell if one leg filled but the other didn't
-            if ce_fill['status'] == 'FILLED' and pe_fill['status'] != 'FILLED':
-                logger.critical(f"Straddle Scalp: 🚨 CE Leg filled but PE Leg failed. Emergency exiting CE Leg!")
-                self.order_manager.place_smart_limit(ce_symbol, ce_token, qty_units, ce_fill['price'] * 0.95, "SELL", mode=mode)
-            elif pe_fill['status'] == 'FILLED' and ce_fill['status'] != 'FILLED':
-                logger.critical(f"Straddle Scalp: 🚨 PE Leg filled but CE Leg failed. Emergency exiting PE Leg!")
-                self.order_manager.place_smart_limit(pe_symbol, pe_token, qty_units, pe_fill['price'] * 0.95, "SELL", mode=mode)
+        if lc_fill['status'] != 'FILLED' or lp_fill['status'] != 'FILLED':
+            logger.warning("Straddle Scalp: Long hedge legs failed to fill. Cleaning up.")
+            self.order_manager.cancel_order(lc_oid)
+            self.order_manager.cancel_order(lp_oid)
+            if lc_fill['status'] == 'FILLED':
+                self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            if lp_fill['status'] == 'FILLED':
+                self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
             return
 
-        ce_entry = ce_fill.get('price', ce_ltp)
-        pe_entry = pe_fill.get('price', pe_ltp)
+        logger.info("🛡️ Step 1/2 Complete: Both Long hedges filled successfully.")
 
-        ce_id = trade_repo.save_trade(
-            ce_symbol, ce_token, "CE", qty_units, ce_entry,
-            sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
-        )
-        pe_id = trade_repo.save_trade(
-            pe_symbol, pe_token, "PE", qty_units, pe_entry,
-            sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
-        )
+        # -----------------------------------------------------------------
+        # STEP 2: Place Short premium legs second
+        # -----------------------------------------------------------------
+        logger.info("💰 Step 2/2: Placing Short Premium legs (SC and SP)...")
+        sc_oid = self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_ltp, "SELL", self.STRATEGY_NAME, mode)
+        sp_oid = self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_ltp, "SELL", self.STRATEGY_NAME, mode)
 
-        # --- INSTITUTIONAL SAFETY UPGRADE: Place Disaster Hard SLs (fallback) ---
-        DISASTER_SL_PCT = 0.35  # Reduced from 0.50 to stay within exchange LPP (AB1007 fix)
-        ce_sl_price = round(ce_entry * (1 - DISASTER_SL_PCT), 1)
-        pe_sl_price = round(pe_entry * (1 - DISASTER_SL_PCT), 1)
+        if not sc_oid or not sp_oid:
+            logger.critical("Straddle Scalp: Short leg placement failed. Triggering immediate emergency cleanup.")
+            if sc_oid: self.order_manager.cancel_order(sc_oid)
+            if sp_oid: self.order_manager.cancel_order(sp_oid)
+            # Exit Long legs
+            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            return
+
+        sc_fill = self._wait_fill(sc_oid, fallback=sc_ltp)
+        sp_fill = self._wait_fill(sp_oid, fallback=sp_ltp)
+
+        if sc_fill['status'] != 'FILLED' or sp_fill['status'] != 'FILLED':
+            logger.critical("Straddle Scalp: Short legs failed to fill. Initiating emergency rollback.")
+            self.order_manager.cancel_order(sc_oid)
+            self.order_manager.cancel_order(sp_oid)
+            # Buy back any filled shorts
+            if sc_fill['status'] == 'FILLED':
+                self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_fill['price']*1.1, "BUY", self.STRATEGY_NAME, mode)
+            if sp_fill['status'] == 'FILLED':
+                self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_fill['price']*1.1, "BUY", self.STRATEGY_NAME, mode)
+            # Sell Long hedges
+            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            return
+
+        # -----------------------------------------------------------------
+        # STEP 3: Setup database and tracking state
+        # -----------------------------------------------------------------
+        lc_entry = lc_fill.get('price', lc_ltp)
+        sc_entry = sc_fill.get('price', sc_ltp)
+        sp_entry = sp_fill.get('price', sp_ltp)
+        lp_entry = lp_fill.get('price', lp_ltp)
+
+        # Save trades
+        lc_id = trade_repo.save_trade(lc_symbol, lc_token, "LC", qty_units, lc_entry, 0.0, "BUY", mode, self.STRATEGY_NAME)
+        sc_id = trade_repo.save_trade(sc_symbol, sc_token, "SC", qty_units, sc_entry, 0.0, "SELL", mode, self.STRATEGY_NAME)
+        sp_id = trade_repo.save_trade(sp_symbol, sp_token, "SP", qty_units, sp_entry, 0.0, "SELL", mode, self.STRATEGY_NAME)
+        lp_id = trade_repo.save_trade(lp_symbol, lp_token, "LP", qty_units, lp_entry, 0.0, "BUY", mode, self.STRATEGY_NAME)
+
+        # Place disaster hard Stop Losses on the Short legs (SC & SP) at 150% premium
+        sc_sl_price = round(sc_entry * 1.5, 1)
+        sp_sl_price = round(sp_entry * 1.5, 1)
         
-        logger.info(f"🛡️ Placing Broker Disaster SLs: CE @ {ce_sl_price} | PE @ {pe_sl_price}")
-        ce_sl_oid = self.order_manager.place_sl_order(ce_symbol, ce_token, qty_units, ce_sl_price, "CE")
-        pe_sl_oid = self.order_manager.place_sl_order(pe_symbol, pe_token, qty_units, pe_sl_price, "PE")
-        
-        # Persist SL IDs for recovery
-        if ce_id and ce_sl_oid: trade_repo.update_sl_order_id(ce_id, ce_sl_oid)
-        if pe_id and pe_sl_oid: trade_repo.update_sl_order_id(pe_id, pe_sl_oid)
+        logger.info(f"🛡️ Placing disaster stop-losses on exchange: SC SL @ {sc_sl_price} | SP SL @ {sp_sl_price}")
+        sc_sl_oid = self.order_manager.place_sl_order(sc_symbol, sc_token, qty_units, sc_sl_price, "SC", transaction_type="BUY")
+        sp_sl_oid = self.order_manager.place_sl_order(sp_symbol, sp_token, qty_units, sp_sl_price, "SP", transaction_type="BUY")
 
-        self.ce_position = {'id': ce_id, 'symbol': ce_symbol, 'token': ce_token,
-                            'qty': qty_units, 'entry_price': ce_entry, 'sl_oid': ce_sl_oid}
-        self.pe_position = {'id': pe_id, 'symbol': pe_symbol, 'token': pe_token,
-                            'qty': qty_units, 'entry_price': pe_entry, 'sl_oid': pe_sl_oid}
+        if sc_id and sc_sl_oid: trade_repo.update_sl_order_id(sc_id, sc_sl_oid)
+        if sp_id and sp_sl_oid: trade_repo.update_sl_order_id(sp_id, sp_sl_oid)
 
-        combined_entry = ce_entry + pe_entry
+        # Establish state positions
+        self.lc_position = {'id': lc_id, 'symbol': lc_symbol, 'token': lc_token, 'qty': qty_units, 'entry_price': lc_entry, 'sl_oid': None}
+        self.sc_position = {'id': sc_id, 'symbol': sc_symbol, 'token': sc_token, 'qty': qty_units, 'entry_price': sc_entry, 'sl_oid': sc_sl_oid}
+        self.sp_position = {'id': sp_id, 'symbol': sp_symbol, 'token': sp_token, 'qty': qty_units, 'entry_price': sp_entry, 'sl_oid': sp_sl_oid}
+        self.lp_position = {'id': lp_id, 'symbol': lp_symbol, 'token': lp_token, 'qty': qty_units, 'entry_price': lp_entry, 'sl_oid': None}
+
+        net_credit = (sc_entry + sp_entry) - (lc_entry + lp_entry)
         notifier.send_message(
-            f"🎯 Straddle Scalp ENTERED\n"
-            f"CE: {ce_symbol} @ ₹{ce_entry:.1f}\n"
-            f"PE: {pe_symbol} @ ₹{pe_entry:.1f}\n"
-            f"Combined: ₹{combined_entry:.1f} | Qty: {qty_units}"
+            f"🎯 Iron Condor ENTERED ✅\n"
+            f"  SC: {sc_symbol} @ ₹{sc_entry:.1f} (Short)\n"
+            f"  SP: {sp_symbol} @ ₹{sp_entry:.1f} (Short)\n"
+            f"  LC: {lc_symbol} @ ₹{lc_entry:.1f} (Hedge)\n"
+            f"  LP: {lp_symbol} @ ₹{lp_entry:.1f} (Hedge)\n"
+            f"  Net Credit Collected: ₹{net_credit:.1f} (Max Profit: ₹{net_credit*qty_units:,.0f})\n"
+            f"  Qty: {qty_units} units"
         )
-        logger.info(f"Straddle Scalp: ✅ Both legs filled. Combined entry=₹{combined_entry:.1f}")
+        logger.info(f"Straddle Scalp: Iron Condor basket filled. Net credit=₹{net_credit:.1f}")
 
     # ─────────────────────────────────────────────────────────────────────
-    # Monitor
+    # Basket Monitoring
     # ─────────────────────────────────────────────────────────────────────
 
-    def _monitor_straddle(self) -> str:
+    def _monitor_condor(self) -> str:
         """
-        Check combined LTP vs entry every 10 seconds.
-        Returns: "PROFIT" | "LOSS" | "TIME" | "CONTINUE"
+        Monitor the Iron Condor basket value.
+        Net Credit = (SC_Entry + SP_Entry) - (LC_Entry + LP_Entry)
+        Current LTP = (SC_LTP + SP_LTP) - (LC_LTP + LP_LTP)
+        
+        Profit Target (50% Decay): Current LTP <= 0.50 * Net Credit
+        Stop Loss (100% Rise):     Current LTP >= 2.00 * Net Credit
         """
-        ce_entry  = self.ce_position['entry_price']
-        pe_entry  = self.pe_position['entry_price']
-        combined_entry = ce_entry + pe_entry
-        profit_target  = combined_entry * (1 + self.PROFIT_TARGET_PCT)
-        stop_level     = combined_entry * (1 - self.STOP_LOSS_PCT)
+        lc_entry = self.lc_position['entry_price']
+        sc_entry = self.sc_position['entry_price']
+        sp_entry = self.sp_position['entry_price']
+        lp_entry = self.lp_position['entry_price']
 
-        ce_ltp = self.data_fetcher.get_ltp(self.ce_position['token'], exchange="NFO") or ce_entry
-        pe_ltp = self.data_fetcher.get_ltp(self.pe_position['token'], exchange="NFO") or pe_entry
-        combined_ltp = ce_ltp + pe_ltp
-        pnl      = (combined_ltp - combined_entry) * self.ce_position['qty']
-        pnl_pct  = (combined_ltp / combined_entry - 1) * 100
+        net_credit = (sc_entry + sp_entry) - (lc_entry + lp_entry)
+        target_val = net_credit * (1 - self.PROFIT_TARGET_PCT)
+        sl_val     = net_credit * (1 + self.STOP_LOSS_PCT)
 
-        # Heartbeat log every 30s
+        # Fetch current LTPs
+        lc_ltp = self.data_fetcher.get_ltp(self.lc_position['token'], exchange="NFO") or lc_entry
+        sc_ltp = self.data_fetcher.get_ltp(self.sc_position['token'], exchange="NFO") or sc_entry
+        sp_ltp = self.data_fetcher.get_ltp(self.sp_position['token'], exchange="NFO") or sp_entry
+        lp_ltp = self.data_fetcher.get_ltp(self.lp_position['token'], exchange="NFO") or lp_entry
+
+        current_val = (sc_ltp + sp_ltp) - (lc_ltp + lp_ltp)
+        pnl = (net_credit - current_val) * self.sc_position['qty']
+        pnl_pct = (pnl / (net_credit * self.sc_position['qty'])) * 100 if net_credit > 0 else 0.0
+
         if time.time() - self._last_log_ts >= 30:
             self._last_log_ts = time.time()
             logger.info(
                 f"Straddle Scalp: 📊 MONITOR | "
-                f"CE={ce_ltp:.1f} + PE={pe_ltp:.1f} = {combined_ltp:.1f} "
-                f"(Entry={combined_entry:.1f}) | P&L=₹{pnl:+.0f} ({pnl_pct:+.1f}%) | "
-                f"Target={profit_target:.1f} SL={stop_level:.1f}"
+                f"Current Val={current_val:.1f} (Credit={net_credit:.1f}) | "
+                f"PnL=₹{pnl:+.0f} ({pnl_pct:+.1f}%) | "
+                f"Target={target_val:.1f} (50%) SL={sl_val:.1f} (100%)"
             )
 
-        # Profit target
-        if combined_ltp >= profit_target:
-            logger.info(
-                f"Straddle Scalp: 🎯 TARGET HIT! Combined={combined_ltp:.1f} ≥ {profit_target:.1f}"
-            )
-            self._close_both("TARGET")
+        # 1. Take Profit
+        if current_val <= target_val:
+            logger.info(f"Straddle Scalp: 🎯 TAKE PROFIT HIT! Basket LTP={current_val:.1f} ≤ {target_val:.1f}")
+            self._close_all("TARGET")
             return "PROFIT"
 
-        # Stop loss
-        if combined_ltp <= stop_level:
-            logger.warning(
-                f"Straddle Scalp: 🛑 STOP HIT! Combined={combined_ltp:.1f} ≤ {stop_level:.1f}"
-            )
-            self._close_both("STOPLOSS")
+        # 2. Stop Loss
+        if current_val >= sl_val:
+            logger.warning(f"Straddle Scalp: 🛑 BASKET STOP LOSS HIT! Basket LTP={current_val:.1f} ≥ {sl_val:.1f}")
+            self._close_all("STOPLOSS")
             return "LOSS"
 
-        # Time exit (Forced 1:15 PM Liquidity Flush to free margin for Power Hour)
-        if datetime.datetime.now().time() >= datetime.time(13, 15):
-            logger.info("Straddle Scalp: ⏰ 1:15 PM Power-Hour Limit Reached. Performing Mandatory Liquidity Flush.")
-            self._close_both("TIME_FLUSH")
+        # 3. Expiry / End of Day Time Exit
+        # We perform exit at 3:10 PM to prevent physical settlement of ITM options on expiry days.
+        if datetime.datetime.now().time() >= datetime.time(15, 10):
+            logger.info("Straddle Scalp: ⏰ 3:10 PM EOD limit reached. Performing strategic exit.")
+            self._close_all("TIME_EXIT")
             return "TIME"
 
-        # Trend-Kill Switch (Throttled every 60 seconds, centralized)
+        # 4. Trend-Kill switch
         if time.time() - self._last_trend_check >= 60:
             self._last_trend_check = time.time()
             market_data = market_service.get_market_data()
             analysis = market_data.get('analysis', {})
-            curr_adx = analysis.get('adx', 0)
-            if curr_adx > 0 and curr_adx >= self.TREND_KILL_ADX:
+            curr_adx = analysis.get('adx', 0.0)
+            if curr_adx >= self.TREND_KILL_ADX:
                 logger.warning(
                     f"Straddle Scalp: 🛡️ TREND-KILL TRIGGERED! ADX={curr_adx:.1f} ≥ {self.TREND_KILL_ADX}. "
-                    "Market is no longer sideways. Exiting for safety."
+                    "Market is breakout trending. Closing option selling basket."
                 )
-                self._close_both("TREND_KILL")
+                self._close_all("TREND_KILL")
                 return "TREND_KILL"
 
         return "CONTINUE"
 
     # ─────────────────────────────────────────────────────────────────────
-    # Exit
+    # Exit Execution
     # ─────────────────────────────────────────────────────────────────────
 
-    def _close_both(self, reason: str):
-        """SELL both CE and PE legs and close DB records."""
-        logger.info(f"Straddle Scalp: Closing both legs — reason={reason}")
+    def _close_all(self, reason: str):
+        """
+        Close all 4 legs:
+        1. Cancel disaster stop losses on Short legs.
+        2. Buy back the Short legs (SC, SP) first (to release short exposure & risk).
+        3. Sell the Long protection legs (LC, LP) second.
+        """
+        logger.info(f"Straddle Scalp: Closing Iron Condor Basket. Reason: {reason}")
         mode = "PAPER" if self.dry_run else "LIVE"
-        total_pnl = 0.0
 
-        for pos, leg_name in [(self.ce_position, "CE"), (self.pe_position, "PE")]:
-            if pos is None:
-                continue
-            
-            # 🛡️ Institutional Upgrade: First cancel existing Broker Disaster SL to release holding
-            sl_oid = pos.get('sl_oid')
-            if sl_oid:
-                logger.debug(f"Straddle Scalp: Cancelling Disaster SL ({sl_oid}) for {pos['symbol']} before exit.")
-                self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+        # Cancel stop loss orders
+        for pos in [self.sc_position, self.sp_position]:
+            if pos and pos.get('sl_oid'):
+                logger.debug(f"Straddle Scalp: Cancelling SL {pos['sl_oid']} for {pos['symbol']}")
+                self.order_manager.cancel_order(pos['sl_oid'])
 
+        # 1. Close Short legs first (releasing margin liabilities)
+        logger.info("💰 Step 1/2: Closing Short Premium legs...")
+        short_pnl = 0.0
+        for pos, name in [(self.sc_position, "SC"), (self.sp_position, "SP")]:
+            if not pos: continue
             ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
-            oid = self.order_manager.place_smart_limit(
-                pos['symbol'], pos['token'], pos['qty'],
-                ltp, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-            )
-            fill       = self._wait_fill(oid, fallback=ltp)
+            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "BUY", self.STRATEGY_NAME, mode)
+            fill = self._wait_fill(oid, fallback=ltp)
             exit_price = fill.get('price', ltp)
-            pnl        = (exit_price - pos['entry_price']) * pos['qty']
-            total_pnl += pnl
+            
+            # PnL for short leg: Entry - Exit
+            pnl = (pos['entry_price'] - exit_price) * pos['qty']
+            short_pnl += pnl
             trade_repo.close_trade(symbol=pos['symbol'], exit_price=exit_price, pnl=pnl)
-            logger.info(
-                f"Straddle Scalp: {leg_name} closed @ ₹{exit_price:.1f} | P&L=₹{pnl:+.0f}"
-            )
+            logger.info(f"Straddle Scalp: {name} Short Closed @ ₹{exit_price:.1f} | P&L: ₹{pnl:+.0f}")
 
+        # 2. Close Long legs second
+        logger.info("🛡️ Step 2/2: Closing Long Hedge legs...")
+        long_pnl = 0.0
+        for pos, name in [(self.lc_position, "LC"), (self.lp_position, "LP")]:
+            if not pos: continue
+            ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
+            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "SELL", self.STRATEGY_NAME, mode)
+            fill = self._wait_fill(oid, fallback=ltp)
+            exit_price = fill.get('price', ltp)
+            
+            # PnL for long leg: Exit - Entry
+            pnl = (exit_price - pos['entry_price']) * pos['qty']
+            long_pnl += pnl
+            trade_repo.close_trade(symbol=pos['symbol'], exit_price=exit_price, pnl=pnl)
+            logger.info(f"Straddle Scalp: {name} Long Closed @ ₹{exit_price:.1f} | P&L: ₹{pnl:+.0f}")
+
+        total_pnl = short_pnl + long_pnl
         notifier.send_message(
-            f"Straddle Scalp CLOSED ({reason})\n"
-            f"CE: {self.ce_position['symbol'] if self.ce_position else 'N/A'}\n"
-            f"PE: {self.pe_position['symbol'] if self.pe_position else 'N/A'}\n"
-            f"Total P&L: ₹{total_pnl:+.0f}"
+            f"🛑 Iron Condor CLOSED ({reason})\n"
+            f"  P&L Shorts: ₹{short_pnl:+.0f}\n"
+            f"  P&L Longs:  ₹{long_pnl:+.0f}\n"
+            f"  Total P&L:  ₹{total_pnl:+.0f} 💰"
         )
-        self.ce_position = None
-        self.pe_position = None
+        logger.info(f"Straddle Scalp: Iron Condor basket closed. Total P&L=₹{total_pnl:.0f}")
+
+        # Clear state
+        self.lc_position = None
+        self.sc_position = None
+        self.sp_position = None
+        self.lp_position = None
 
     # ─────────────────────────────────────────────────────────────────────
-    # Helpers
+    # Order Fill Handler
     # ─────────────────────────────────────────────────────────────────────
 
     def _wait_fill(self, order_id, fallback: float = 50.0) -> dict:
@@ -434,17 +523,18 @@ class StraddleScalpStrategy:
             return {'status': 'FILLED', 'price': fallback}
         
         from bot.core.order_feed import order_feed
-        # 1. Quick check memory-based registry first (from WebSocket order feed)
+        
+        # Check cache/WebSocket first
         status = order_feed.get_order_status(order_id)
         if status and status.get('status') == 'FILLED':
             return {'status': 'FILLED', 'price': status.get('price', fallback)}
             
-        # 2. Wait using WebSocket event
+        # Wait on WebSocket
         res = order_feed.wait_for_fill(order_id, timeout=10)
         if res.get('status') == 'FILLED':
             return {'status': 'FILLED', 'price': res.get('price', fallback)}
             
-        # 3. Fallback to REST API
+        # REST fallback
         try:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
@@ -457,7 +547,7 @@ class StraddleScalpStrategy:
                         else:
                             return {'status': o.get('status', '').upper(), 'price': float(o.get('averageprice', 0.0) or 0.0)}
         except Exception as e:
-            logger.error(f"Error checking order book fallback: {e}")
+            logger.error(f"Error checking order book: {e}")
             
         logger.warning(f"Straddle Scalp: Fill timeout for {order_id}. Using fallback ₹{fallback:.1f}")
         return {'status': 'TIMEOUT', 'price': fallback}
