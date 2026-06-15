@@ -72,20 +72,24 @@ class StraddleScalpStrategy:
             query = {"status": {"$in": ["OPEN", "PLACED"]}, "mode": mode, "strategy": self.STRATEGY_NAME}
             open_trades = list(trade_repo.collection.find(query))
             for t in open_trades:
+                entry_price = t.get('entry_price', 0.0)
+                if not entry_price or entry_price <= 0:
+                    logger.warning(f"♻️ [Straddle] Skipping recovery of {t['symbol']} (Trade #{t['id']}) - invalid entry price: ₹{entry_price}")
+                    continue
                 pos = {
                     'id':          t['id'],
                     'symbol':      t['symbol'],
                     'token':       t['token'],
                     'qty':         t['qty'],
-                    'entry_price': t['entry_price'],
+                    'entry_price': entry_price,
                     'sl_oid':      t.get('sl_order_id')
                 }
                 if t.get('leg') == 'CE' and self.ce_position is None:
                     self.ce_position = pos
-                    logger.info(f"♻️ [Straddle] CE RECOVERY: {t['symbol']} @ ₹{t['entry_price']}")
+                    logger.info(f"♻️ [Straddle] CE RECOVERY: {t['symbol']} @ ₹{entry_price}")
                 elif t.get('leg') == 'PE' and self.pe_position is None:
                     self.pe_position = pos
-                    logger.info(f"♻️ [Straddle] PE RECOVERY: {t['symbol']} @ ₹{t['entry_price']}")
+                    logger.info(f"♻️ [Straddle] PE RECOVERY: {t['symbol']} @ ₹{entry_price}")
         except Exception as e:
             logger.error(f"Straddle Scalp sync_state error: {e}")
 
@@ -120,7 +124,7 @@ class StraddleScalpStrategy:
             # Both legs open → monitor until exit condition
             if self.ce_position and self.pe_position:
                 result = self._monitor_straddle()
-                if result in ("PROFIT", "LOSS", "TIME"):
+                if result in ("PROFIT", "LOSS", "TIME", "ERROR"):
                     break
                 time.sleep(10)
                 continue
@@ -277,14 +281,18 @@ class StraddleScalpStrategy:
         ce_entry = ce_fill.get('price', ce_ltp)
         pe_entry = pe_fill.get('price', pe_ltp)
 
-        ce_id = trade_repo.save_trade(
-            ce_symbol, ce_token, "CE", qty_units, ce_entry,
-            sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
-        )
-        pe_id = trade_repo.save_trade(
-            pe_symbol, pe_token, "PE", qty_units, pe_entry,
-            sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
-        )
+        ce_id = self.order_manager.update_trade_fill(ce_symbol, self.STRATEGY_NAME, ce_entry, expected_price=ce_ltp)
+        if not ce_id:
+            ce_id = trade_repo.save_trade(
+                ce_symbol, ce_token, "CE", qty_units, ce_entry,
+                sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
+            )
+        pe_id = self.order_manager.update_trade_fill(pe_symbol, self.STRATEGY_NAME, pe_entry, expected_price=pe_ltp)
+        if not pe_id:
+            pe_id = trade_repo.save_trade(
+                pe_symbol, pe_token, "PE", qty_units, pe_entry,
+                sl_price=0.0, side="BUY", mode=mode, strategy=self.STRATEGY_NAME
+            )
 
         # --- INSTITUTIONAL SAFETY UPGRADE: Place Disaster Hard SLs (fallback) ---
         DISASTER_SL_PCT = 0.35  # Reduced from 0.50 to stay within exchange LPP (AB1007 fix)
@@ -325,6 +333,10 @@ class StraddleScalpStrategy:
         ce_entry  = self.ce_position['entry_price']
         pe_entry  = self.pe_position['entry_price']
         combined_entry = ce_entry + pe_entry
+        if combined_entry <= 0:
+            logger.critical("Straddle Scalp: 🚨 Invalid combined entry price (<= 0.0) in monitor. Aborting.")
+            return "ERROR"
+            
         profit_target  = combined_entry * (1 + self.PROFIT_TARGET_PCT)
         stop_level     = combined_entry * (1 - self.STOP_LOSS_PCT)
 
@@ -332,7 +344,7 @@ class StraddleScalpStrategy:
         pe_ltp = self.data_fetcher.get_ltp(self.pe_position['token'], exchange="NFO") or pe_entry
         combined_ltp = ce_ltp + pe_ltp
         pnl      = (combined_ltp - combined_entry) * self.ce_position['qty']
-        pnl_pct  = (combined_ltp / combined_entry - 1) * 100
+        pnl_pct  = (combined_ltp / combined_entry - 1) * 100 if combined_entry > 0 else 0.0
 
         # Heartbeat log every 30s
         if time.time() - self._last_log_ts >= 30:

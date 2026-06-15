@@ -455,7 +455,7 @@ class TradeRepository:
             
             result = self.collection.update_many(
                 {
-                    "status": "OPEN",
+                    "status": {"$in": ["OPEN", "PLACED"]},
                     "created_at": {"$lt": today_start}
                 },
                 {
