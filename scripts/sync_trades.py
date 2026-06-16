@@ -54,8 +54,8 @@ def build_exit_map(trades):
     for t in trades:
         sym   = t.get('tradingsymbol', '')
         side  = t.get('transactiontype', '').upper()  # BUY / SELL
-        qty   = int(t.get('quantity', 0) or 0)
-        price = float(t.get('averageprice', 0) or 0)
+        qty   = int(t.get('fillsize') or t.get('quantity') or 0)
+        price = float(t.get('fillprice') or t.get('averageprice') or 0)
 
         if side == 'SELL' and qty > 0:
             if sym not in sell_map:
@@ -101,8 +101,10 @@ def main():
     print(f"  {'Symbol':<35} {'Side':<6} {'Qty':<6} {'AvgPrice':<10} {'Status'}")
     print("  " + "-" * 70)
     for t in broker_trades:
+        qty = t.get('fillsize') or t.get('quantity') or ''
+        price = t.get('fillprice') or t.get('averageprice') or ''
         print(f"  {t.get('tradingsymbol',''):<35} {t.get('transactiontype',''):<6} "
-              f"{t.get('quantity',''):<6} {t.get('averageprice',''):<10} {t.get('orderstatus','')}")
+              f"{qty:<6} {price:<10} {t.get('orderstatus','')}")
 
     # 4. Build exit price map (SELL fills → weighted avg)
     exit_map = build_exit_map(broker_trades)

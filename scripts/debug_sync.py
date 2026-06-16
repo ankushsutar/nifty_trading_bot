@@ -50,8 +50,8 @@ def debug_positions_sync():
     if trade_book_res and trade_book_res.get('status'):
         fills = trade_book_res.get('data') or []
         for f in fills:
-            qty = f.get('quantity', f.get('fillshares', 0))
-            price = f.get('averageprice', f.get('price', 0))
+            qty = f.get('fillsize') or f.get('quantity') or f.get('fillshares', 0)
+            price = f.get('fillprice') or f.get('averageprice') or f.get('price', 0)
             print(f"Fill: {f.get('tradingsymbol')} | Side: {f.get('transactiontype')} | Qty: {qty} | Price: {price}")
 
 if __name__ == "__main__":

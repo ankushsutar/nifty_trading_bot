@@ -512,8 +512,8 @@ class TradeRepository:
             sym   = t.get('tradingsymbol', '')
             side  = t.get('transactiontype', '').upper()
             try:
-                qty   = int(t.get('quantity', 0) or 0)
-                price = float(t.get('averageprice', 0) or 0)
+                qty   = int(t.get('fillsize') or t.get('quantity') or 0)
+                price = float(t.get('fillprice') or t.get('averageprice') or 0)
             except (TypeError, ValueError):
                 continue
 
@@ -540,6 +540,7 @@ class TradeRepository:
             symbol      = trade.get('symbol', '')
             trade_id    = trade.get('id')
             status      = trade.get('status')
+            entry_price = float(trade.get('entry_price', 0))
             
             # 1. Handle PLACED trades -> Match with BUY fill
             if status == "PLACED":
@@ -548,11 +549,11 @@ class TradeRepository:
                     self.update_entry_price(trade_id, buy_price)
                     logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{buy_price})")
                     reconciled += 1
-                continue
+                    status = "OPEN"
+                    entry_price = buy_price
 
             # 2. Handle OPEN trades -> Match with SELL fill
             if status == "OPEN":
-                entry_price = float(trade.get('entry_price', 0))
                 qty         = int(trade.get('qty', 0))
                 sell_price  = avg_prices.get(symbol, {}).get('SELL')
                 
