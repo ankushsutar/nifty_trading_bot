@@ -1,12 +1,11 @@
 import argparse
 from pymongo import MongoClient
-
-MONGO_URI = 'mongodb+srv://ajsutar2302:il05hZVy9wu0h9TJ@mongocluster.cnljoq6.mongodb.net/?appName=MongoCluster'
+from bot.config.settings import Config
 
 def clean_orphans(force=False):
-    client = MongoClient(MONGO_URI)
-    db = client['nifty_bot']
-    col = db['trades']
+    client = MongoClient(Config.MONGO_URI)
+    db = client[Config.MONGO_DB]
+    col = db[Config.MONGO_COLLECTION]
     
     query = {"pnl": {"$in": [0.0, None]}}
     count = col.count_documents(query)
