@@ -824,12 +824,7 @@ class MomentumStrategy:
             _is_squeeze = True
             logger.info(f"🔥 SQUEEZE DETECTED: PCR Velocity = {_oi_speed:.4f} (Long Unwinding). Permitting PE entry.")
 
-        _is_extreme_trend = self.last_analysis.get('adx', 0) >= 45.0
-        if _is_extreme_trend and not _is_squeeze and ((leg == "CE" and _fresh_bias == "BEARISH") or (leg == "PE" and _fresh_bias == "BULLISH")):
-            logger.info(
-                f"🚀 EXTREME TREND OVERRIDE: ADX={self.last_analysis.get('adx', 0):.1f} is extreme (>=45.0). "
-                f"Bypassing OI Alignment Gate to capture high-velocity trend despite contradicting institutional bias ({_fresh_bias})."
-            )
+        _is_extreme_trend = False  # Deactivated: Extreme Trend Override disabled to enforce strict OI sentiment alignment
 
         if not _is_squeeze and not _is_extreme_trend:
             if leg == "CE" and _fresh_bias == "BEARISH":
@@ -1135,6 +1130,12 @@ class MomentumStrategy:
 
         sl_price = max(0.1, quote_ltp - actual_sl_points)
         target_price = quote_ltp + tgt_option_pts
+
+        # Worst-case loss projection daily limit check
+        worst_case_loss = actual_sl_points * qty
+        if not self.gatekeeper.check_max_daily_loss(0.0, worst_case_new_loss=worst_case_loss):
+            logger.critical(f"Momentum: 🛑 Skipped entry because worst-case loss of ₹{worst_case_loss:.2f} would breach daily limit.")
+            return
 
         if self.dry_run:
             oid = self.order_manager.place_smart_limit(

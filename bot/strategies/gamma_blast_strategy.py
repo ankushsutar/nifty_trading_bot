@@ -591,6 +591,13 @@ class GammaBlastStrategy:
         _raw_limit = quote_ltp * (1.0 + _entry_tier.entry_slippage_pct)
         limit_price = round(round(_raw_limit / 0.05) * 0.05, 2)
         
+        # Worst-case loss projection daily limit check
+        est_sl_points = max(quote_ltp * _entry_tier.sl_pct, min(_entry_tier.min_sl_points, quote_ltp * 0.5))
+        est_worst_case_loss = est_sl_points * qty
+        if not self.gatekeeper.check_max_daily_loss(0.0, worst_case_new_loss=est_worst_case_loss):
+            logger.critical(f"Gamma Blast: 🛑 Skipped entry because worst-case loss of ₹{est_worst_case_loss:.2f} would breach daily limit.")
+            return
+
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
         
         oid = self.order_manager.place_smart_limit(

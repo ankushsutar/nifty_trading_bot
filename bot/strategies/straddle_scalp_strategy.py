@@ -271,6 +271,13 @@ class StraddleScalpStrategy:
             logger.warning(f"Straddle Scalp: ❌ Insufficient funds. Required: ₹{required_margin:,.2f}")
             return
 
+        # Worst-case loss projection daily limit check
+        est_net_credit = (sc_ltp + sp_ltp) - (lc_ltp + lp_ltp)
+        est_worst_case = est_net_credit * qty_units
+        if not self.gatekeeper.check_max_daily_loss(0.0, worst_case_new_loss=est_worst_case):
+            logger.critical(f"Straddle Scalp: 🛑 Skipped entry because worst-case loss of ₹{est_worst_case:.2f} would breach daily limit.")
+            return
+
         logger.info(f"Straddle Scalp: Placing Iron Condor Basket. Size: {qty_lots} lot(s) ({qty_units} units)")
         mode = "PAPER" if self.dry_run else "LIVE"
 

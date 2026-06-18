@@ -415,7 +415,7 @@ class SafetyGatekeeper:
             from bot.config.settings import Config
             return float(Config.SIMULATION_CAPITAL)
 
-    def check_max_daily_loss(self, active_unrealized_pnl=0.0):
+    def check_max_daily_loss(self, active_unrealized_pnl=0.0, worst_case_new_loss=0.0):
         """
         Rule: Stop trading if (Realized + Unrealized) loss exceeds tier daily loss limit.
         Limit is a percentage of starting capital — scales automatically with account size.
@@ -443,6 +443,18 @@ class SafetyGatekeeper:
             logger.critical("    Halting Operations.")
             self.last_breaker_triggered = "MAX_DAILY_LOSS"
             return False
+
+        # Worst-case loss projection block
+        if worst_case_new_loss > 0.0:
+            projected_pnl = total_pnl - worst_case_new_loss
+            if projected_pnl <= max_loss:
+                logger.critical(f">>> [Gatekeeper] 🛑 ENTRY BLOCKED: Projected worst-case loss of ₹{worst_case_new_loss:.2f} would breach daily limit.")
+                logger.critical(
+                    f"    Current PnL: ₹{total_pnl:.2f} | Projected: ₹{projected_pnl:.2f} | Limit: ₹{max_loss:.2f}"
+                )
+                self.last_breaker_triggered = "MAX_DAILY_LOSS"
+                return False
+
         return True
 
 
