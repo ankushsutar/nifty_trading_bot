@@ -58,9 +58,16 @@ class TestStrikeSelectionAndL1Walking(unittest.TestCase):
         # Spot = 23000, target CE delta = 0.40
         # Under normal conditions (VIX=15, 5 days to go), 23100 CE (1-strike OTM) has delta closest to 0.40
         # Let's run selection with target_delta = 0.40
-        strike, token, symbol = select_strike_by_delta(
-            mock_lookup, spot=23000.0, expiry="14JUN2026", vix=15.0, option_type="CE", target_delta=0.40
-        )
+        import datetime as real_datetime
+        class MockDate(real_datetime.date):
+            @classmethod
+            def today(cls):
+                return real_datetime.date(2026, 6, 9)
+
+        with patch('bot.utils.greeks.datetime.date', MockDate):
+            strike, token, symbol = select_strike_by_delta(
+                mock_lookup, spot=23000.0, expiry="14JUN2026", vix=15.0, option_type="CE", target_delta=0.40
+            )
         
         self.assertEqual(strike, 23100)
         self.assertEqual(token, "t4")

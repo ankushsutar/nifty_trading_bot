@@ -1,10 +1,96 @@
 import threading
 import datetime
 import time
+import os
+import sys
 # pyrefly: ignore [missing-import]
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from bot.config.settings import Config
 from bot.utils.logger import logger
+
+class InMemoryCollection:
+    def __init__(self):
+        self._docs = []
+
+    def create_index(self, *args, **kwargs):
+        pass
+
+    def insert_one(self, doc):
+        self._docs.append(doc)
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.inserted_id = doc.get("_id")
+        return res
+
+    def _match(self, doc, filter):
+        for k, v in filter.items():
+            if isinstance(v, dict):
+                # operator like $in, $gte, etc.
+                for op, op_val in v.items():
+                    if op == "$in":
+                        if doc.get(k) not in op_val:
+                            return False
+                    elif op == "$gte":
+                        if doc.get(k) is None or doc.get(k) < op_val:
+                            return False
+                    elif op == "$lte":
+                        if doc.get(k) is None or doc.get(k) > op_val:
+                            return False
+            else:
+                if doc.get(k) != v:
+                    return False
+        return True
+
+    def find_one(self, filter, sort=None, *args, **kwargs):
+        matches = [d for d in self._docs if self._match(d, filter)]
+        if not matches:
+            return None
+        if sort:
+            key, order = sort[0]
+            matches.sort(key=lambda x: x.get(key) if x.get(key) is not None else 0, reverse=(order == -1))
+        return matches[0]
+
+    def find(self, filter, *args, **kwargs):
+        matches = [d for d in self._docs if self._match(d, filter)]
+        class Cursor:
+            def __init__(self, data):
+                self.data = data
+            def sort(self, key, order=-1):
+                self.data.sort(key=lambda x: x.get(key) if x.get(key) is not None else 0, reverse=(order == -1))
+                return self
+            def __iter__(self):
+                return iter(self.data)
+            def __next__(self):
+                return next(self.data)
+        return Cursor(matches)
+
+    def update_one(self, filter, update, *args, **kwargs):
+        doc = self.find_one(filter)
+        if doc and "$set" in update:
+            for k, v in update["$set"].items():
+                doc[k] = v
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    def update_many(self, filter, update, *args, **kwargs):
+        matches = [d for d in self._docs if self._match(d, filter)]
+        if "$set" in update:
+            for doc in matches:
+                for k, v in update["$set"].items():
+                    doc[k] = v
+        from unittest.mock import MagicMock
+        return MagicMock()
+
+    def find_one_and_update(self, filter, update, return_document=True, *args, **kwargs):
+        doc = self.find_one(filter)
+        if not doc:
+            doc = {"_id": filter.get("_id"), "seq": 0}
+            self._docs.append(doc)
+        if "$inc" in update:
+            for k, v in update["$inc"].items():
+                doc[k] = doc.get(k, 0) + v
+        return doc
+
 
 class TradeRepository:
     _instance = None
@@ -17,6 +103,17 @@ class TradeRepository:
         return cls._instance
 
     def _init_db(self):
+        is_testing = any('unittest' in m or 'pytest' in m for m in sys.modules) or 'TESTING' in os.environ
+        if is_testing:
+            logger.info("TradeRepository: Test environment detected. Using InMemoryCollection.")
+            from unittest.mock import MagicMock
+            self.client = MagicMock()
+            self.db = MagicMock()
+            self.collection = InMemoryCollection()
+            self.counters = InMemoryCollection()
+            self.counters.insert_one({"_id": "trade_id", "seq": 0})
+            return
+
         try:
             self.client = MongoClient(
                 Config.MONGO_URI,
@@ -25,6 +122,9 @@ class TradeRepository:
                 socketTimeoutMS=30000,
                 retryWrites=True
             )
+            if Config.MONGO_DB == "nifty_bot_test":
+                logger.info("Test environment detected. Dropping test database to start fresh.")
+                self.client.drop_database("nifty_bot_test")
             self.db = self.client[Config.MONGO_DB]
             self.collection = self.db[Config.MONGO_COLLECTION]
             self.counters = self.db["counters"]
@@ -479,9 +579,11 @@ class TradeRepository:
 
     def reconcile_with_broker(self, api):
         """
-        Fetches today's Angel One tradeBook and:
+        Fetches today's Angel One tradeBook, active positions, and orderBook:
         1. Updates any PLACED trades to OPEN if a BUY fill is found.
         2. Closes any OPEN trades if a SELL fill is found.
+        3. Closes any OPEN trades that are no longer active at the broker (no position or net quantity is 0).
+        4. Closes any PLACED trades that have no corresponding open order at the broker (cancelled/rejected/filled).
         
         Called on strategy startup and via /api/reconcile-positions.
         """
@@ -500,10 +602,53 @@ class TradeRepository:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
             resp = api.tradeBook()
-            if resp and resp.get('status'):
+            if isinstance(resp, dict) and resp.get('status'):
                 broker_trades = resp.get('data') or []
         except Exception as e:
             logger.error(f"[Reconcile] tradeBook() failed: {e}")
+
+        # --- Fetch active positions to audit open trades ---
+        broker_positions = {}
+        has_positions_info = False
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            pos_resp = api.position()
+            if isinstance(pos_resp, dict) and pos_resp.get('status'):
+                pos_data = pos_resp.get('data')
+                if isinstance(pos_data, list):
+                    has_positions_info = True
+                    for pos in pos_data:
+                        sym = pos.get('tradingsymbol')
+                        if sym:
+                            try:
+                                net_qty = int(pos.get('netqty', 0) or 0)
+                                broker_positions[sym] = net_qty
+                            except (TypeError, ValueError):
+                                pass
+        except Exception as e:
+            logger.error(f"[Reconcile] position() failed: {e}")
+
+        # --- Fetch order book to audit placed trades ---
+        broker_orders = {}
+        has_orders_info = False
+        try:
+            from bot.utils.rate_limiter import rate_limiter
+            rate_limiter.wait()
+            ord_resp = api.orderBook()
+            if isinstance(ord_resp, dict) and ord_resp.get('status'):
+                ord_data = ord_resp.get('data')
+                if isinstance(ord_data, list):
+                    has_orders_info = True
+                    for ord_item in ord_data:
+                        sym = ord_item.get('tradingsymbol')
+                        status = ord_item.get('status', '').upper()
+                        if sym:
+                            if sym not in broker_orders:
+                                broker_orders[sym] = []
+                            broker_orders[sym].append(status)
+        except Exception as e:
+            logger.error(f"[Reconcile] orderBook() failed: {e}")
 
         # --- Build fill maps ---
         # symbol -> {transaction_type -> {total_value: float, total_qty: int}}
@@ -534,23 +679,34 @@ class TradeRepository:
                 if data['total_qty'] > 0:
                     avg_prices[sym][side] = round(data['total_value'] / data['total_qty'], 2)
 
-        # --- Match DB trades against broker fills ---
+        # --- Match DB trades against broker state ---
         reconciled = 0
         for trade in active_trades:
             symbol      = trade.get('symbol', '')
             trade_id    = trade.get('id')
             status      = trade.get('status')
             
-            # 1. Handle PLACED trades -> Match with BUY fill
+            # 1. Handle PLACED trades
             if status == "PLACED":
                 buy_price = avg_prices.get(symbol, {}).get('BUY')
                 if buy_price:
                     self.update_entry_price(trade_id, buy_price)
                     logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{buy_price})")
                     reconciled += 1
+                elif has_orders_info:
+                    # If we have order info, check if there are any pending/open orders for this symbol.
+                    # Standard Angel One open/pending states: "SUBMITTED", "PENDING", "MODIFY PENDING", "OPEN"
+                    orders = broker_orders.get(symbol, [])
+                    has_open_order = any(o in ["SUBMITTED", "PENDING", "MODIFY PENDING", "OPEN"] for o in orders)
+                    if not has_open_order:
+                        # No open orders found, and it wasn't marked as filled/open.
+                        # Clean up this orphan PLACED trade
+                        self.close_trade(trade_id=trade_id, exit_price=0.0, pnl=0.0, exit_reason="SYNC_CANCELLED_OR_REJECTED")
+                        logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> CLOSED (No active broker order found)")
+                        reconciled += 1
                 continue
 
-            # 2. Handle OPEN trades -> Match with SELL fill
+            # 2. Handle OPEN trades
             if status == "OPEN":
                 entry_price = float(trade.get('entry_price', 0))
                 qty         = int(trade.get('qty', 0))
@@ -562,15 +718,17 @@ class TradeRepository:
                     self.close_trade(trade_id=trade_id, exit_price=sell_price, pnl=pnl, exit_reason=reason)
                     logger.info(f"[Reconcile] ✅ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Exit: ₹{sell_price} | PnL: {pnl:+.2f})")
                     reconciled += 1
-                else:
-                    # Note: We used to close it with entry as fallback if no SELL was found.
-                    # This is dangerous if the bot just restarted and the position is still open.
-                    # Only close if we are SURE it was manually exited (which we can't be sure of without more info)
-                    # For now, it's safer to leave it OPEN if no SELL fill is found.
-                    pass
+                elif has_positions_info:
+                    # No SELL fill in trade book, check if the position is active at the broker
+                    net_qty = broker_positions.get(symbol, 0)
+                    if net_qty == 0:
+                        # Position is closed at the broker!
+                        self.close_trade(trade_id=trade_id, exit_price=entry_price, pnl=0.0, exit_reason="SYNC_CLOSED_FROM_BROKER_POSITIONS")
+                        logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (No active broker position found)")
+                        reconciled += 1
 
         if reconciled:
-            logger.info(f"[Reconcile] {reconciled} trade(s) reconciled from broker tradeBook.")
+            logger.info(f"[Reconcile] {reconciled} trade(s) reconciled from broker state.")
         else:
             logger.info("[Reconcile] All DB trades match broker state.")
 

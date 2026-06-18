@@ -14,8 +14,8 @@ class TestIronCondorStrategy(unittest.TestCase):
         self.token_loader = MagicMock()
         
         # Configure token loader mock responses
-        def get_token_mock(exchange, expiry, strike, opt_type):
-            return f"token_{strike}_{opt_type}", f"NIFTY{expiry}{strike}{opt_type}"
+        def get_token_mock(symbol_name, expiry_date, strike, option_type, *args, **kwargs):
+            return f"token_{strike}_{option_type}", f"NIFTY{expiry_date}{strike}{option_type}"
         self.token_loader.get_token.side_effect = get_token_mock
 
         # Create strategy instance in dry_run=True (to avoid actual calls)

@@ -322,15 +322,48 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             net_positions = positions.get('net', [])
             mapped = []
             for p in net_positions:
+                buy_qty = int(p.get('buy_quantity', 0))
+                sell_qty = int(p.get('sell_quantity', 0))
+                net_qty = p.get('quantity', buy_qty - sell_qty)
+                
+                # Determine average net price
+                if net_qty > 0:
+                    avg_price = float(p.get('buy_price', 0.0))
+                elif net_qty < 0:
+                    avg_price = float(p.get('sell_price', 0.0))
+                else:
+                    avg_price = 0.0
+
+                # Map product: MIS -> INTRADAY, NRML -> CARRYFORWARD
+                product = p.get('product', 'MIS')
+                product_type = 'INTRADAY' if product == 'MIS' else 'CARRYFORWARD'
+
+                # Map symbol name: name (e.g. NIFTY) or parsed from tradingsymbol
+                symbol_name = p.get('name')
+                if not symbol_name:
+                    ts = p.get('tradingsymbol', '')
+                    if ts.startswith('NIFTY'):
+                        symbol_name = 'NIFTY'
+                    elif ts.startswith('BANKNIFTY'):
+                        symbol_name = 'BANKNIFTY'
+                    elif ts.startswith('FINNIFTY'):
+                        symbol_name = 'FINNIFTY'
+                    else:
+                        symbol_name = ''
+
                 mapped.append({
                     'tradingsymbol': p['tradingsymbol'],
                     'symboltoken': str(p['instrument_token']),
-                    'buyqty': p['buy_quantity'],
-                    'sellqty': p['sell_quantity'],
-                    'buyavgprice': p['buy_price'],
-                    'sellavgprice': p['sell_price'],
+                    'buyqty': buy_qty,
+                    'sellqty': sell_qty,
+                    'buyavgprice': p.get('buy_price', 0.0),
+                    'sellavgprice': p.get('sell_price', 0.0),
                     'realisedprice': float(p.get('realised', 0.0)),
-                    'realisedpnl': float(p.get('m2m', 0.0))
+                    'realisedpnl': float(p.get('m2m', 0.0)),
+                    'netqty': net_qty,
+                    'avgnetprice': avg_price,
+                    'producttype': product_type,
+                    'symbolname': symbol_name
                 })
             return {"status": True, "data": mapped}
         except Exception as e:

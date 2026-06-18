@@ -349,13 +349,13 @@ class MomentumStrategy:
 
                     if not self.dry_run:
                         try:
-                            from bot.config.settings import Config
-                            from bot.config.instruments import get_instrument
                             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                             _df_fresh = self.data_fetcher.fetch_latest_candles(spot_tok)
                             if _df_fresh is not None and not _df_fresh.empty:
                                 _last_ts = _df_fresh.iloc[-1]['timestamp']
-                                _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
+                                _last_ts_dt = _last_ts.to_pydatetime() if hasattr(_last_ts, 'to_pydatetime') else _last_ts
+                                _last_ts_naive = _last_ts_dt.astimezone().replace(tzinfo=None) if _last_ts_dt.tzinfo is not None else _last_ts_dt
+                                _age_mins = (datetime.datetime.now() - _last_ts_naive).total_seconds() / 60
                                 if _age_mins > 15:
                                     logger.warning(f"Momentum: 🛑 Skipped setup check because candle data is stale (age: {_age_mins:.1f} mins).")
                                     time.sleep(10)
@@ -459,8 +459,6 @@ class MomentumStrategy:
                             
                             # 7. PRO-TRADER: Volume Confirmation
                             # Fetch fresh 5m candles for volume analysis
-                            from bot.config.settings import Config
-                            from bot.config.instruments import get_instrument
                             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                             _df_vol = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE", days=1)
                             if _df_vol is not None and not _df_vol.empty:
@@ -506,8 +504,6 @@ class MomentumStrategy:
                         # --- INSTITUTIONAL LEVEL AWARENESS & EXIT LOGIC ---
                         if self.active_position:
                             levels = levels_provider.get_levels()
-                            from bot.config.settings import Config
-                            from bot.config.instruments import get_instrument
                             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                             nifty_ltp = self.data_fetcher.get_ltp(spot_tok)
                             is_retesting_level = False
@@ -601,8 +597,6 @@ class MomentumStrategy:
         if is_mock_api:
             df = self.get_mock_df()
         else:
-            from bot.config.settings import Config
-            from bot.config.instruments import get_instrument
             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
             df = self.data_fetcher.fetch_latest_candles(spot_tok)
             # Cache df for reuse within the same analysis cycle (e.g., BBW calculation)
@@ -621,8 +615,6 @@ class MomentumStrategy:
                     self.last_oi_scan = now
                 else:
                     ltp = df.iloc[-1]['close']
-                    from bot.config.settings import Config
-                    from bot.config.instruments import get_instrument
                     instr = get_instrument(Config.ACTIVE_SYMBOL)
                     strike = int(round(ltp / instr.strike_step) * instr.strike_step)
                     expiry = get_next_weekly_expiry()
@@ -673,8 +665,6 @@ class MomentumStrategy:
         except Exception as e:
             logger.warning(f"[HTF] Could not read shared state: {e}")
 
-        from bot.config.settings import Config
-        from bot.config.instruments import get_instrument
         spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
         df = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIFTEEN_MINUTE")
 
@@ -861,8 +851,6 @@ class MomentumStrategy:
         # that flips the EMAs without real sustained momentum behind it.
         _df_entry = None
         try:
-            from bot.config.settings import Config
-            from bot.config.instruments import get_instrument
             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
             _df_entry = self.data_fetcher.fetch_latest_candles(spot_tok)
             if _df_entry is not None and len(_df_entry) >= 3:
@@ -994,8 +982,6 @@ class MomentumStrategy:
             vix = 15.0
         
         from bot.utils.greeks import select_strike_by_delta
-        from bot.config.settings import Config
-        from bot.config.instruments import get_instrument
         active_sym = Config.ACTIVE_SYMBOL
         instr = get_instrument(active_sym)
         strike_diff = instr.strike_step

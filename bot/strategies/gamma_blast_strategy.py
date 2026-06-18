@@ -11,6 +11,7 @@ from bot.core.oi_analyzer import OIAnalyzer
 from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
 from bot.core.position_manager import LadderedTrailingManager
+from bot.config.instruments import get_instrument
 
 class GammaBlastStrategy:
     """
@@ -220,13 +221,13 @@ class GammaBlastStrategy:
             # Check Candle Data Freshness
             if not self.dry_run:
                 try:
-                    from bot.config.settings import Config
-                    from bot.config.instruments import get_instrument
                     spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                     _df_fresh = self.data_fetcher.fetch_latest_candles(spot_tok)
                     if _df_fresh is not None and not _df_fresh.empty:
                         _last_ts = _df_fresh.iloc[-1]['timestamp']
-                        _age_mins = (datetime.datetime.now() - _last_ts).total_seconds() / 60
+                        _last_ts_dt = _last_ts.to_pydatetime() if hasattr(_last_ts, 'to_pydatetime') else _last_ts
+                        _last_ts_naive = _last_ts_dt.astimezone().replace(tzinfo=None) if _last_ts_dt.tzinfo is not None else _last_ts_dt
+                        _age_mins = (datetime.datetime.now() - _last_ts_naive).total_seconds() / 60
                         if _age_mins > 15:
                             logger.warning(f"Gamma Blast: 🛑 Skipped setup check because candle data is stale (age: {_age_mins:.1f} mins).")
                             time.sleep(30)
@@ -243,8 +244,6 @@ class GammaBlastStrategy:
             if not analysis or analysis.get('regime') == 'UNKNOWN':
                 logger.error("Gamma Blast: Market analysis unavailable. Fallback to safety check.")
                 # Final fallback to direct fetch only if market_service is failing
-                from bot.config.settings import Config
-                from bot.config.instruments import get_instrument
                 spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                 df = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE")
                 if df is None or len(df) < 20:
@@ -298,9 +297,8 @@ class GammaBlastStrategy:
                 continue
 
             # ADX gate from capital tier — no hardcoded threshold
-            from bot.config.settings import Config as _Cfg
             _capital = self.gatekeeper.get_current_capital()
-            _tier = _Cfg.get_tier(_capital)
+            _tier = Config.get_tier(_capital)
             if adx < _tier.min_adx_to_trade:
                 logger.warning(
                     f"Gamma Blast: Trend strength (ADX: {adx:.1f}) below "
@@ -402,8 +400,6 @@ class GammaBlastStrategy:
             # Enforced at all times to prevent buying/selling at trend climax/exhaustion points.
             _df_gb = None
             try:
-                from bot.config.settings import Config
-                from bot.config.instruments import get_instrument
                 spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                 _df_gb = self.data_fetcher.fetch_latest_candles(spot_tok)
                 if _df_gb is not None and len(_df_gb) >= 3:
@@ -520,8 +516,6 @@ class GammaBlastStrategy:
                     elif iv_rank > 0.60 and otm_depth > 1:
                         otm_depth = otm_depth - 1
                 
-                from bot.config.settings import Config
-                from bot.config.instruments import get_instrument
                 active_sym = Config.ACTIVE_SYMBOL
                 instr = get_instrument(active_sym)
                 strike_diff = instr.strike_step
@@ -577,8 +571,6 @@ class GammaBlastStrategy:
             time.sleep(30) # Throttle loop
 
     def place_entry(self, expiry, strike, leg, qty, quote_ltp):
-        from bot.config.settings import Config
-        from bot.config.instruments import get_instrument
         active_sym = Config.ACTIVE_SYMBOL
         instr = get_instrument(active_sym)
         token, symbol = self.token_loader.get_token(active_sym, expiry, strike, leg, instrument_type=instr.instrument_type, exchange=instr.option_exchange)
@@ -594,8 +586,7 @@ class GammaBlastStrategy:
 
         # Place Smart-Limit Order — slippage buffer from capital tier config.
         # Smaller accounts (MICRO/SMALL) use a tighter buffer; avoids over-paying for OTM options.
-        from bot.config.settings import Config as _Cfg
-        _entry_tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+        _entry_tier = Config.get_tier(self.gatekeeper.get_current_capital())
         limit_price = round(quote_ltp * (1.0 + _entry_tier.entry_slippage_pct), 1)
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
@@ -656,8 +647,7 @@ class GammaBlastStrategy:
             fill_price = limit_price
 
         # Update Trade with Actual Fill & Mark OPEN — SL% from capital tier
-        from bot.config.settings import Config as _Cfg
-        _tier = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+        _tier = Config.get_tier(self.gatekeeper.get_current_capital())
         
         # Calculate SL points based on percentage
         sl_points = fill_price * _tier.sl_pct
@@ -800,10 +790,9 @@ class GammaBlastStrategy:
                 if time.time() - self.last_trend_fade_check > 30:
                     self.last_trend_fade_check = time.time()
                     from backend.market_service import market_service
-                    from bot.config.settings import Config as _Cfg
                     analysis = market_service.get_market_data().get('analysis', {})
                     curr_adx = analysis.get('adx', 0)
-                    _tier    = _Cfg.get_tier(self.gatekeeper.get_current_capital())
+                    _tier    = Config.get_tier(self.gatekeeper.get_current_capital())
                     if curr_adx > 0 and curr_adx < _tier.adx_trend_fade_exit:
                         logger.info(
                             f"Gamma Blast: ⚠️ Trend Fading (ADX={curr_adx:.1f} < {_tier.adx_trend_fade_exit} "

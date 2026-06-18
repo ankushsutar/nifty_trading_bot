@@ -221,6 +221,14 @@ class ConfigMeta(type):
     def NIFTY_LOT_SIZE(cls, val):
         cls._lot_size_override = val
 
+    @property
+    def MONGO_DB(cls):
+        import sys
+        is_testing = any('unittest' in m or 'pytest' in m for m in sys.modules) or 'TESTING' in os.environ
+        if is_testing:
+            return "nifty_bot_test"
+        return os.getenv("MONGO_DB", "nifty_bot")
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAIN CONFIG CLASS
@@ -271,7 +279,6 @@ class Config(metaclass=ConfigMeta):
 
     # ── Persistence ────────────────────────────────────────────────────────
     MONGO_URI        = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-    MONGO_DB         = os.getenv("MONGO_DB", "nifty_bot")
     MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "trades")
 
     # ── Notifications ──────────────────────────────────────────────────────

@@ -1,19 +1,29 @@
 import sys
 from unittest.mock import MagicMock, patch
 
+# Save original modules to prevent pollution
+orig_modules = {
+    k: sys.modules.get(k) for k in [
+        'bot.utils.logger', 'bot.core.trade_repo', 'bot.core.order_manager',
+        'bot.core.angel_connect', 'bot.core.safety_checks', 'bot.core.market_feed',
+        'bot.core.data_fetcher', 'bot.core.oi_analyzer'
+    ]
+}
+
 # Mock dependencies before imports
-sys.modules['bot.utils.logger'] = MagicMock()
-sys.modules['bot.core.trade_repo'] = MagicMock()
-sys.modules['bot.core.order_manager'] = MagicMock()
-sys.modules['bot.core.angel_connect'] = MagicMock()
-sys.modules['bot.core.safety_checks'] = MagicMock()
-sys.modules['bot.core.market_feed'] = MagicMock()
-sys.modules['bot.core.data_fetcher'] = MagicMock()
-sys.modules['bot.core.oi_analyzer'] = MagicMock()
+for k in orig_modules:
+    sys.modules[k] = MagicMock()
 
 # Now import after mocking
 from bot.core.trade_repo import trade_repo
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
+
+# Restore original modules so other tests get fresh/real modules
+for k, v in orig_modules.items():
+    if v is not None:
+        sys.modules[k] = v
+    else:
+        sys.modules.pop(k, None)
 
 def test_gamma_blast_recovery():
     print("\n--- Testing GammaBlast Recovery Logic ---")

@@ -127,8 +127,13 @@ class TestKiteBrokerAdapter(unittest.TestCase):
         resp = self.adapter.position()
         self.assertTrue(resp["status"])
         self.assertEqual(len(resp["data"]), 1)
-        self.assertEqual(resp["data"][0]["tradingsymbol"], "NIFTY26JUN23000CE")
-        self.assertEqual(resp["data"][0]["realisedpnl"], 250.0)
+        pos = resp["data"][0]
+        self.assertEqual(pos["tradingsymbol"], "NIFTY26JUN23000CE")
+        self.assertEqual(pos["realisedpnl"], 250.0)
+        self.assertEqual(pos["netqty"], 65)
+        self.assertEqual(pos["avgnetprice"], 100.5)
+        self.assertEqual(pos["producttype"], "INTRADAY")
+        self.assertEqual(pos["symbolname"], "NIFTY")
 
     def test_rms_limit(self):
         self.mock_kite.margins.return_value = {
