@@ -359,9 +359,11 @@ class TestSafetyRefactoring(unittest.TestCase):
         }
         
         # Patch get_angel_session to return mock_api
-        with patch('bot.core.market_feed.get_angel_session', return_value=mock_api), \
+        with patch.dict(os.environ, {"PROCESS_TYPE": "BACKEND"}), \
+             patch('bot.core.market_feed.get_angel_session', return_value=mock_api), \
              patch('bot.core.market_feed.get_next_weekly_expiry', return_value="11JUN26"), \
              patch.object(feed.token_lookup, 'get_option_bucket', return_value={}) as mock_bucket, \
+             patch('os.path.exists', return_value=False), \
              patch('time.sleep', side_effect=InterruptedError("stop")):
              
             try:
@@ -422,12 +424,13 @@ class TestSafetyRefactoring(unittest.TestCase):
                 
                 # Clear in-memory cache to trigger cold path
                 fetcher.data_cache.clear()
-                fetcher._read_disk_cache = MagicMock(return_value=df_mock)
+                fetcher._read_disk_cache = MagicMock(return_value=None)
                 fetcher.api.getCandleData = MagicMock(return_value={"status": True, "data": [["2026-06-05 11:00:00", 100.0, 110.0, 90.0, 105.0, 1000.0]]})
                 
-                # Call fetch_latest_candles (should bypass disk cache read and go directly to mock REST fetch)
+                # Call fetch_latest_candles (hits disk cache first, gets None, then goes to REST fetch)
                 fetcher.fetch_latest_candles("99926000")
-                fetcher._read_disk_cache.assert_not_called()
+                fetcher._read_disk_cache.assert_called_once()
+                fetcher.api.getCandleData.assert_called_once()
                 
             # --- 2. Child Process (Non-BACKEND) Behavior ---
             with patch.dict(os.environ, {"PROCESS_TYPE": "BOT"}):

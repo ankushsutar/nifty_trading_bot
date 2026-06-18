@@ -1,5 +1,6 @@
 
 import time
+import os
 import threading
 import json
 import datetime
@@ -62,6 +63,9 @@ class MarketFeedService:
         self.running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True)
         self.thread.start()
+        
+        # Start a background writer thread for live prices JSON
+        threading.Thread(target=self._live_prices_writer_loop, daemon=True).start()
 
     def stop(self):
         """Stops the service."""
@@ -71,6 +75,30 @@ class MarketFeedService:
             try:
                 self.sws.close_connection()
             except: pass
+
+    def _live_prices_writer_loop(self):
+        """Periodically writes latest LTP snapshot to a shared file for child processes."""
+        prices_file = "data/live_prices.json"
+        temp_prices_file = "data/live_prices.json.tmp"
+        import json
+        import os
+        while self.running:
+            try:
+                # Copy data under lock to avoid concurrency issues during serialization
+                with self.data_lock:
+                    data_to_write = {
+                        "timestamp": time.time(),
+                        "prices": {token: info['ltp'] for token, info in self.latest_data.items() if 'ltp' in info}
+                    }
+                
+                # Atomic write
+                os.makedirs("data", exist_ok=True)
+                with open(temp_prices_file, "w") as f:
+                    json.dump(data_to_write, f)
+                os.replace(temp_prices_file, prices_file)
+            except Exception as e:
+                logger.error(f"[MarketFeed] Live Prices Writer Error: {e}")
+            time.sleep(1)
 
     def _run_loop(self):
         """Main loop to maintain connection."""
@@ -167,7 +195,25 @@ class MarketFeedService:
                 # 2. Get Nifty Spot Price
                 spot_price = self.get_ltp("99926000")
                 if not spot_price:
-                    # Fallback to REST API for Spot price to avoid dynamic subscription lock
+                    # Check shared market analysis file first
+                    state_file = "data/market_analysis.json"
+                    if os.path.exists(state_file):
+                        try:
+                            with open(state_file, "r") as f:
+                                shared_state = json.load(f)
+                                spot_price = float(shared_state.get("nifty_ltp", 0.0))
+                                if spot_price > 0:
+                                    logger.info(f">>> [MarketFeed] Dynamic Sub: Loaded spot from market_analysis.json = {spot_price}")
+                        except Exception as e:
+                            logger.warning(f"Failed to read spot from market_analysis: {e}")
+
+                if not spot_price:
+                    # If we are NOT the BACKEND process, do NOT call the REST API
+                    if os.getenv("PROCESS_TYPE") != "BACKEND":
+                        time.sleep(2)
+                        continue
+
+                    # Fallback to REST API for Spot price to avoid dynamic subscription lock (BACKEND only)
                     try:
                         api = get_angel_session()
                         if api:
@@ -272,6 +318,8 @@ class MarketFeedService:
                 # --- Candle Construction (1-Minute) ---
                 try:
                     ts = float(tick.get('exchange_timestamp', time.time())) # Prefer Exchange TS
+                    if ts > 1e11: # Convert from milliseconds to seconds
+                        ts /= 1000.0
                     
                     # Memoization: ISO string formatting is expensive. Cache it per-minute.
                     minute_ts = int(ts // 60) * 60

@@ -12,12 +12,12 @@ sys.path.append(os.getcwd())
 from bot.core.order_manager import OrderManager
 from bot.core.trade_repo import TradeRepository
 
-# Mock is_kill_switch_active
-import bot.core.order_manager
-bot.core.order_manager.is_kill_switch_active = MagicMock(return_value=False)
-
 class TestPersistenceFlow(unittest.TestCase):
     def setUp(self):
+        # Start kill switch patcher to avoid global state pollution
+        self.kill_switch_patcher = patch('bot.core.order_manager.is_kill_switch_active', return_value=False)
+        self.kill_switch_patcher.start()
+
         # Mock API
         self.mock_api = MagicMock()
         self.order_manager = OrderManager(self.mock_api, dry_run=False)
@@ -35,6 +35,7 @@ class TestPersistenceFlow(unittest.TestCase):
 
     def tearDown(self):
         self.patcher.stop()
+        self.kill_switch_patcher.stop()
 
     def test_place_order_with_persistence(self):
         """Verify that place_order calls save_trade when strategy_name is provided."""

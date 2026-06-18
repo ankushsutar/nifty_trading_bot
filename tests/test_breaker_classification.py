@@ -1,15 +1,12 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from bot.core.safety_checks import SafetyGatekeeper
-from bot.core.trade_repo import trade_repo
 
 class TestBreakerClassification(unittest.TestCase):
-    def test_breaker_classification(self):
+    @patch('bot.core.trade_repo.trade_repo.get_open_trades', return_value=[])
+    def test_breaker_classification(self, mock_get_open_trades):
         api = MagicMock()
         gatekeeper = SafetyGatekeeper(api, dry_run=True)
-        
-        # Mock trade_repo.get_open_trades to avoid recovery shield activation
-        trade_repo.get_open_trades = MagicMock(return_value=[])
         
         # Mock starting capital to 100,000 (MEDIUM tier)
         # MEDIUM tier max daily loss pct is 0.06 -> max_loss = -6,000

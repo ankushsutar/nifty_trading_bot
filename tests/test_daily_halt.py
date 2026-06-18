@@ -75,6 +75,8 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
         engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
         
         # Mock safety gatekeeper checks to fail daily loss check
+        engine.gatekeeper.is_market_open = MagicMock(return_value=True)
+        engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
         engine.gatekeeper.get_starting_capital = MagicMock(return_value=100000.0)
         engine.gatekeeper.get_daily_realized_pnl = MagicMock(return_value=-20000.0) # -20% PnL (breaches limit)
         
@@ -106,6 +108,8 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
             }, f)
         
         # Mock realized pnl to be 2000 (which is < 50% drawdown threshold, i.e., 2500)
+        engine.gatekeeper.is_market_open = MagicMock(return_value=True)
+        engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
         engine.gatekeeper.get_daily_realized_pnl = MagicMock(return_value=2000.0)
         
         # Deactivate first

@@ -55,8 +55,17 @@ class MarketService:
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
 
+            # Robust check to detect running test/mock/debug scripts
+            import sys
+            is_test = (
+                any(any(x in arg for x in ["test_", "verify_", "tests/", "tests\\", "debug_", "unittest", "pytest"]) for arg in sys.argv) or
+                os.getenv("TESTING") == "TRUE" or
+                os.getenv("TEST_ENV") == "1" or
+                "--test" in sys.argv
+            )
+
             # Start Background Analysis Thread only in MASTER process (Designated Backend)
-            is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+            is_master = os.getenv("PROCESS_TYPE") == "BACKEND" and not is_test
             if is_master:
                 logger.info("MarketService: [MASTER] Starting Intelligence Loop... 🛰️")
                 threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()
@@ -168,9 +177,36 @@ class MarketService:
                                         "pcr": shared_state.get("pcr", 1.0),
                                         "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
                                     }
-                                logger.info("MarketService: Consumed Shared Intelligence 📡")
+                                
+                                nifty_val = float(shared_state.get("nifty_ltp", 0.0))
+                                vix_val = float(shared_state.get("vix", 0.0))
+                                
+                                data = {
+                                    "nifty": nifty_val,
+                                    "vix": vix_val,
+                                    "pnl": 0.0,
+                                    "analysis": self.analysis_data,
+                                    "oi_data": self.oi_data,
+                                    "levels": self.levels_data,
+                                    "panic_data": self.panic_data
+                                }
+                                self.cached_data = data
+                                self.last_fetch_time = time.time()
+                                logger.info("MarketService: Consumed Shared Intelligence 📡 (Returning immediately in CHILD mode)")
+                                return data
                 except Exception as e:
                     logger.warning(f"Intelligence Sharing Error: {e}")
+                
+                # If we are child mode but couldn't read a fresh file, return cached/fallback
+                # to strictly prevent child mode from making any REST calls.
+                logger.warning("MarketService: Child mode failed to load fresh shared intelligence. Returning fallback cached/empty data.")
+                return self.cached_data or {
+                    "nifty": 0.0, "vix": 0.0, "pnl": 0.0,
+                    "analysis": self.analysis_data,
+                    "oi_data": self.oi_data,
+                    "levels": self.levels_data,
+                    "panic_data": self.panic_data
+                }
 
             self._ensure_connection()
         

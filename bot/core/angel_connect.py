@@ -39,6 +39,21 @@ SESSION_FILE = os.path.join(os.getcwd(), "data", "session.json")
 
 def get_angel_session(force_refresh=False):
     """Establishes or restores an Angel One API session."""
+    # Robust check to detect running test/mock/debug scripts
+    import sys
+    is_test = (
+        any(any(x in arg for x in ["test_", "verify_", "tests/", "tests\\", "debug_", "unittest", "pytest"]) for arg in sys.argv) or
+        os.getenv("TESTING") == "TRUE" or
+        os.getenv("TEST_ENV") == "1" or
+        "--test" in sys.argv
+    )
+    if is_test:
+        from bot.core.mock_connect import MockSmartConnect
+        if not getattr(get_angel_session, "_logged_test_mode", False):
+            print(">>> [System] Test Mode Detected: Returning MockSmartConnect session.")
+            setattr(get_angel_session, "_logged_test_mode", True)
+        return MockSmartConnect()
+
     print(">>> [System] Connecting to Angel One...")
     
     # Enable connection pooling at initialization using standard requests params

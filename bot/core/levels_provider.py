@@ -29,6 +29,35 @@ class LevelsProvider:
 
         # 2. Check disk cache
         levels_file = "data/institutional_levels.json"
+        
+        # --- FIX: Prevent REST fallback in Child processes ---
+        is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+        if not is_master:
+            # Child process: wait for master to write the file
+            if not os.path.exists(levels_file):
+                startup_wait_start = time.time()
+                while time.time() - startup_wait_start < 15:
+                    if os.path.exists(levels_file):
+                        break
+                    time.sleep(1)
+            
+            # Read from disk if exists (even if stale/fallback)
+            if os.path.exists(levels_file):
+                try:
+                    with open(levels_file, "r") as f:
+                        cached_data = json.load(f)
+                        levels = cached_data.get("levels")
+                        self._levels_cache[today] = levels
+                        logger.info(f"[Levels] Child loaded levels from disk: {levels}")
+                        return levels
+                except Exception as e:
+                    logger.warning(f"[Levels] Failed to read disk cache in child: {e}")
+            
+            # If still missing, return empty levels to prevent REST calls
+            logger.error("[Levels] Child process could not find institutional_levels.json! Returning empty levels to prevent REST calls.")
+            return {}
+
+        # 3. Master process path
         if os.path.exists(levels_file):
             try:
                 with open(levels_file, "r") as f:

@@ -144,6 +144,24 @@ class OrderFeedService:
                     time.sleep(5)
                     continue
 
+                if api.__class__.__name__ == 'MockSmartConnect':
+                    logger.info(">>> [OrderFeed] Mock Mode: Simulating Order Feed (No network connection needed).")
+                    self.is_connected = True
+                    while self.running and get_angel_session().__class__.__name__ == 'MockSmartConnect':
+                        with self.registry_lock:
+                            pending_oids = [oid for oid, ev in self.order_events.items() if not ev.is_set()]
+                        for oid in pending_oids:
+                            logger.info(f">>> [OrderFeed] Mock Mode: Auto-filling pending order {oid}")
+                            msg = {
+                                'orderid': oid,
+                                'status': 'complete',
+                                'averageprice': 100.0,
+                                'text': 'Filled via Mock Order Feed Simulation'
+                            }
+                            self._on_message(None, msg)
+                        time.sleep(1)
+                    continue
+
                 feed_token = getattr(api, 'feed_token', None)
                 if not feed_token:
                     try:

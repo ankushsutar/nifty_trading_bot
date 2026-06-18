@@ -35,6 +35,13 @@ class StartRequest(BaseModel):
 async def startup_event():
     # Start the log queue processor as a background task
     asyncio.create_task(process_log_queue())
+    
+    # Start MarketFeed WebSocket in the Backend process
+    try:
+        from bot.core.market_feed import market_feed
+        market_feed.start()
+    except Exception as e:
+        logger.error(f"Failed to start MarketFeed at startup: {e}")
 
 import queue
 

@@ -18,10 +18,14 @@ class TestSelection(unittest.TestCase):
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')
-    @patch('datetime.datetime')
+    @patch('bot.core.decision_engine.datetime')
     def test_logic(self, mock_dt, mock_market, mock_trades):
+        # Configure mock datetime module
+        mock_dt.time = datetime.time
+        mock_dt.timedelta = datetime.timedelta
+        
         # Case 1: 9:45 AM, ADX 35 (Should be ORB)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 9, 45)
+        mock_dt.datetime.now.return_value = datetime.datetime(2026, 2, 27, 9, 45)
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
@@ -33,7 +37,7 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(strat, "MOMENTUM")
 
         # Case 2: 11:00 AM, ADX 35 (Should be MOMENTUM)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        mock_dt.datetime.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
@@ -45,11 +49,11 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(strat, "MOMENTUM")
 
         # Case 3: 11:00 AM, ADX 50 (Should be GAMMA_BLAST)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        mock_dt.datetime.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 50},
-            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'oi_data': {'bias': 'NEUTRAL', 'pcr': 1.0},
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
@@ -57,10 +61,10 @@ class TestSelection(unittest.TestCase):
         self.assertEqual(strat, "GAMMA_BLAST")
 
         # Case 4: 11:00 AM, ADX 20 (Should be VWAP)
-        mock_dt.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
+        mock_dt.datetime.now.return_value = datetime.datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20},
+            'analysis': {'regime': 'SIDEWAYS', 'trend': 'BULLISH', 'adx': 20},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }

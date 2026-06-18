@@ -1,12 +1,10 @@
-
 import time
 import unittest
 from unittest.mock import MagicMock
 from bot.core.data_fetcher import DataFetcher
-from bot.strategies.inside_bar_strategy import InsideBarStrategy
-from bot.strategies.vwap_strategy import VWAPStrategy
+from bot.strategies.momentum_strategy import MomentumStrategy
+from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
 from bot.strategies.nifty_straddle import NiftyStrategy
-from bot.core.position_manager import PositionManager
 
 class TestProductionReadiness(unittest.TestCase):
     def setUp(self):
@@ -31,26 +29,23 @@ class TestProductionReadiness(unittest.TestCase):
         self.assertEqual(self.mock_api.ltpData.call_count, 1, "Cache NOT shared across singleton instances")
         print("✅ Singleton and Cache Sharing verified.")
 
-    def test_graceful_shutdown_inside_bar(self):
-        print("\n--- Testing Graceful Shutdown (InsideBar) ---")
-        strategy = InsideBarStrategy(self.mock_api, self.mock_token_loader, dry_run=True)
+    def test_graceful_shutdown_momentum(self):
+        print("\n--- Testing Graceful Shutdown (Momentum) ---")
+        strategy = MomentumStrategy(self.mock_api, self.mock_token_loader, dry_run=True)
         
         # Start monitoring in a way we can stop it
-        # We'll mock the loop to run once
         strategy.running = True
         strategy.stop()
         self.assertFalse(strategy.running, "Strategy.stop() did not set running=False")
-        print("✅ InsideBar stop() verified.")
+        print("✅ Momentum stop() verified.")
 
-    def test_graceful_shutdown_vwap(self):
-        print("\n--- Testing Graceful Shutdown (VWAP) ---")
-        strategy = VWAPStrategy(self.mock_api, self.mock_token_loader, dry_run=True)
-        strategy.manager = MagicMock() # Mock PositionManager
-        
+    def test_graceful_shutdown_gamma_blast(self):
+        print("\n--- Testing Graceful Shutdown (GammaBlast) ---")
+        strategy = GammaBlastStrategy(self.mock_api, self.mock_token_loader, dry_run=True)
+        strategy.running = True
         strategy.stop()
-        self.assertFalse(strategy.running, "VWAP Strategy.stop() did not set running=False")
-        strategy.manager.stop.assert_called_once()
-        print("✅ VWAP stop() and cascaded Manager stop verified.")
+        self.assertFalse(strategy.running, "GammaBlast Strategy.stop() did not set running=False")
+        print("✅ GammaBlast stop() verified.")
 
     def test_graceful_shutdown_straddle(self):
         print("\n--- Testing Graceful Shutdown (Straddle) ---")
@@ -63,14 +58,6 @@ class TestProductionReadiness(unittest.TestCase):
         # Ensure exit_at_market was called (implied by cleanup prints but let's be sure)
         self.assertFalse(strategy.legs_active['CE'])
         print("✅ Straddle stop() and position cleanup verified.")
-
-    def test_position_manager_shutdown(self):
-        print("\n--- Testing PositionManager Shutdown ---")
-        manager = PositionManager(self.mock_api, dry_run=True)
-        self.assertTrue(manager.running)
-        manager.stop()
-        self.assertFalse(manager.running, "PositionManager.stop() did not set running=False")
-        print("✅ PositionManager stop() verified.")
 
 if __name__ == "__main__":
     unittest.main()

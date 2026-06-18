@@ -16,48 +16,39 @@ class TestOrderRejection(unittest.TestCase):
         
         # Mock internal components to avoid side effects
         self.strategy.gatekeeper = MagicMock()
+        self.strategy.gatekeeper.get_iv_rank.return_value = 0.5
+        self.strategy.gatekeeper.get_current_capital.return_value = 50000.0
+        self.strategy.gatekeeper.get_compounded_lots.return_value = 1
+        self.strategy.gatekeeper.check_trade_viability.return_value = True
+        self.strategy.gatekeeper.check_instrument_cooldown.return_value = True
+        self.strategy.gatekeeper.check_sentiment_risk.return_value = True
         self.strategy.data_fetcher = MagicMock()
         self.strategy.trade_repo = MagicMock()
         
-    def test_wait_for_fill_rejection(self):
+    @patch('bot.core.order_feed.OrderFeedService.wait_for_fill')
+    def test_wait_for_fill_rejection(self, mock_wait_for_fill):
         """Test that wait_for_fill correctly parses a rejected order."""
-        # Mock orderBook response
-        self.mock_api.orderBook.return_value = {
-            'status': True,
-            'data': [
-                {'orderid': '1001', 'status': 'rejected', 'text': 'Margin Shortfall', 'averageprice': 0}
-            ]
-        }
+        mock_wait_for_fill.return_value = {'status': 'REJECTED', 'message': 'Margin Shortfall'}
         
         result = self.strategy.wait_for_fill('1001')
         self.assertEqual(result['status'], 'REJECTED')
         self.assertEqual(result['message'], 'Margin Shortfall')
 
-    def test_wait_for_fill_success(self):
+    @patch('bot.core.order_feed.OrderFeedService.wait_for_fill')
+    def test_wait_for_fill_success(self, mock_wait_for_fill):
         """Test that wait_for_fill correctly parses a filled order."""
-        self.mock_api.orderBook.return_value = {
-            'status': True,
-            'data': [
-                {'orderid': '1002', 'status': 'complete', 'averageprice': 150.5}
-            ]
-        }
+        mock_wait_for_fill.return_value = {'status': 'FILLED', 'price': 150.5}
         
         result = self.strategy.wait_for_fill('1002')
         self.assertEqual(result['status'], 'FILLED')
         self.assertEqual(result['price'], 150.5)
 
-    def test_wait_for_fill_timeout(self):
+    @patch('bot.core.order_feed.OrderFeedService.wait_for_fill')
+    def test_wait_for_fill_timeout(self, mock_wait_for_fill):
         """Test that wait_for_fill returns TIMEOUT if order is not found/pending long."""
-        self.mock_api.orderBook.return_value = {
-            'status': True,
-            'data': [
-                {'orderid': '1003', 'status': 'open'} 
-            ]
-        }
+        mock_wait_for_fill.return_value = {'status': 'TIMEOUT', 'price': None}
         
-        # Patch time.sleep to run fast
-        with patch('time.sleep', return_value=None):
-            result = self.strategy.wait_for_fill('1003')
+        result = self.strategy.wait_for_fill('1003')
             
         self.assertEqual(result['status'], 'TIMEOUT')
         self.assertIsNone(result['price'])

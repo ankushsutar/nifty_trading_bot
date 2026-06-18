@@ -38,19 +38,21 @@ echo -e "${GREEN}>>> Launching Backend API (Port 8000)...${NC}"
 PROCESS_TYPE=BACKEND python3 -m uvicorn backend.server:app --reload &
 BACKEND_PID=$!
 
-# 2. Startup Sequencing Guard: wait for backend's first market_analysis.json
+# 2. Startup Sequencing Guard: wait for backend's first market_analysis.json and institutional_levels.json
 # The bot must not start before the backend has written its first intelligence
-# snapshot, otherwise it falls back to UNKNOWN regime on first analysis pulse.
+# snapshot and calculated institutional levels.
 ANALYSIS_FILE="data/market_analysis.json"
+LEVELS_FILE="data/institutional_levels.json"
 MAX_WAIT=60
 WAITED=0
 
-echo -e "${YELLOW}>>> Waiting for backend intelligence to be ready (up to ${MAX_WAIT}s)...${NC}"
+echo -e "${YELLOW}>>> Waiting for backend intelligence & levels to be ready (up to ${MAX_WAIT}s)...${NC}"
 while [ $WAITED -lt $MAX_WAIT ]; do
-    if [ -f "$ANALYSIS_FILE" ]; then
+    if [ -f "$ANALYSIS_FILE" ] && [ -f "$LEVELS_FILE" ]; then
         FILE_AGE=$(( $(date +%s) - $(date -r "$ANALYSIS_FILE" +%s 2>/dev/null || echo 0) ))
-        if [ "$FILE_AGE" -lt 300 ]; then
-            echo -e "${GREEN}>>> Backend intelligence ready (waited ${WAITED}s). 🟢${NC}"
+        LEVELS_AGE=$(( $(date +%s) - $(date -r "$LEVELS_FILE" +%s 2>/dev/null || echo 0) ))
+        if [ "$FILE_AGE" -lt 300 ] && [ "$LEVELS_AGE" -lt 300 ]; then
+            echo -e "${GREEN}>>> Backend intelligence & levels ready (waited ${WAITED}s). 🟢${NC}"
             break
         fi
     fi

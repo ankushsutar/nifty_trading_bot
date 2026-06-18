@@ -1,11 +1,27 @@
 import random
 import uuid
+import time
 
 class MockSmartConnect:
     def __init__(self, api_key=None):
         self.api_key = api_key
         self.orders = [] # Mock Order Book
+        self.access_token = "mock_jwt_token"
+        self.feed_token = "mock_feed_token"
         print(f">>> [Mock] Initialized MockSmartConnect with API Key: {api_key}")
+
+    def getCandleData(self, params):
+        import datetime
+        now = datetime.datetime.now()
+        data = []
+        for i in range(100):
+            ts = (now - datetime.timedelta(minutes=5 * (100 - i))).strftime("%Y-%m-%dT%H:%M:%S+05:30")
+            data.append([ts, 22000.0, 22050.0, 21950.0, 22010.0, 1000])
+        return {
+            "status": True,
+            "message": "SUCCESS",
+            "data": data
+        }
 
     def generateSession(self, clientCode, password, totp):
         print(f">>> [Mock] generateSession called for Client: {clientCode}")

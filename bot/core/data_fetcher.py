@@ -57,7 +57,31 @@ class DataFetcher:
             # found in websocket cache
             return hot_ltp
 
-        # 2. Cold Path: API Polling (Legacy)
+        # 2. Check Shared Live Prices File (For Child Processes)
+        # If we are not the backend, we load from the shared file
+        if os.getenv("PROCESS_TYPE") != "BACKEND":
+            prices_file = "data/live_prices.json"
+            if os.path.exists(prices_file):
+                try:
+                    with open(prices_file, "r") as f:
+                        shared_data = json.load(f)
+                        # Only trust if fresh (e.g. less than 15s old)
+                        if time.time() - shared_data.get("timestamp", 0) < 15:
+                            prices = shared_data.get("prices", {})
+                            if token in prices:
+                                return float(prices[token])
+                except Exception as e:
+                    logger.warning(f"Failed to read shared live prices: {e}")
+            
+            # If not found or file is missing, return in-memory cached LTP
+            cache_key = (token, "LTP")
+            if cache_key in self.data_cache:
+                _, cached_ltp = self.data_cache[cache_key]
+                return cached_ltp
+                
+            return 0.0
+
+        # 3. Cold Path: API Polling (Legacy - BACKEND ONLY)
         cache_key = (token, "LTP")
         if cache_key in self.data_cache:
             last_time, cached_ltp = self.data_cache[cache_key]
@@ -103,7 +127,7 @@ class DataFetcher:
                 else:
                     ws_candles = market_feed.get_5min_candles(symbol_token)
                 
-                if ws_candles is not None and len(ws_candles) >= 1:
+                if ws_candles is not None and len(ws_candles) >= 30:
                     logger.debug(f"DataFetcher: {interval} from WebSocket ring-buffer ({len(ws_candles)} candles)")
                     return ws_candles
             except Exception as e:
@@ -124,14 +148,13 @@ class DataFetcher:
                     self._write_disk_cache(cache_key, cached_df)
                 return self._merge_live_candle(cached_df.copy(), symbol_token, interval)
 
-        # 2. Check Disk Cache (for sharing across processes)
-        if os.getenv("PROCESS_TYPE") != "BACKEND":
-            disk_data = self._read_disk_cache(cache_key)
-            if disk_data is not None:
-                logger.info(f"Using Disk-Cached Data for {symbol_token}_{interval}")
-                # Update in-memory cache
-                self.data_cache[cache_key] = (time.time(), disk_data)
-                return self._merge_live_candle(disk_data.copy(), symbol_token, interval)
+        # 2. Check Disk Cache (for sharing across processes AND master startup)
+        disk_data = self._read_disk_cache(cache_key)
+        if disk_data is not None:
+            logger.info(f"Using Disk-Cached Data for {symbol_token}_{interval}")
+            # Update in-memory cache
+            self.data_cache[cache_key] = (time.time(), disk_data)
+            return self._merge_live_candle(disk_data.copy(), symbol_token, interval)
 
         # 3. AB1004 Cool-down: If we recently hit a rate limit for this token, 
         # return stale data immediately instead of hammering the API again.
@@ -203,10 +226,15 @@ class DataFetcher:
             
             aligned_to = self._align_to_interval(now, mins)
             
-            # --- FIX: Shift back by 1 minute to avoid requesting unfinalized candles ---
-            # Requesting a candle exactly at its boundary can trigger AB1004/TooManyRequests
-            # if the broker's historical DB hasn't finalized it yet.
-            aligned_to = aligned_to - datetime.timedelta(minutes=1)
+            # --- FIX: Cap at market close (15:30) if after hours ---
+            market_close = aligned_to.replace(hour=15, minute=30, second=0, microsecond=0)
+            if aligned_to > market_close:
+                aligned_to = market_close
+            else:
+                # --- FIX: Shift back by 1 minute to avoid requesting unfinalized candles ---
+                # Requesting a candle exactly at its boundary can trigger AB1004/TooManyRequests
+                # if the broker's historical DB hasn't finalized it yet.
+                aligned_to = aligned_to - datetime.timedelta(minutes=1)
             
             # Default start time: 24 hours ago (ensures enough candles for indicators)
             aligned_from = aligned_to - datetime.timedelta(days=days)
@@ -242,13 +270,16 @@ class DataFetcher:
                 current_aligned_to = aligned_to
                 if attempt > 0:
                     current_aligned_to = aligned_to - datetime.timedelta(minutes=mins * attempt)
-                    historicParam["todate"] = current_aligned_to.strftime("%Y-%m-%d %H:%M")
+                
+                # Copy to avoid mutability/mutation issues in logged or mocked parameters
+                current_params = historicParam.copy()
+                current_params["todate"] = current_aligned_to.strftime("%Y-%m-%d %H:%M")
 
                 try:
                     from bot.utils.rate_limiter import rate_limiter
                     rate_limiter.wait()
                     
-                    response = self.api.getCandleData(historicParam)
+                    response = self.api.getCandleData(current_params)
                     
                     if response and response.get('status') and response.get('data'):
                         columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
@@ -354,6 +385,8 @@ class DataFetcher:
             # Create a localized timestamp for comparison
             # Live candle timestamp string is already formatted
             live_ts = pd.to_datetime(live_candle['timestamp'])
+            if hasattr(live_ts, 'tzinfo') and live_ts.tzinfo is not None:
+                live_ts = live_ts.replace(tzinfo=None)
             
             if df.empty:
                 # Create single row df
@@ -367,7 +400,13 @@ class DataFetcher:
                 }
                 return pd.DataFrame([new_row])
                 
+            # Standardize series to naive if it is tz-aware
+            if hasattr(df['timestamp'].dt, 'tz') and df['timestamp'].dt.tz is not None:
+                df['timestamp'] = df['timestamp'].dt.tz_localize(None)
+                
             last_ts = df.iloc[-1]['timestamp']
+            if hasattr(last_ts, 'tzinfo') and last_ts.tzinfo is not None:
+                last_ts = last_ts.replace(tzinfo=None)
             
             if live_ts > last_ts:
                 # Append
