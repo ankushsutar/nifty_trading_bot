@@ -1161,9 +1161,9 @@ class MomentumStrategy:
             return
 
         try:
-            # For BUY orders, pay slightly above LTP to improve fill probability.
-            # Slippage buffer from capital tier (smaller accounts use 1%, larger use 0.5%).
-            limit_price = quote_ltp * (1.0 + tier.entry_slippage_pct)
+            # Snap to 0.05 tick size AND eliminate float artifacts (e.g. 116.60000000000001)
+            _raw_limit = quote_ltp * (1.0 + tier.entry_slippage_pct)
+            limit_price = round(round(_raw_limit / 0.05) * 0.05, 2)
                 
             oid = self.order_manager.place_smart_limit(
                 symbol, token, qty, limit_price, 

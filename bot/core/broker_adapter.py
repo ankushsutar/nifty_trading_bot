@@ -213,8 +213,12 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             elif ordertype == 'STOPLOSS_MARKET':
                 order_type = self.kite.ORDER_TYPE_SLM
                 
-            price = float(orderparams.get('price')) if orderparams.get('price') is not None else None
-            trigger_price = float(orderparams.get('triggerprice')) if orderparams.get('triggerprice') is not None else None
+            # Snap to 2 decimal places — Zerodha rejects prices with float artifacts
+            # (e.g. 116.60000000000001 causes immediate REJECTED status)
+            raw_price = orderparams.get('price')
+            raw_trigger = orderparams.get('triggerprice')
+            price = round(float(raw_price), 2) if raw_price is not None else None
+            trigger_price = round(float(raw_trigger), 2) if raw_trigger is not None else None
 
             order_id = self.kite.place_order(
                 variety=variety,

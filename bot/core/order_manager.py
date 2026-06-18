@@ -82,8 +82,10 @@ class OrderManager:
         Places a LIMIT order with optional price rounding.
         """
         try:
-            # Round to 0.05 tick size
-            limit_price = round(price / 0.05) * 0.05
+            # Round to 0.05 tick size, then snap to 2 decimal places to
+            # eliminate floating-point artifacts like 116.60000000000001
+            # that cause Zerodha to reject orders with an invalid price error.
+            limit_price = round(round(price / 0.05) * 0.05, 2)
             
             orderparams = {
                 "variety": "NORMAL",

@@ -587,7 +587,9 @@ class GammaBlastStrategy:
         # Place Smart-Limit Order — slippage buffer from capital tier config.
         # Smaller accounts (MICRO/SMALL) use a tighter buffer; avoids over-paying for OTM options.
         _entry_tier = Config.get_tier(self.gatekeeper.get_current_capital())
-        limit_price = round(quote_ltp * (1.0 + _entry_tier.entry_slippage_pct), 1)
+        # Snap to 0.05 tick size AND eliminate float artifacts (e.g. 116.60000000000001)
+        _raw_limit = quote_ltp * (1.0 + _entry_tier.entry_slippage_pct)
+        limit_price = round(round(_raw_limit / 0.05) * 0.05, 2)
         
         logger.info(f">>> [Trade] Entering {symbol} (Qty: {qty}) via Smart-Limit @ ₹{limit_price}")
         
