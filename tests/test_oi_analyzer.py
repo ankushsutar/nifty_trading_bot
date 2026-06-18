@@ -2,10 +2,10 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.angel_connect import get_angel_session
-from utils.token_lookup import TokenLookup
-from core.oi_analyzer import OIAnalyzer
-from utils.expiry_calculator import get_next_weekly_expiry
+from bot.core.angel_connect import get_angel_session
+from bot.utils.token_lookup import TokenLookup
+from bot.core.oi_analyzer import OIAnalyzer
+from bot.utils.expiry_calculator import get_next_weekly_expiry
 
 def test_on_real_market():
     print(">>> [Test] Integrating with Real Angel One API...")

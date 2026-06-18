@@ -1,5 +1,17 @@
+# Environments
 .env
+venv/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# Local Data & Signals
+data/*.json
 logs/
+.stop_signal
+
+# OS
 .DS_Store
