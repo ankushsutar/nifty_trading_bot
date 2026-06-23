@@ -115,5 +115,47 @@ class TestPersistenceFlow(unittest.TestCase):
         except Exception as e:
             self.fail(f"TradeRepository.save_trade failed unexpectedly: {e}")
 
+    def test_cleanup_stale_trades(self):
+        """Verify that cleanup_stale_trades runs without raising MagicMock-related errors on InMemoryCollection."""
+        import datetime
+        from bot.core.trade_repo import InMemoryCollection
+        self.trade_repo.collection = InMemoryCollection()
+        
+        # Insert a stale trade (created yesterday)
+        yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
+        stale_trade = {
+            "_id": "stale_trade",
+            "id": 1,
+            "status": "OPEN",
+            "created_at": yesterday,
+            "updated_at": yesterday
+        }
+        self.trade_repo.collection.insert_one(stale_trade)
+        
+        # Insert a fresh trade (created today)
+        fresh_trade = {
+            "_id": "fresh_trade",
+            "id": 2,
+            "status": "OPEN",
+            "created_at": datetime.datetime.now(),
+            "updated_at": datetime.datetime.now()
+        }
+        self.trade_repo.collection.insert_one(fresh_trade)
+        
+        # Run cleanup
+        modified_count = self.trade_repo.cleanup_stale_trades()
+        
+        # Verify result is correct and count returned is an integer
+        self.assertEqual(modified_count, 1)
+        
+        # Verify stale trade is closed
+        stale_updated = self.trade_repo.collection.find_one({"id": 1})
+        self.assertEqual(stale_updated["status"], "CLOSED")
+        self.assertEqual(stale_updated["exit_reason"], "STALE_OVERNIGHT")
+        
+        # Verify fresh trade remains open
+        fresh_updated = self.trade_repo.collection.find_one({"id": 2})
+        self.assertEqual(fresh_updated["status"], "OPEN")
+
 if __name__ == "__main__":
     unittest.main()

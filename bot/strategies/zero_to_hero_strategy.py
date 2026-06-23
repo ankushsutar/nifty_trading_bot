@@ -147,8 +147,8 @@ class ZeroToHeroStrategy:
             
             # 2. Direction logic
             # Simple EMA cloud alignment
-            ema9 = self.data_fetcher.get_ema(9, timeframe=1)
-            ema21 = self.data_fetcher.get_ema(21, timeframe=1)
+            ema9 = analysis.get('ema9')
+            ema21 = analysis.get('ema21')
             
             if not ema9 or not ema21:
                 time.sleep(30)

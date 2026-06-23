@@ -224,7 +224,7 @@ class ConfigMeta(type):
     @property
     def MONGO_DB(cls):
         import sys
-        is_testing = any('unittest' in m or 'pytest' in m for m in sys.modules) or 'TESTING' in os.environ
+        is_testing = 'unittest' in sys.modules or 'pytest' in sys.modules or 'TESTING' in os.environ
         if is_testing:
             return "nifty_bot_test"
         return os.getenv("MONGO_DB", "nifty_bot")

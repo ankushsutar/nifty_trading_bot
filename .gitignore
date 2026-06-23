@@ -9,7 +9,7 @@ __pycache__/
 *.pyd
 
 # Local Data & Signals
-data/*.json
+data/
 logs/
 .stop_signal
 

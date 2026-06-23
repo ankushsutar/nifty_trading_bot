@@ -36,6 +36,12 @@ class InMemoryCollection:
                     elif op == "$lte":
                         if doc.get(k) is None or doc.get(k) > op_val:
                             return False
+                    elif op == "$gt":
+                        if doc.get(k) is None or doc.get(k) <= op_val:
+                            return False
+                    elif op == "$lt":
+                        if doc.get(k) is None or doc.get(k) >= op_val:
+                            return False
             else:
                 if doc.get(k) != v:
                     return False
@@ -70,7 +76,10 @@ class InMemoryCollection:
             for k, v in update["$set"].items():
                 doc[k] = v
         from unittest.mock import MagicMock
-        return MagicMock()
+        res = MagicMock()
+        res.modified_count = 1 if doc else 0
+        res.matched_count = 1 if doc else 0
+        return res
 
     def update_many(self, filter, update, *args, **kwargs):
         matches = [d for d in self._docs if self._match(d, filter)]
@@ -79,7 +88,10 @@ class InMemoryCollection:
                 for k, v in update["$set"].items():
                     doc[k] = v
         from unittest.mock import MagicMock
-        return MagicMock()
+        res = MagicMock()
+        res.modified_count = len(matches)
+        res.matched_count = len(matches)
+        return res
 
     def find_one_and_update(self, filter, update, return_document=True, *args, **kwargs):
         doc = self.find_one(filter)
@@ -103,7 +115,7 @@ class TradeRepository:
         return cls._instance
 
     def _init_db(self):
-        is_testing = any('unittest' in m or 'pytest' in m for m in sys.modules) or 'TESTING' in os.environ
+        is_testing = 'unittest' in sys.modules or 'pytest' in sys.modules or 'TESTING' in os.environ
         if is_testing:
             logger.info("TradeRepository: Test environment detected. Using InMemoryCollection.")
             from unittest.mock import MagicMock

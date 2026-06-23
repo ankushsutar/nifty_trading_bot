@@ -79,19 +79,36 @@ class LadderedTrailingManager:
             new_sl = ltp - round(1.5 * atr, 1)
             if new_sl > current_sl:
                 logger.info(f"📈 Stage 2: Adaptive Buffer (1.5 ATR Room) | LTP: {ltp} | SL: {new_sl}")
-                self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 
                 # --- EARLY PARTIAL BOOKING ---
                 total_qty = active_position.get('qty', 0)
                 if total_qty > Config.NIFTY_LOT_SIZE:
                     lots_to_sell = max(1, (total_qty // Config.NIFTY_LOT_SIZE) // 2)
                     qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
-                    logger.info(f"💰 PARTIAL BOOKING: Securing {lots_to_sell} lots. Letting the rest RUN.")
-                    oid = self.order_manager.place_smart_limit(symbol, token, qty_to_sell, ltp, "SELL", strategy_name=strategy_name)
-                    if oid:
-                        pnl_booked = (ltp - entry_price) * qty_to_sell
-                        trade_repo.reduce_position(active_position['id'], qty_to_sell, ltp, pnl_booked, "STAGE_2_PARTIAL")
-                        active_position['qty'] = total_qty - qty_to_sell
+                    remaining_sl_qty = total_qty - qty_to_sell
+                    
+                    logger.info(f"⏳ Updating Broker SL Order and reducing quantity from {total_qty} to {remaining_sl_qty} to free up margin for partial booking...")
+                    sl_updated_ok = self._apply_sl_update(strategy_name, active_position, new_sl, stage=2, override_qty=remaining_sl_qty)
+                    
+                    if not sl_updated_ok:
+                        logger.error(f"❌ Failed to update Stop-Loss price/quantity on broker. Aborting partial booking.")
+                    else:
+                        logger.info(f"💰 PARTIAL BOOKING: Securing {lots_to_sell} lots. Letting the rest RUN.")
+                        oid = self.order_manager.place_smart_limit(symbol, token, qty_to_sell, ltp, "SELL", strategy_name=strategy_name)
+                        if oid:
+                            pnl_booked = (ltp - entry_price) * qty_to_sell
+                            trade_repo.reduce_position(active_position['id'], qty_to_sell, ltp, pnl_booked, "STAGE_2_PARTIAL")
+                            active_position['qty'] = total_qty - qty_to_sell
+                        else:
+                            # Rollback SL quantity to original if booking failed/cancelled
+                            sl_oid = active_position.get('sl_order_id')
+                            if sl_oid and not self.order_manager.dry_run:
+                                logger.warning(f"⚠️ Partial booking order failed/cancelled. Restoring Broker SL Order {sl_oid} quantity to {total_qty}...")
+                                self.order_manager.modify_sl_order(
+                                    sl_oid, active_position['sl_price'], symbol, token, total_qty
+                                )
+                else:
+                    self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 
                 current_stage = 2
 
@@ -146,7 +163,7 @@ class LadderedTrailingManager:
             logger.error(f"Error fetching 1m EMA{period}: {e}")
         return 0
 
-    def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None):
+    def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None, override_qty=None):
         active_position['sl_price'] = new_sl
         if stage is not None:
             active_position['ladder_stage'] = stage
@@ -164,14 +181,16 @@ class LadderedTrailingManager:
              # We'll use Config.LIVE_TRADE_ENABLED as a proxy or just rely on order_manager
              symbol = active_position['symbol']
              token = active_position['token']
-             qty = active_position['qty']
+             qty = override_qty if override_qty is not None else active_position['qty']
              
              # Fetch current LTP to see if we are already at the new SL
              current_ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
              if current_ltp and current_ltp <= new_sl:
                  logger.warning(f"⚠️ DANGER: Modifying SL to {new_sl} while LTP is {current_ltp}! This will trigger immediate exit.")
              
-             self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+             return self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
+        
+        return True
 
 
 
