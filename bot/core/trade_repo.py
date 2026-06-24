@@ -361,16 +361,21 @@ class TradeRepository:
             try:
                 from bot.utils.trade_journal import TradeJournal
                 
+                trade_side = trade.get('side', 'BUY').upper()
                 entry_p = float(trade.get('entry_price') or 0.0)
                 exit_p = float(exit_price or 0.0)
                 qty_val = int(reduction_qty)
                 pnl_val = float(pnl_segment)
-                pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                
+                if trade_side == "BUY":
+                    pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                else:
+                    pnl_pct = round(((entry_p - exit_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
                 
                 trade_record = {
                     "strategy": trade.get('strategy', 'MOMENTUM'),
                     "symbol": trade.get('symbol'),
-                    "action": "SELL",
+                    "action": "SELL" if trade_side == "BUY" else "BUY",
                     "qty": qty_val,
                     "entry_price": entry_p,
                     "exit_price": exit_p,
@@ -421,11 +426,15 @@ class TradeRepository:
 
             for trade in trades_to_close:
                 tid = trade['id']
+                side = trade.get('side', 'BUY').upper()
                 if pnl is None:
                     # Auto-calculate the final-close segment and accumulate
                     entry_price = float(trade.get('entry_price') or 0)
                     qty = int(trade.get('qty') or 0)
-                    pnl_segment = round((exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
+                    if side == "BUY":
+                        pnl_segment = round((exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
+                    else:
+                        pnl_segment = round((entry_price - exit_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
                     self.collection.update_one(
                         {"id": tid},
                         {
@@ -469,12 +478,16 @@ class TradeRepository:
                         exit_p = float(updated_trade.get('exit_price') or exit_price or 0.0)
                         qty_val = int(updated_trade.get('qty') or 0)
                         pnl_val = float(updated_trade.get('pnl') or final_pnl or 0.0)
-                        pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
                         
+                        if side == "BUY":
+                            pnl_pct = round(((exit_p - entry_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                        else:
+                            pnl_pct = round(((entry_p - exit_p) / entry_p * 100), 2) if entry_p > 0 else 0.0
+                            
                         trade_record = {
                             "strategy": updated_trade.get('strategy', 'MOMENTUM'),
                             "symbol": updated_trade.get('symbol'),
-                            "action": "SELL",
+                            "action": "SELL" if side == "BUY" else "BUY",
                             "qty": qty_val,
                             "entry_price": entry_p,
                             "exit_price": exit_p,
@@ -827,7 +840,15 @@ class TradeRepository:
 
             entry_price = trade.get('entry_price', 0.0)
             qty = trade.get('qty', 0)
-            pnl = round((exit_price - entry_price) * qty, 2) if exit_price > 0 else 0.0
+            side = trade.get('side', 'BUY').upper()
+            
+            if exit_price > 0:
+                if side == "BUY":
+                    pnl = round((exit_price - entry_price) * qty, 2)
+                else:
+                    pnl = round((entry_price - exit_price) * qty, 2)
+            else:
+                pnl = 0.0
 
             self.close_trade(trade_id=trade_id, exit_price=exit_price, pnl=pnl, exit_reason=reason)
             logger.info(f"[ForceClose] Trade #{trade_id} ({trade.get('symbol')}) force-closed. Exit: {exit_price} | PnL: {pnl}")

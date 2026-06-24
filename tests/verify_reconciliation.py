@@ -193,5 +193,63 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(kwargs['pnl'], 2000.0)
         print("✅ PASS: reconcile_with_broker correctly closed OPEN SELL trade with BUY fill.")
 
+    def test_close_trade_auto_calculate_buy_side(self):
+        """Verify close_trade auto-calculates P&L correctly for BUY side."""
+        trade = {'id': 300, 'status': 'OPEN', 'side': 'BUY', 'entry_price': 100.0, 'qty': 50, 'pnl': 0.0}
+        self.repo.collection.find_one.side_effect = lambda query: trade if query.get('id') == 300 or query.get('status') == 'CLOSED' else None
+        
+        self.repo.collection.update_one = MagicMock()
+        
+        self.repo.close_trade(trade_id=300, exit_price=120.0, exit_reason="TARGET")
+        
+        # Verify update_one was called to close the trade and increment PnL by (120 - 100) * 50 = 1000
+        self.repo.collection.update_one.assert_called_once()
+        args, kwargs = self.repo.collection.update_one.call_args
+        self.assertEqual(args[0]['id'], 300)
+        self.assertEqual(args[1]['$inc']['pnl'], 1000.0)
+        self.assertEqual(args[1]['$set']['exit_price'], 120.0)
+        print("✅ PASS: close_trade auto-calculates P&L correctly for BUY side.")
+
+    def test_close_trade_auto_calculate_sell_side(self):
+        """Verify close_trade auto-calculates P&L correctly for SELL side."""
+        trade = {'id': 301, 'status': 'OPEN', 'side': 'SELL', 'entry_price': 100.0, 'qty': 50, 'pnl': 0.0}
+        self.repo.collection.find_one.side_effect = lambda query: trade if query.get('id') == 301 or query.get('status') == 'CLOSED' else None
+        
+        self.repo.collection.update_one = MagicMock()
+        
+        self.repo.close_trade(trade_id=301, exit_price=80.0, exit_reason="TARGET")
+        
+        # Verify update_one was called to close the trade and increment PnL by (100 - 80) * 50 = 1000
+        self.repo.collection.update_one.assert_called_once()
+        args, kwargs = self.repo.collection.update_one.call_args
+        self.assertEqual(args[0]['id'], 301)
+        self.assertEqual(args[1]['$inc']['pnl'], 1000.0)
+        self.assertEqual(args[1]['$set']['exit_price'], 80.0)
+        print("✅ PASS: close_trade auto-calculates P&L correctly for SELL side.")
+
+    def test_force_close_trade_buy_side(self):
+        """Verify force_close_trade calculates P&L correctly for BUY side."""
+        trade = {'id': 400, 'status': 'OPEN', 'side': 'BUY', 'entry_price': 100.0, 'qty': 50}
+        self.repo.collection.find_one.return_value = trade
+        self.repo.close_trade = MagicMock()
+        
+        self.repo.force_close_trade(trade_id=400, exit_price=120.0, reason="MANUAL_EXIT")
+        
+        # P&L should be (120 - 100) * 50 = 1000
+        self.repo.close_trade.assert_called_once_with(trade_id=400, exit_price=120.0, pnl=1000.0, exit_reason="MANUAL_EXIT")
+        print("✅ PASS: force_close_trade calculates P&L correctly for BUY side.")
+
+    def test_force_close_trade_sell_side(self):
+        """Verify force_close_trade calculates P&L correctly for SELL side."""
+        trade = {'id': 401, 'status': 'OPEN', 'side': 'SELL', 'entry_price': 100.0, 'qty': 50}
+        self.repo.collection.find_one.return_value = trade
+        self.repo.close_trade = MagicMock()
+        
+        self.repo.force_close_trade(trade_id=401, exit_price=80.0, reason="MANUAL_EXIT")
+        
+        # P&L should be (100 - 80) * 50 = 1000
+        self.repo.close_trade.assert_called_once_with(trade_id=401, exit_price=80.0, pnl=1000.0, exit_reason="MANUAL_EXIT")
+        print("✅ PASS: force_close_trade calculates P&L correctly for SELL side.")
+
 if __name__ == '__main__':
     unittest.main()
