@@ -12,6 +12,7 @@ from bot.core.regime_classifier import RegimeClassifier
 from bot.utils.logger import logger
 from bot.core.position_manager import LadderedTrailingManager
 from bot.config.instruments import get_instrument
+from bot.utils.notifier import notifier
 
 class GammaBlastStrategy:
     """
@@ -724,6 +725,9 @@ class GammaBlastStrategy:
             'sl_order_id': str(sl_oid)
         }
 
+        # Send Telegram notification
+        notifier.notify_trade_entry("GAMMA_BLAST", symbol, "BUY", qty, fill_price, sl=sl_price)
+
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
     def monitor_position(self, symbol, token, qty, sl, entry_price, trade_id, sl_oid, leg, stage=0, remaining_qty=None):
@@ -900,6 +904,11 @@ class GammaBlastStrategy:
         try:
             ltp = self.data_fetcher.get_ltp(token, exchange="NFO") or 0
             
+            # Retrieve entry price from active_position for P&L calculations
+            entry_price = 0.0
+            if self.active_position:
+                entry_price = self.active_position.get('entry_price', 0.0)
+            
             if sl_oid:
                 cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
                 if not cancel_success:
@@ -909,11 +918,14 @@ class GammaBlastStrategy:
                         logger.warning(f"🛡️ [Double-Exit Protection] SL Order {sl_oid} was already FILLED. Skipping market exit order.")
                         exit_price = sl_status.get('price', ltp)
                         trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason="SL_HIT")
+                        
+                        pnl = (exit_price - entry_price) * qty
+                        notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, "SL_HIT")
                         return True
             
             # Smart-Exit logic: Use LIMIT at SL price if exit_type is LIMIT
             if exit_type == "LIMIT":
-                limit_price = self.active_position.get('sl_price', ltp)
+                limit_price = self.active_position.get('sl_price', ltp) if self.active_position else ltp
             else:
                 # Deep Institutional Fallback: 15% buffer limit (forces match against lowest resting bid)
                 limit_price = round(ltp * 0.85, 1) if ltp > 0 else 0.05
@@ -955,9 +967,15 @@ class GammaBlastStrategy:
                 
                 exit_price = fill.get('price', ltp)
                 trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
+                
+                pnl = (exit_price - entry_price) * qty
+                notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, reason)
                 return True
             else:
                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
+                
+                pnl = (ltp - entry_price) * qty
+                notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, reason)
                 return True
 
         except Exception as e:

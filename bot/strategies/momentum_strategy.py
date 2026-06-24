@@ -1262,7 +1262,7 @@ class MomentumStrategy:
                 logger.info(f"🛡️ Broker-Side SL Placed: {sl_oid}")
             
             # Notify
-            notifier.notify_trade_entry("MOMENTUM", symbol, "BUY", qty, fill_price)
+            notifier.notify_trade_entry("MOMENTUM", symbol, "BUY", qty, fill_price, sl=actual_sl, target=actual_target)
                 
         except Exception as e:
             logger.error(f"Enter Order Failure: {e}")

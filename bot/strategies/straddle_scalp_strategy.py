@@ -374,14 +374,9 @@ class StraddleScalpStrategy:
         self.lp_position = {'id': lp_id, 'symbol': lp_symbol, 'token': lp_token, 'qty': qty_units, 'entry_price': lp_entry, 'sl_oid': None}
 
         net_credit = (sc_entry + sp_entry) - (lc_entry + lp_entry)
-        notifier.send_message(
-            f"🎯 Iron Condor ENTERED ✅\n"
-            f"  SC: {sc_symbol} @ ₹{sc_entry:.1f} (Short)\n"
-            f"  SP: {sp_symbol} @ ₹{sp_entry:.1f} (Short)\n"
-            f"  LC: {lc_symbol} @ ₹{lc_entry:.1f} (Hedge)\n"
-            f"  LP: {lp_symbol} @ ₹{lp_entry:.1f} (Hedge)\n"
-            f"  Net Credit Collected: ₹{net_credit:.1f} (Max Profit: ₹{net_credit*qty_units:,.0f})\n"
-            f"  Qty: {qty_units} units"
+        notifier.notify_condor_entry(
+            sc_symbol, sp_symbol, lc_symbol, lp_symbol,
+            sc_entry, sp_entry, lc_entry, lp_entry, qty_units
         )
         logger.info(f"Straddle Scalp: Iron Condor basket filled. Net credit=₹{net_credit:.1f}")
 
@@ -514,12 +509,7 @@ class StraddleScalpStrategy:
             logger.info(f"Straddle Scalp: {name} Long Closed @ ₹{exit_price:.1f} | P&L: ₹{pnl:+.0f}")
 
         total_pnl = short_pnl + long_pnl
-        notifier.send_message(
-            f"🛑 Iron Condor CLOSED ({reason})\n"
-            f"  P&L Shorts: ₹{short_pnl:+.0f}\n"
-            f"  P&L Longs:  ₹{long_pnl:+.0f}\n"
-            f"  Total P&L:  ₹{total_pnl:+.0f} 💰"
-        )
+        notifier.notify_condor_exit(reason, short_pnl, long_pnl, total_pnl)
         logger.info(f"Straddle Scalp: Iron Condor basket closed. Total P&L=₹{total_pnl:.0f}")
 
         # Clear state

@@ -189,7 +189,7 @@ class ZeroToHeroStrategy:
                 self.active_position = {
                     'id': trade_id, 'symbol': symbol, 'token': token, 'qty': qty, 'entry_price': prem
                 }
-                notifier.send_message(f"🚀 Z2H WILDCARD PURCHASED!\nSymbol: {symbol}\nPrice: ₹{prem}\nQty: {qty}")
+                notifier.notify_trade_entry("ZERO_TO_HERO", symbol, "BUY", qty, prem, sl=sl_init, target="3x Jackpot (Scale 50% at +200%)")
                 
                 # Drop Emergency Broker-Side SL
                 sl_id = self.order_manager.place_stoploss(symbol, token, qty, sl_init, self.STRATEGY_NAME)
@@ -224,7 +224,17 @@ class ZeroToHeroStrategy:
                  sell_qty = int((qty // 2) // Config.NIFTY_LOT_SIZE * Config.NIFTY_LOT_SIZE)
                  logger.info(f"🔥 JACKPOT PART 1: Wildcard hit 200% gain (₹{ltp}). Booking HALF.")
                  self.order_manager.place_smart_limit(sym, token, sell_qty, ltp, "SELL", self.STRATEGY_NAME)
-                 trade_repo.reduce_position(tid, sell_qty, ltp, (ltp-entry)*sell_qty, "JACKPOT_SCALE")
+                 
+                 segment_pnl = (ltp - entry) * sell_qty
+                 trade_repo.reduce_position(tid, sell_qty, ltp, segment_pnl, "JACKPOT_SCALE")
+                 
+                 scale_msg = (
+                     f"🔥 <b>SCALE OUT: ZERO_TO_HERO</b>\n"
+                     f"Symbol: <code>{sym}</code> | Qty: {sell_qty}\n"
+                     f"Exit Price: <b>₹{ltp:.2f}</b> | P&L: <b>₹{segment_pnl:.2f}</b> 💰"
+                 )
+                 notifier.send_message(scale_msg)
+                 
                  qty = qty - sell_qty
                  self.active_position['qty'] = qty
                  half_booked = True
@@ -237,7 +247,11 @@ class ZeroToHeroStrategy:
             if ltp <= sl_price and not half_booked:
                  logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
-                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=(ltp-entry)*qty, exit_reason="HARD_FLOOR")
+                 
+                 pnl_val = (ltp - entry) * qty
+                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="HARD_FLOOR")
+                 
+                 notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "HARD_FLOOR")
                  break
                  
             # 3. Final Time Exit at 15:10
@@ -245,7 +259,11 @@ class ZeroToHeroStrategy:
             if now >= datetime.time(15, 10):
                  logger.info(f"⏰ End of Day. Liquidating Wildcard final runner at ₹{ltp}")
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
-                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=(ltp-entry)*qty, exit_reason="EOD_LIQUIDATION")
+                 
+                 pnl_val = (ltp - entry) * qty
+                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="EOD_LIQUIDATION")
+                 
+                 notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "EOD_LIQUIDATION")
                  break
                  
             time.sleep(5) # Low intensity polling
