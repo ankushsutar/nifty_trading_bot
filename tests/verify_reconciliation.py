@@ -120,5 +120,78 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(kwargs['pnl'], 1000.0) # (120 - 100) * 50
         print("✅ PASS: reconcile_with_broker correctly closed OPEN trade with SELL fill.")
 
+    def test_reconcile_placed_sell_trade(self):
+        """Verify that a PLACED SELL (short) trade is updated to OPEN when a SELL fill is found."""
+        # 1. Setup Mock DB state (A PLACED SELL trade)
+        placed_trade = {
+            'id': 200,
+            'symbol': 'NIFTY_SHORT_TEST',
+            'status': 'PLACED',
+            'side': 'SELL',
+            'qty': 50
+        }
+        self.repo.collection.find.return_value = [placed_trade]
+        
+        # 2. Setup Mock Broker state (A SELL fill for that symbol)
+        mock_api = MagicMock()
+        mock_api.tradeBook.return_value = {
+            'status': True,
+            'data': [{
+                'tradingsymbol': 'NIFTY_SHORT_TEST',
+                'transactiontype': 'SELL',
+                'quantity': '50',
+                'averageprice': '85.5'
+            }]
+        }
+        
+        self.repo.update_entry_price = MagicMock()
+        
+        # 3. Trigger reconciliation
+        print("Running reconciliation for PLACED SELL trade...")
+        self.repo.reconcile_with_broker(mock_api)
+        
+        # 4. Verify update_entry_price was called with correct price
+        self.repo.update_entry_price.assert_called_once_with(200, 85.5)
+        print("✅ PASS: reconcile_with_broker correctly updated PLACED SELL trade to OPEN.")
+
+    def test_reconcile_open_sell_trade(self):
+        """Verify that an OPEN SELL (short) trade is closed when a BUY fill is found."""
+        # 1. Setup Mock DB state (An OPEN SELL trade)
+        open_trade = {
+            'id': 201,
+            'symbol': 'NIFTY_SHORT_TEST_2',
+            'status': 'OPEN',
+            'side': 'SELL',
+            'qty': 50,
+            'entry_price': 100.0
+        }
+        self.repo.collection.find.return_value = [open_trade]
+        
+        # 2. Setup Mock Broker state (A BUY fill)
+        mock_api = MagicMock()
+        mock_api.tradeBook.return_value = {
+            'status': True,
+            'data': [{
+                'tradingsymbol': 'NIFTY_SHORT_TEST_2',
+                'transactiontype': 'BUY',
+                'quantity': '50',
+                'averageprice': '60.0'
+            }]
+        }
+        
+        self.repo.close_trade = MagicMock()
+        
+        # 3. Trigger reconciliation
+        print("Running reconciliation for OPEN SELL trade...")
+        self.repo.reconcile_with_broker(mock_api)
+        
+        # 5. Verify close_trade was called with correct PnL: (100 - 60) * 50 = 2000.0
+        self.repo.close_trade.assert_called_once()
+        args, kwargs = self.repo.close_trade.call_args
+        self.assertEqual(kwargs['trade_id'], 201)
+        self.assertEqual(kwargs['exit_price'], 60.0)
+        self.assertEqual(kwargs['pnl'], 2000.0)
+        print("✅ PASS: reconcile_with_broker correctly closed OPEN SELL trade with BUY fill.")
+
 if __name__ == '__main__':
     unittest.main()

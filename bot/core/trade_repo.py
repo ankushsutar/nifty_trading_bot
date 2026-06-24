@@ -697,13 +697,16 @@ class TradeRepository:
             symbol      = trade.get('symbol', '')
             trade_id    = trade.get('id')
             status      = trade.get('status')
+            side        = trade.get('side', 'BUY').upper()
             
             # 1. Handle PLACED trades
             if status == "PLACED":
-                buy_price = avg_prices.get(symbol, {}).get('BUY')
-                if buy_price:
-                    self.update_entry_price(trade_id, buy_price)
-                    logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{buy_price})")
+                # For BUY side entry is BUY fill. For SELL side entry is SELL fill.
+                entry_fill_side = side
+                entry_price = avg_prices.get(symbol, {}).get(entry_fill_side)
+                if entry_price:
+                    self.update_entry_price(trade_id, entry_price)
+                    logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{entry_price})")
                     reconciled += 1
                 elif has_orders_info:
                     # If we have order info, check if there are any pending/open orders for this symbol.
@@ -722,16 +725,22 @@ class TradeRepository:
             if status == "OPEN":
                 entry_price = float(trade.get('entry_price', 0))
                 qty         = int(trade.get('qty', 0))
-                sell_price  = avg_prices.get(symbol, {}).get('SELL')
                 
-                if sell_price:
-                    pnl    = round((sell_price - entry_price) * qty, 2)
+                # For BUY side exit is SELL fill. For SELL side exit is BUY fill.
+                exit_fill_side = "SELL" if side == "BUY" else "BUY"
+                exit_price = avg_prices.get(symbol, {}).get(exit_fill_side)
+                
+                if exit_price:
+                    if side == "BUY":
+                        pnl = round((exit_price - entry_price) * qty, 2)
+                    else:
+                        pnl = round((entry_price - exit_price) * qty, 2)
                     reason = "SYNC_FROM_BROKER"
-                    self.close_trade(trade_id=trade_id, exit_price=sell_price, pnl=pnl, exit_reason=reason)
-                    logger.info(f"[Reconcile] ✅ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Exit: ₹{sell_price} | PnL: {pnl:+.2f})")
+                    self.close_trade(trade_id=trade_id, exit_price=exit_price, pnl=pnl, exit_reason=reason)
+                    logger.info(f"[Reconcile] ✅ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Exit: ₹{exit_price} | PnL: {pnl:+.2f})")
                     reconciled += 1
                 elif has_positions_info:
-                    # No SELL fill in trade book, check if the position is active at the broker
+                    # No exit fill in today's trade book, check if the position is active at the broker
                     net_qty = broker_positions.get(symbol, 0)
                     if net_qty == 0:
                         # Position is closed at the broker!
