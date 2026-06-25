@@ -172,6 +172,44 @@ class TradeRepository:
 
         with self._lock:
             try:
+                # Uniqueness Check: Look for an existing open or placed trade for the same symbol, strategy, and mode
+                # to prevent duplicate entries (e.g. from early record in order placement and subsequent strategy save)
+                existing = None
+                if strategy:
+                    query = {
+                        "symbol": symbol,
+                        "strategy": strategy,
+                        "status": {"$in": ["OPEN", "PLACED"]},
+                        "mode": mode
+                    }
+                    existing = self.collection.find_one(query, sort=[("id", -1)])
+
+                if existing:
+                    trade_id = existing["id"]
+                    update_fields = {
+                        "updated_at": datetime.datetime.now()
+                    }
+                    if entry_price > 0.0:
+                        update_fields["entry_price"] = entry_price
+                    if leg:
+                        update_fields["leg"] = leg
+                    if side:
+                        update_fields["side"] = side
+                    if qty:
+                        update_fields["qty"] = qty
+                        update_fields["remaining_qty"] = qty
+                    if sl_price > 0.0:
+                        update_fields["sl_price"] = sl_price
+                    if status:
+                        update_fields["status"] = status
+                    elif entry_price > 0.0:
+                        update_fields["status"] = "OPEN"
+
+                    self.collection.update_one({"id": trade_id}, {"$set": update_fields})
+                    logger.info(f"TradeRepository: Updated existing active trade (ID: {trade_id}, Symbol: {symbol}, Strategy: {strategy})")
+                    return trade_id
+
+                # If no existing active trade found, proceed with new insertion
                 trade_id = self._get_next_sequence("trade_id")
                 
                 trade_doc = {

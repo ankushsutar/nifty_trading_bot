@@ -184,7 +184,10 @@ class ZeroToHeroStrategy:
                 entry_price=prem, sl_price=sl_init, mode=mode, strategy=self.STRATEGY_NAME
             )
             
-            order_id = self.order_manager.place_smart_limit(symbol, token, qty, prem, "BUY", self.STRATEGY_NAME)
+            order_id = self.order_manager.place_smart_limit(
+                symbol=symbol, token=token, qty=qty, initial_price=prem, 
+                transaction_type="BUY", strategy_name=self.STRATEGY_NAME, mode=mode
+            )
             if order_id:
                 self.active_position = {
                     'id': trade_id, 'symbol': symbol, 'token': token, 'qty': qty, 'entry_price': prem
@@ -197,6 +200,7 @@ class ZeroToHeroStrategy:
                 trade_repo.update_sl_order_id(trade_id, sl_id)
             else:
                 logger.error("Z2H failed entry execution.")
+                trade_repo.collection.delete_one({"id": trade_id})
                 time.sleep(60)
                 
     def _monitor_wildcard(self):
@@ -223,7 +227,11 @@ class ZeroToHeroStrategy:
             if not half_booked and roi >= 200.0 and qty > Config.NIFTY_LOT_SIZE:
                  sell_qty = int((qty // 2) // Config.NIFTY_LOT_SIZE * Config.NIFTY_LOT_SIZE)
                  logger.info(f"🔥 JACKPOT PART 1: Wildcard hit 200% gain (₹{ltp}). Booking HALF.")
-                 self.order_manager.place_smart_limit(sym, token, sell_qty, ltp, "SELL", self.STRATEGY_NAME)
+                 mode = "PAPER" if self.dry_run else "LIVE"
+                 self.order_manager.place_smart_limit(
+                     symbol=sym, token=token, qty=sell_qty, initial_price=ltp, 
+                     transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
+                 )
                  
                  segment_pnl = (ltp - entry) * sell_qty
                  trade_repo.reduce_position(tid, sell_qty, ltp, segment_pnl, "JACKPOT_SCALE")

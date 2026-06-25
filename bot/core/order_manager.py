@@ -108,6 +108,28 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
+    def place_market(self, symbol, token, qty, transaction_type="SELL", strategy_name=None, mode=None):
+        """Places a MARKET order."""
+        try:
+            orderparams = {
+                "variety": "NORMAL",
+                "tradingsymbol": symbol,
+                "symboltoken": token,
+                "transactiontype": transaction_type,
+                "exchange": "NFO",
+                "ordertype": "MARKET",
+                "producttype": "INTRADAY",
+                "duration": "DAY",
+                "quantity": qty,
+                "price": 0.0,
+                "disclosedquantity": 0
+            }
+            logger.info(f"⚡ Placing MARKET Order for {symbol} ({transaction_type})")
+            return self.place_order(orderparams, strategy_name=strategy_name, mode=mode)
+        except Exception as e:
+            logger.error(f"Market Order Error: {e}")
+            return None
+
     def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None):
         """
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
@@ -122,8 +144,9 @@ class OrderManager:
             if not oid: return None
 
             # --- Persistence Integration (Early Record) ---
+            early_trade_id = None
             if strategy_name:
-                trade_repo.save_trade(
+                early_trade_id = trade_repo.save_trade(
                     symbol=symbol,
                     token=token,
                     leg="CE" if "CE" in symbol else "PE",
@@ -152,6 +175,8 @@ class OrderManager:
                 
                 if result['status'] in ['REJECTED', 'CANCELLED']:
                     logger.error(f"❌ Smart-Limit Failed: Order {result['status']}")
+                    if early_trade_id:
+                        trade_repo.collection.delete_one({"id": early_trade_id})
                     return None
 
                 # If TIMEOUT, walk the price using L1 book depth
@@ -209,10 +234,14 @@ class OrderManager:
                     logger.critical(f"🚨 FILL-ON-CANCEL DETECTED! Order {oid} filled despite timeout. Transitioning to trade.")
                     return oid
             
+            if early_trade_id:
+                trade_repo.collection.delete_one({"id": early_trade_id})
             return None
 
         except Exception as e:
             logger.error(f"Smart-Limit Error: {e}")
+            if 'early_trade_id' in locals() and early_trade_id:
+                trade_repo.collection.delete_one({"id": early_trade_id})
             return None
 
     def modify_order_price(self, order_id, new_price, symbol, token, qty, variety="NORMAL"):

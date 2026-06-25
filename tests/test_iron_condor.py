@@ -47,7 +47,7 @@ class TestIronCondorStrategy(unittest.TestCase):
         }.get(token, 20.0)
 
         # Mock order manager placing limit orders
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda symbol, token, qty, price, side, strategy_name, mode: f"oid_{symbol}_{side}"
+        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"oid_{kwargs.get('symbol') or args[0]}_{kwargs.get('transaction_type') or args[4]}"
         self.strategy.order_manager.place_sl_order.side_effect = lambda symbol, token, qty, price, leg, transaction_type: f"sl_oid_{symbol}"
 
         # Mock trade saving
@@ -85,7 +85,7 @@ class TestIronCondorStrategy(unittest.TestCase):
         }.get(token, 20.0)
 
         # Mock order placement OIDs
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda symbol, token, qty, price, side, strategy_name, mode: f"oid_{symbol}_{side}"
+        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"oid_{kwargs.get('symbol') or args[0]}_{kwargs.get('transaction_type') or args[4]}"
 
         # Mock one of the long hedges to fail (TIMEOUT)
         self.strategy._wait_fill = lambda order_id, fallback: {
@@ -104,13 +104,15 @@ class TestIronCondorStrategy(unittest.TestCase):
 
         # Verify that we sold back the filled Long Call (LC)
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", "STRADDLE_SCALP", "PAPER"
+            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65, initial_price=13.5,
+            transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
         # Verify that we did not place any short premium trades (SC or SP)
         for call_args in self.strategy.order_manager.place_smart_limit.call_args_list:
-            symbol = call_args[0][0]
-            side = call_args[0][4]
+            args, kwargs = call_args
+            symbol = kwargs.get('symbol') or (args[0] if len(args) > 0 else None)
+            side = kwargs.get('transaction_type') or (args[4] if len(args) > 4 else None)
             if symbol in [sc_symbol, sp_symbol]:
                 self.assertNotEqual(side, "SELL")
 
@@ -126,7 +128,7 @@ class TestIronCondorStrategy(unittest.TestCase):
             "token_23300_PE": 18.0,
         }.get(token, 20.0)
 
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda symbol, token, qty, price, side, strategy_name, mode: f"oid_{symbol}_{side}"
+        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"oid_{kwargs.get('symbol') or args[0]}_{kwargs.get('transaction_type') or args[4]}"
 
         # Hedges fill, but one short fails
         self.strategy._wait_fill = lambda order_id, fallback: {
@@ -145,15 +147,18 @@ class TestIronCondorStrategy(unittest.TestCase):
 
         # Verify that we bought back the filled short CE (at 1.1x fallback)
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623600CE", "token_23600_CE", 65, 38.5, "BUY", "STRADDLE_SCALP", "PAPER"
+            symbol="NIFTY25JUN202623600CE", token="token_23600_CE", qty=65, initial_price=38.5,
+            transaction_type="BUY", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
         # Verify that we sold the Long protection hedges to return to flat cash
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", "STRADDLE_SCALP", "PAPER"
+            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65, initial_price=13.5,
+            transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623300PE", "token_23300_PE", 65, 16.2, "SELL", "STRADDLE_SCALP", "PAPER"
+            symbol="NIFTY25JUN202623300PE", token="token_23300_PE", qty=65, initial_price=16.2,
+            transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
 
     def test_monitor_condor_take_profit(self):
@@ -210,7 +215,7 @@ class TestIronCondorStrategy(unittest.TestCase):
         self.strategy.lp_position = {'symbol': 'LP_sym', 'entry_price': 18.0, 'token': 'LP_token', 'qty': 65}
 
         # Mock order manager placing exits
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda symbol, token, qty, price, side, strategy_name, mode: f"exit_{symbol}"
+        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"exit_{kwargs.get('symbol') or args[0]}"
         self.strategy.data_fetcher.get_ltp.return_value = 20.0
 
         # Close all
@@ -221,7 +226,11 @@ class TestIronCondorStrategy(unittest.TestCase):
         self.strategy.order_manager.cancel_order.assert_any_call("sl_2")
 
         # Check call order of place_smart_limit
-        call_symbols = [call_args[0][0] for call_args in self.strategy.order_manager.place_smart_limit.call_args_list]
+        call_symbols = []
+        for call_args in self.strategy.order_manager.place_smart_limit.call_args_list:
+            args, kwargs = call_args
+            sym = kwargs.get('symbol') or (args[0] if len(args) > 0 else None)
+            call_symbols.append(sym)
         
         # Shorts (SC_sym, SP_sym) must appear first in the call list
         self.assertIn(call_symbols[0], ['SC_sym', 'SP_sym'])
