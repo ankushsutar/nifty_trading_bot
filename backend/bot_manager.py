@@ -35,14 +35,14 @@ class BotManager:
         if self.is_running and self.manager and self.manager.running:
             return {"status": "error", "message": "Bot is already running."}
 
-        logger.info(f"Starting Bot Manager (Lifecycle Mode)... DryRun: {dry_run}")
+        logger.info(f"Starting Bot Manager (Lifecycle Mode)... Strategy: {strategy_type}, DryRun: {dry_run}")
         
         try:
             # Initialize Lifecycle Manager instead of direct Strategy
             # We treat 'test_mode' as False by default for UI starts (unless implied?)
             # Usually UI 'Dry Run' maps to dry_run=True.
             
-            self.manager = LifecycleManager(dry_run=dry_run, test_mode=False)
+            self.manager = LifecycleManager(dry_run=dry_run, test_mode=False, strategy_type=strategy_type)
             self.manager.start_lifecycle()
             self.is_running = True
             self.current_mode = "PAPER" if dry_run else "LIVE"
@@ -67,9 +67,17 @@ class BotManager:
         # Sync local state
         self.is_running = running
         
+        strategy_type = "AUTO"
+        dry_run = self.current_mode == "PAPER"
+        
+        if self.manager:
+            strategy_type = getattr(self.manager, 'strategy_type', 'AUTO')
+            dry_run = getattr(self.manager, 'dry_run', True)
+            
         return {
             "status": "RUNNING" if running else "STOPPED",
-            "strategy": "LIFECYCLE_MANAGER"
+            "strategy": strategy_type,
+            "dry_run": dry_run
         }
 
     def get_active_trade(self):

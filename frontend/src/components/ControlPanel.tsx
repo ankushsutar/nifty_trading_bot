@@ -13,12 +13,23 @@ export default function MissionControl() {
   const [strategy, setStrategy] = useState("AUTO");
 
   useEffect(() => {
-    fetch(`${API_URL}/api/status`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.status === "RUNNING") setIsRunning(true);
-      })
-      .catch(console.error);
+    const fetchStatus = () => {
+      fetch(`${API_URL}/api/status`)
+        .then((res) => res.json())
+        .then((data) => {
+          const active = data.status === "RUNNING";
+          setIsRunning(active);
+          if (active) {
+            if (data.strategy) setStrategy(data.strategy);
+            if (typeof data.dry_run === "boolean") setIsDryRun(data.dry_run);
+          }
+        })
+        .catch(console.error);
+    };
+
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 5000); // Poll status every 5 seconds
+    return () => clearInterval(interval);
   }, []);
 
   const handleStart = async () => {
@@ -30,8 +41,11 @@ export default function MissionControl() {
         body: JSON.stringify({ strategy, dry_run: isDryRun }),
       });
       const data = await res.json();
-      if (data.status === "success") setIsRunning(true);
-      else alert(data.message);
+      if (data.status === "success") {
+        setIsRunning(true);
+      } else {
+        alert(data.message || "Failed to start bot");
+      }
     } catch (e) {
       alert(e);
     }
@@ -79,25 +93,33 @@ export default function MissionControl() {
           />
 
           <button
+            disabled={isRunning}
             onClick={() => setIsDryRun(true)}
-            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 ${
-              isDryRun ? "text-yellow-400" : "text-gray-600"
-            }`}
+            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 transition-all ${
+              isDryRun ? "text-yellow-400" : isRunning ? "text-gray-700" : "text-gray-500 hover:text-gray-300"
+            } disabled:cursor-not-allowed`}
           >
             <Shield size={14} /> SIMULATION
           </button>
 
           <button
+            disabled={isRunning}
             onClick={() => setIsDryRun(false)}
-            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 ${
+            className={`relative z-10 flex-1 py-2 text-xs font-semibold tracking-wide flex items-center justify-center gap-2 transition-all ${
               !isDryRun
                 ? "text-red-500 drop-shadow-[0_0_6px_rgba(239,68,68,0.6)]"
-                : "text-gray-600"
-            }`}
+                : isRunning ? "text-gray-700" : "text-gray-500 hover:text-gray-300"
+            } disabled:cursor-not-allowed`}
           >
             <Zap size={14} /> LIVE
           </button>
         </div>
+        
+        {isRunning && (
+          <p className="text-[9px] text-gray-500 mt-1.5 text-center font-mono">
+            ⚠️ SYSTEM ACTIVE · EXECUTION MODE LOCKED
+          </p>
+        )}
       </section>
 
       {/* STRATEGY */}
@@ -114,8 +136,11 @@ export default function MissionControl() {
         >
           <option value="AUTO">🤖 AUTO-PILOT</option>
           <option value="MOMENTUM">⚡ MOMENTUM</option>
-          <option value="STRADDLE">📉 STRADDLE</option>
-          <option value="OHL">🎯 OHL SCALP</option>
+          <option value="GAMMA_BLAST">🚀 GAMMA BLAST</option>
+          <option value="STRADDLE_SCALP">🎯 STRADDLE SCALP</option>
+          <option value="ZERO_TO_HERO">🛸 ZERO-TO-HERO</option>
+          <option value="STRADDLE">📉 9:20 STRADDLE</option>
+          <option value="SELLING">💰 SELLING ENGINE</option>
         </select>
       </section>
 
@@ -155,10 +180,10 @@ export default function MissionControl() {
         <span className="text-gray-600">Latency · 24ms</span>
         <span
           className={`flex items-center gap-1 ${
-            isRunning ? "text-green-500" : "text-gray-600"
+            isRunning ? "text-green-500 font-semibold" : "text-gray-600"
           }`}
         >
-          <span className="text-xs">●</span>
+          <span className={`${isRunning ? "animate-pulse" : ""}`}>●</span>
           {isRunning ? "System Active" : "System Idle"}
         </span>
       </footer>

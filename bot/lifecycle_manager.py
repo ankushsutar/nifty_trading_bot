@@ -9,10 +9,11 @@ from bot.utils.logger import logger
 from bot.utils.expiry_calculator import is_trading_day
 
 class LifecycleManager:
-    def __init__(self, dry_run=False, test_mode=False, with_selling=False):
+    def __init__(self, dry_run=False, test_mode=False, with_selling=False, strategy_type="AUTO"):
         self.dry_run = dry_run
         self.test_mode = test_mode
         self.with_selling = with_selling
+        self.strategy_type = strategy_type
         self.current_process = None
         self.selling_process = None
         self._current_date = None
@@ -194,11 +195,15 @@ class LifecycleManager:
                     # Heartbeat?
                     pass
 
-                # B. MAIN SESSION (09:16 - 15:15) -> AUTO MODE
+                # B. MAIN SESSION (09:16 - 15:15)
                 elif datetime.time(9, 16) <= now < datetime.time(15, 15):
                     if not self.current_process:
-                        self.log("⏰ Time 09:16+ Detected. Activating Main Auto-Strategy Cycle...")
-                        self.current_process = self.run_strategy(auto=True)
+                        if self.strategy_type == "AUTO":
+                            self.log("⏰ Time 09:16+ Detected. Activating Main Auto-Strategy Cycle...")
+                            self.current_process = self.run_strategy(auto=True)
+                        else:
+                            self.log(f"⏰ Time 09:16+ Detected. Activating Custom Strategy {self.strategy_type}...")
+                            self.current_process = self.run_strategy(strategy_name=self.strategy_type)
                         time.sleep(60)
 
                     # START SELLING ENGINE (Background - OPTIONAL)
@@ -229,9 +234,10 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run in dry run mode")
     parser.add_argument("--test", action="store_true", help="Run in test mode")
     parser.add_argument("--selling", action="store_true", help="Enable Selling Engine in background")
+    parser.add_argument("--strategy", type=str, default="AUTO", choices=["AUTO", "STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
     args = parser.parse_args()
     
-    manager = LifecycleManager(dry_run=args.dry_run, test_mode=args.test, with_selling=args.selling)
+    manager = LifecycleManager(dry_run=args.dry_run, test_mode=args.test, with_selling=args.selling, strategy_type=args.strategy)
     manager.start_lifecycle()
     
     try:
