@@ -104,14 +104,14 @@ class RegimeClassifier:
             bbw_history = df['BBW'].iloc[-window_size:]
             if len(bbw_history) >= 20:
                 bbw_20th = np.percentile(bbw_history, 20)
-                is_squeeze = bbw < bbw_20th
+                is_squeeze = bool(bbw < bbw_20th)
                 
                 # Check if expanding from a squeeze:
                 # 1. Any squeeze in the last 5 bars (excluding current bar)
-                was_squeezed_recently = (df['BBW'].iloc[-6:-1] < bbw_20th).any() if len(df) >= 6 else False
+                was_squeezed_recently = bool((df['BBW'].iloc[-6:-1] < bbw_20th).any()) if len(df) >= 6 else False
                 # 2. BBW is expanding (upward slope)
-                is_expanding = df['BBW'].iloc[-1] > df['BBW'].iloc[-2] if len(df) >= 2 else False
-                is_squeeze_expansion = was_squeezed_recently and is_expanding
+                is_expanding = bool(df['BBW'].iloc[-1] > df['BBW'].iloc[-2]) if len(df) >= 2 else False
+                is_squeeze_expansion = bool(was_squeezed_recently and is_expanding)
 
         # 6. Volume Spike Detection (Institutional Activity Filter)
         volume_spike = self._calculate_volume_spike(df)
@@ -128,10 +128,10 @@ class RegimeClassifier:
             "bbw": round(bbw, 4),
             "ema9": round(ema9, 2),
             "ema21": round(ema21, 2),
-            "volume_spike": volume_spike,
-            "is_exhausted": rsi > 80 or rsi < 20,
-            "is_squeeze": is_squeeze,
-            "is_squeeze_expansion": is_squeeze_expansion
+            "volume_spike": bool(volume_spike),
+            "is_exhausted": bool(rsi > 80 or rsi < 20),
+            "is_squeeze": bool(is_squeeze),
+            "is_squeeze_expansion": bool(is_squeeze_expansion)
         }
 
     def _calculate_rsi(self, df, period=14):
@@ -190,4 +190,4 @@ class RegimeClassifier:
         if recent_avg_vol == 0: return False
         
         spike_ratio = current_vol / recent_avg_vol
-        return spike_ratio >= multiplier
+        return bool(spike_ratio >= multiplier)
