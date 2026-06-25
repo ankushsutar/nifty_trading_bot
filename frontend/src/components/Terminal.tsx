@@ -4,6 +4,7 @@ import React, { useEffect, useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { Terminal as TerminalIcon, Minimize2, Maximize2 } from "lucide-react";
 import Card from "./ui/Card";
+import { API_URL } from "../config";
 
 interface LogMessage {
   timestamp: string;
@@ -16,16 +17,22 @@ export default function Terminal() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const host = window.location.hostname;
-    // Assume backend is on port 8000 of the same host
-    const wsUrl = `${protocol}//${host}:8000/ws/logs`;
+    let wsUrl;
+    try {
+      const url = new URL(API_URL);
+      const wsProtocol = url.protocol === "https:" ? "wss:" : "ws:";
+      wsUrl = `${wsProtocol}//${url.host}/ws/logs`;
+    } catch (e) {
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const host = window.location.hostname;
+      wsUrl = `${protocol}//${host}:8000/ws/logs`;
+    }
 
     console.log(`[Terminal] Connecting to ${wsUrl}...`);
     const socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
-      addLog("SYSTEM", `Uplink Established to ${host}:8000...`);
+      addLog("SYSTEM", `uplink established to ${wsUrl.replace("/ws/logs", "")}...`);
     };
 
     socket.onmessage = (event) => {
