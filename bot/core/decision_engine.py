@@ -206,10 +206,16 @@ class DecisionEngine:
             adx = regime_data.get('adx', 0)
             is_misaligned = (trend == "BULLISH" and bias == "BEARISH") or (trend == "BEARISH" and bias == "BULLISH")
             
+            # Determine if this meets the requirements for a pullback strategy candidate
+            is_chop_hours_pb = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
+                               (datetime.time(13, 0) <= now < datetime.time(13, 30))
+            momentum_adx_threshold = 30.0 if is_chop_hours_pb else 25.0
+            is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
+            
             if not confidence_high and adx <= tier.min_adx_to_trade + adx_boost:
-                # EXCEPTION: Allow low-ADX chop regimes through so Straddle Scalp can be evaluated
-                if regime in ["SIDEWAYS", "CHOP"] and adx < 24:
-                    logger.info(">>> [Brain] Small Account: Allowing sideways/chop setup through A+ filter for potential Scalp/Selling.")
+                # EXCEPTION: Allow low-ADX chop regimes through so Straddle Scalp can be evaluated, or PULLBACK setups
+                if (regime in ["SIDEWAYS", "CHOP"] and adx < 24) or is_pullback_candidate:
+                    logger.info(">>> [Brain] Small Account: Allowing setup through A+ filter for potential Scalp/Selling or Pullback.")
                 else:
                     reasons = []
                     if is_misaligned:
@@ -230,10 +236,14 @@ class DecisionEngine:
         # No trade unless trend is strong enough for the current capital tier.
         # Larger accounts tolerate lower ADX; small accounts need strong trends only.
         # EXCEPTION: Sideways/Chop regimes skip this gate to allow Straddle Scalps.
+        # EXCEPTION: Low-ADX trending setups allow Pullback strategies.
         adx = regime_data.get('adx', 0)
-        is_trending_request = (regime == "TRENDING") or (adx > 20)
+        is_chop_hours_pb = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
+                           (datetime.time(13, 0) <= now < datetime.time(13, 30))
+        momentum_adx_threshold = 30.0 if is_chop_hours_pb else 25.0
+        is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
         
-        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"]:
+        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"] and not is_pullback_candidate:
             logger.info(
                 f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
                 f"{tier.min_adx_to_trade + adx_boost} minimum"
@@ -314,6 +324,10 @@ class DecisionEngine:
             if is_chop_hours:
                 logger.info(f"⚡ Trend confirmed during chop hours (ADX: {adx:.1f} >= 30.0). Selected: MOMENTUM")
             selected_strategy = "MOMENTUM"
+        
+        elif regime == "TRENDING" and adx >= 18.0:
+            logger.info(f"📈 Grinding Low ADX Trend detected (Regime: TRENDING | ADX: {adx:.1f}). Selected: PULLBACK")
+            selected_strategy = "PULLBACK"
         
         elif is_morning and adx < 20:
             # Morning Sideways -> Straddle Scalp

@@ -161,6 +161,11 @@ def run_bot():
         logger.info(f"\n>>> [Strategy] Selected: 🛸 ZERO TO HERO WILD CARD! 🚀💎")
         bot = ZeroToHeroStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
+    elif args.strategy == "PULLBACK":
+        logger.info(f"\n>>> [Strategy] Selected: VWAP & 20-EMA Pullback 📈")
+        from bot.strategies.pullback_strategy import PullbackStrategy
+        bot = PullbackStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
     elif args.strategy == "SELLING":
         logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
         bot = SellingStrategy(api, loader, dry_run=args.dry_run)
@@ -185,7 +190,7 @@ def run_bot():
         logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
     # 6. Execute Strategy
-    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING"]:
+    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "PULLBACK"]:
         bot.execute(expiry=expiry)
     else:
         bot.execute(expiry=expiry, action="SELL")

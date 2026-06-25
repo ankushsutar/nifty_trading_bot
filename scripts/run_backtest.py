@@ -80,6 +80,19 @@ def run_ranked_backtest(initial_capital=None):
     
     print("="*95)
 
+    print("\n" + "="*95)
+    print("      📋 DETAILED TRADE LOGS")
+    print("="*95)
+    for name, m in results.items():
+        if "trades" in m and m["trades"]:
+            print(f"\nStrategy: {name}")
+            t_header = f"  {'Timestamp':<25} | {'Dir':<3} | {'Lots':<4} | {'Entry':>8} | {'Exit':>8} | {'P&L (₹)':>10} | {'Exit Reason':<15}"
+            print(t_header)
+            print("  " + "-" * (len(t_header) - 2))
+            for t in m["trades"]:
+                print(f"  {t['timestamp']:<25} | {t['direction']:<3} | {t['lots']:<4} | {t['entry']:>8.2f} | {t['exit']:>8.2f} | {t['pnl']:>10.2f} | {t['exit_reason']:<15}")
+    print("="*95)
+
     # 6. Hero Trade Callouts (>100% P&L)
     hero_trades = []
     for name, m in results.items():
