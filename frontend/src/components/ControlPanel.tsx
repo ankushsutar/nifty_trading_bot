@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { Power, Shield, Zap, AlertTriangle, Radio } from "lucide-react";
 import { motion } from "framer-motion";
 import Card from "./ui/Card";
+import { API_URL } from "../config";
 
 export default function MissionControl() {
   const [isRunning, setIsRunning] = useState(false);
@@ -12,7 +13,7 @@ export default function MissionControl() {
   const [strategy, setStrategy] = useState("AUTO");
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/status")
+    fetch(`${API_URL}/api/status`)
       .then((res) => res.json())
       .then((data) => {
         if (data.status === "RUNNING") setIsRunning(true);
@@ -23,7 +24,7 @@ export default function MissionControl() {
   const handleStart = async () => {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/api/start", {
+      const res = await fetch(`${API_URL}/api/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ strategy, dry_run: isDryRun }),
@@ -46,7 +47,7 @@ export default function MissionControl() {
       return;
     setLoading(true);
     try {
-      await fetch("http://localhost:8000/api/stop", { method: "POST" });
+      await fetch(`${API_URL}/api/stop`, { method: "POST" });
       setTimeout(() => setIsRunning(false), 1500);
     } catch (e) {
       alert(e);

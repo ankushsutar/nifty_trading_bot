@@ -7,6 +7,7 @@ import {
   ArrowDownRight,
   DollarSign,
 } from "lucide-react";
+import { API_URL } from "../config";
 
 interface Trade {
   id: number;
@@ -38,7 +39,7 @@ export default function DailySummary() {
 
   const fetchData = async () => {
     try {
-      const res = await fetch("http://localhost:8000/api/daily-summary");
+      const res = await fetch(`${API_URL}/api/daily-summary`);
       if (res.ok) {
         const json = await res.json();
         setData(json);

@@ -4,6 +4,7 @@ import React, { useEffect, useState } from "react";
 import { Newspaper, TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { motion } from "framer-motion";
 import Card from "./ui/Card";
+import { API_URL } from "../config";
 
 interface Article {
   title: string;
@@ -26,7 +27,7 @@ export default function NewsFeed() {
   useEffect(() => {
     const fetchNews = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/news");
+        const res = await fetch(`${API_URL}/api/news`);
         const json = await res.json();
         setData(json);
         setLoading(false);

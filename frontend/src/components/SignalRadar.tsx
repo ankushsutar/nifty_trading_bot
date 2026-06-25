@@ -9,6 +9,7 @@ import {
   Radar,
 } from "lucide-react";
 import Card from "./ui/Card";
+import { API_URL } from "../config";
 
 interface Analysis {
   ema9: number;
@@ -43,10 +44,10 @@ export default function SignalRadar() {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const res = await fetch("http://localhost:8000/api/market-data");
+        const res = await fetch(`${API_URL}/api/market-data`);
         const json = await res.json();
 
-        const resSent = await fetch("http://localhost:8000/api/sentiment");
+        const resSent = await fetch(`${API_URL}/api/sentiment`);
         const jsonSent = await resSent.json();
 
         setData({
