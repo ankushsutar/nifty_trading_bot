@@ -214,7 +214,7 @@ class MarketFeedService:
         # Safely preserve subscriptions for any currently open trades in DB to prevent them from drifting out
         try:
             from bot.core.trade_repo import trade_repo
-            open_trades = trade_repo.get_open_trades()
+            open_trades = trade_repo.get_open_trades(symbol=Config.ACTIVE_SYMBOL)
             for t in open_trades:
                 tok = t.get('token')
                 if tok:

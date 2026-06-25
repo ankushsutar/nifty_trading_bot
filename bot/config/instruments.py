@@ -83,29 +83,29 @@ INSTRUMENTS: Dict[str, Instrument] = {
         #   print(df[(df['name']=='CRUDEOIL') & (df['instrumenttype']=='FUTCOM')][['token','symbol','expiry']])
         #   "
         #
-        # Current front-month: CRUDEOIL18MAY26FUT — expires 18MAY2026
-        # Next roll due: ~18MAY2026
+        # Current front-month: CRUDEOIL26JULFUT — expires 20JUL2026
+        # Next roll due: ~20JUL2026
         # ──────────────────────────────────────────────────────────────────────
-        analysis_token="488290", # CRUDEOIL18MAY26FUT
+        analysis_token="133299719", # CRUDEOIL26JULFUT
         lot_size=100,
         strike_step=50,
         asset_type="COMMODITY",
-        instrument_type="FUTCOM",  # Futures contract, not options
+        instrument_type="OPTFUT",  # Options on commodity futures
         exchange="MCX",
         option_exchange="MCX",
         market_start="09:00",
         market_end="23:00",  # Stop before illiquid late-night session
         expiry_type="MONTHLY",
-        expiry_day_of_month=18,  # Actual expiry day for CRUDEOIL18MAY26FUT — update monthly
+        expiry_day_of_month=20,  # Actual expiry day for CRUDEOIL26JULFUT
     ),
     "GOLD": Instrument(
         name="GOLD",
         # NOTE: MCX futures tokens are contract-specific. Update each month.
-        analysis_token="459277", # GOLD05JUN26FUT — update monthly
+        analysis_token="119445255", # GOLD26AUGFUT — update monthly
         lot_size=100,
         strike_step=100,
         asset_type="COMMODITY",
-        instrument_type="FUTCOM",  # Futures contract, not options
+        instrument_type="OPTFUT",  # Options on commodity futures
         exchange="MCX",
         option_exchange="MCX",
         market_start="09:00",

@@ -76,7 +76,7 @@ class MomentumStrategy:
         """
         if self.dry_run:
             if self.active_position is None:
-                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="MOMENTUM")
+                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="MOMENTUM", symbol=Config.ACTIVE_SYMBOL)
                 if db_trade:
                     self.active_position = {
                         'id': db_trade['id'],
@@ -180,7 +180,7 @@ class MomentumStrategy:
                 self.active_position = None
             
             if self.active_position and 'id' not in self.active_position:
-                db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM")
+                db_trade = trade_repo.get_active_trade(mode="LIVE", strategy="MOMENTUM", symbol=Config.ACTIVE_SYMBOL)
                 if db_trade and db_trade['symbol'] == self.active_position['symbol']:
                     self.active_position['id'] = db_trade['id']
                     self.active_position['partially_booked'] = db_trade.get('partially_booked', False)
@@ -339,7 +339,7 @@ class MomentumStrategy:
                         continue
 
                     # 2. Check Shared Intelligence Freshness
-                    state_file = "data/market_analysis.json"
+                    state_file = f"data/market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json"
                     if not self.dry_run and os.path.exists(state_file):
                         file_age = time.time() - os.path.getmtime(state_file)
                         if file_age > 600:  # 10 minutes
@@ -650,7 +650,7 @@ class MomentumStrategy:
         """
         # --- PRIMARY: Read from shared intelligence file (no API call) ---
         try:
-            state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+            state_file = os.path.join(os.getcwd(), "data", f"market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json")
             if os.path.exists(state_file):
                 age = time.time() - os.path.getmtime(state_file)
                 if age < 600:  # Use if < 10 mins old
@@ -888,19 +888,19 @@ class MomentumStrategy:
                 if _vol.sum() > 0:
                     _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
                     _vwap = (_typical * _vol).sum() / _vol.sum()
-                    logger.info(f"📏 VWAP={_vwap:.1f} | NIFTY={nifty_ltp:.1f} | Leg={leg}")
+                    logger.info(f"📏 VWAP={_vwap:.1f} | {Config.ACTIVE_SYMBOL}={nifty_ltp:.1f} | Leg={leg}")
                     # SQUEEZE BYPASS: Squeezes often happen when price is on the "wrong" side of VWAP before flipping it.
                     if _is_squeeze:
                         logger.info("🔥 Squeeze detected: Bypassing VWAP Filter.")
                     elif leg == "CE" and nifty_ltp < _vwap:
                         logger.warning(
-                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} < VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {Config.ACTIVE_SYMBOL} {nifty_ltp:.0f} < VWAP {_vwap:.0f} — "
                             "CE blocked. Price trading below institutional anchor."
                         )
                         return
                     elif leg == "PE" and nifty_ltp > _vwap:
                         logger.warning(
-                            f"🛑 VWAP Filter: NIFTY {nifty_ltp:.0f} > VWAP {_vwap:.0f} — "
+                            f"🛑 VWAP Filter: {Config.ACTIVE_SYMBOL} {nifty_ltp:.0f} > VWAP {_vwap:.0f} — "
                             "PE blocked. Price trading above institutional anchor."
                         )
                         return

@@ -87,7 +87,14 @@ class OIAnalyzer:
             
             for strike in strikes:
                 for opt_type in ['CE', 'PE']:
-                    token, symbol = self.token_lookup.get_token(active_symbol, expiry, strike, opt_type)
+                    token, symbol = self.token_lookup.get_token(
+                        active_symbol,
+                        expiry,
+                        strike,
+                        opt_type,
+                        instrument_type=instr.instrument_type,
+                        exchange=instr.option_exchange
+                    )
                     if token:
                         tokens_to_fetch.append(token)
                         token_map[token] = {"strike": strike, "type": opt_type, "symbol": symbol}
@@ -96,7 +103,7 @@ class OIAnalyzer:
                 return {"bias": "NEUTRAL", "pcr": 1.0, "delta_ratio": 1.0, "total_ce_oi": 0, "total_pe_oi": 0}
 
             # 3. Batch Fetch Current Quotes (OI + LTP)
-            batch_params = {"NFO": tokens_to_fetch}
+            batch_params = {instr.option_exchange: tokens_to_fetch}
             
             rate_limiter.wait()
             response = self.api.getMarketData("FULL", batch_params)

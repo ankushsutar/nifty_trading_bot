@@ -42,6 +42,11 @@ class InMemoryCollection:
                     elif op == "$lt":
                         if doc.get(k) is None or doc.get(k) >= op_val:
                             return False
+                    elif op == "$regex":
+                        import re
+                        val = doc.get(k)
+                        if val is None or not re.search(op_val, val):
+                            return False
             else:
                 if doc.get(k) != v:
                     return False
@@ -565,8 +570,8 @@ class TradeRepository:
             logger.error(f"TradeRepository Fetch Error: {e}")
             return None
 
-    def get_open_trades(self, mode=None, strategy=None):
-        """Returns detailed list of all OPEN trades."""
+    def get_open_trades(self, mode=None, strategy=None, symbol=None):
+        """Returns detailed list of all OPEN trades. Optionally filter by mode/strategy/symbol."""
         if not self.client: return []
         try:
             query = {"status": "OPEN"}
@@ -574,6 +579,8 @@ class TradeRepository:
                 query["mode"] = mode
             if strategy:
                 query["strategy"] = strategy
+            if symbol:
+                query["symbol"] = {"$regex": f"^{symbol}"}
                 
             cursor = self.collection.find(query).sort("id", DESCENDING)
             return list(cursor)

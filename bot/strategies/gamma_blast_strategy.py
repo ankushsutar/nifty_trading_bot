@@ -48,7 +48,7 @@ class GammaBlastStrategy:
         """
         if self.dry_run:
             if self.active_position is None:
-                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="GAMMA_BLAST")
+                db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="GAMMA_BLAST", symbol=Config.ACTIVE_SYMBOL)
                 if db_trade:
                     self.active_position = {
                         'id': db_trade['id'],
@@ -185,7 +185,7 @@ class GammaBlastStrategy:
 
             # 1. Check for Resumption (DB check)
             mode = "PAPER" if self.dry_run else "LIVE"
-            active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST")
+            active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST", symbol=Config.ACTIVE_SYMBOL)
 
             if active_trade:
                 # If the trade is still pending fill from a previous crash/timeout, entry_price might be 0.0
@@ -211,7 +211,7 @@ class GammaBlastStrategy:
                 break # Monitoring finished or trade closed
 
             # Check Shared Intelligence Freshness
-            state_file = "data/market_analysis.json"
+            state_file = f"data/market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json"
             if not self.dry_run and os.path.exists(state_file):
                 file_age = time.time() - os.path.getmtime(state_file)
                 if file_age > 600:  # 10 minutes
@@ -434,18 +434,18 @@ class GammaBlastStrategy:
                         _typical_gb = (_df_gb['high'] + _df_gb['low'] + _df_gb['close']) / 3
                         _vwap_gb = (_typical_gb * _vol_gb).sum() / _vol_gb.sum()
                         logger.info(
-                            f"Gamma Blast: 📏 VWAP={_vwap_gb:.1f} | NIFTY={ltp:.1f} | Leg={leg}"
+                            f"Gamma Blast: 📏 VWAP={_vwap_gb:.1f} | {Config.ACTIVE_SYMBOL}={ltp:.1f} | Leg={leg}"
                         )
                         if leg == "CE" and ltp < _vwap_gb:
                             logger.warning(
-                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} < VWAP {_vwap_gb:.0f} — "
+                                f"Gamma Blast: 🛑 VWAP Filter: {Config.ACTIVE_SYMBOL} {ltp:.0f} < VWAP {_vwap_gb:.0f} — "
                                 "CE blocked. Price below institutional anchor."
                             )
                             time.sleep(30)
                             continue
                         if leg == "PE" and ltp > _vwap_gb:
                             logger.warning(
-                                f"Gamma Blast: 🛑 VWAP Filter: NIFTY {ltp:.0f} > VWAP {_vwap_gb:.0f} — "
+                                f"Gamma Blast: 🛑 VWAP Filter: {Config.ACTIVE_SYMBOL} {ltp:.0f} > VWAP {_vwap_gb:.0f} — "
                                 "PE blocked. Price above institutional anchor."
                             )
                             time.sleep(30)

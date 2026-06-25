@@ -57,10 +57,11 @@ def is_trading_day(date=None):
 
 def get_next_weekly_expiry(symbol_name=None):
     """
-    Returns the next weekly expiry for the active or given symbol as 'DDMMMYYYY' (e.g. '06JAN2026').
+    Returns the next weekly (or active front-month) expiry for the active or given symbol as 'DDMMMYYYY' (e.g. '06JAN2026').
     
-    Holiday handling: if target weekday is an NSE holiday OR a weekend, walk
-    backwards one day at a time until a valid trading day is found.
+    If the symbol is a COMMODITY (or monthly) asset, it queries the Scrip Master to find
+    the actual nearest unexpired option expiry date.
+    Otherwise (for index options), it rolls to the next weekly target day.
     """
     from bot.config.settings import Config
     from bot.config.instruments import get_instrument
@@ -69,6 +70,40 @@ def get_next_weekly_expiry(symbol_name=None):
         symbol_name = Config.ACTIVE_SYMBOL
 
     instr = get_instrument(symbol_name)
+    
+    # COMMODITY / MONTHLY assets logic: find nearest option expiry in scrip master
+    if instr.asset_type == "COMMODITY" or instr.expiry_type == "MONTHLY":
+        try:
+            from bot.utils.token_lookup import TokenLookup
+            tl = TokenLookup()
+            tl.load_scrip_master()
+            if tl.df is not None and not tl.df.empty:
+                # Find all unexpired option contracts for this name
+                options_df = tl.df[
+                    (tl.df['name'] == symbol_name.upper()) &
+                    (tl.df['instrumenttype'].isin(['CE', 'PE', 'OPTFUT', 'OPTIDX', 'OPTSTK']))
+                ].copy()
+                
+                if not options_df.empty:
+                    today = datetime.date.today()
+                    def parse_exp(exp_str):
+                        try:
+                            return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
+                        except:
+                            return None
+                    options_df['expiry_dt'] = options_df['expiry'].apply(parse_exp)
+                    # Filter for >= today
+                    options_df = options_df[options_df['expiry_dt'] >= today]
+                    if not options_df.empty:
+                        sorted_expiries = sorted(options_df['expiry_dt'].dropna().unique())
+                        if sorted_expiries:
+                            next_expiry = sorted_expiries[0]
+                            return next_expiry.strftime("%d%b%Y").upper()
+        except Exception as e:
+            # Fallback to standard logic if scrip master lookup fails
+            pass
+
+    # Standard Index Option Weekly logic
     target_weekday = instr.expiry_day  # 1=Tue, 2=Wed, etc.
 
     today = datetime.date.today()

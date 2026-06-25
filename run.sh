@@ -41,7 +41,8 @@ BACKEND_PID=$!
 # 2. Startup Sequencing Guard: wait for backend's first market_analysis.json
 # The bot must not start before the backend has written its first intelligence
 # snapshot, otherwise it falls back to UNKNOWN regime on first analysis pulse.
-ANALYSIS_FILE="data/market_analysis.json"
+SYM_LOWER=$(echo "${ACTIVE_SYMBOL:-NIFTY}" | tr '[:upper:]' '[:lower:]')
+ANALYSIS_FILE="data/market_analysis_${SYM_LOWER}.json"
 MAX_WAIT=60
 WAITED=0
 

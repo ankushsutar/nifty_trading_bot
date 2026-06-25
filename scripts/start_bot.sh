@@ -11,7 +11,8 @@ echo -e "${GREEN}>>> Mode: Lifecycle Manager (Scheduler)${NC}"
 # --- Startup Sequencing Guard ---
 # Wait for the backend to write its first market_analysis.json so the bot
 # has fresh regime/OI data from the very first analysis pulse (avoids UNKNOWN).
-ANALYSIS_FILE="data/market_analysis.json"
+SYM_LOWER=$(echo "${ACTIVE_SYMBOL:-NIFTY}" | tr '[:upper:]' '[:lower:]')
+ANALYSIS_FILE="data/market_analysis_${SYM_LOWER}.json"
 MAX_WAIT=30
 WAITED=0
 

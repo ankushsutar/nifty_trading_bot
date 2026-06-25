@@ -139,6 +139,64 @@ class TokenLookup:
         """Builds and optimises the DataFrame from raw JSON data."""
         self.df = pd.DataFrame(data)
         self.df['strike'] = pd.to_numeric(self.df['strike'], errors='coerce')
+        try:
+            self.resolve_front_month_commodities()
+        except Exception as e:
+            logger.warning(f">>> [Data] Failed to auto-resolve front-month commodities: {e}")
+
+    def resolve_front_month_commodities(self):
+        """
+        Scan the scrip master for active front-month future contracts
+        for CRUDEOIL and GOLD, and dynamically update the INSTRUMENTS registry.
+        This removes the need to manually update tokens monthly in instruments.py.
+        """
+        from bot.config.instruments import INSTRUMENTS
+        import datetime
+        
+        today = datetime.date.today()
+        
+        def parse_expiry(exp_str):
+            try:
+                # Expecting 'DDMMMYYYY' format (e.g. '20JUL2026')
+                return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
+            except:
+                return datetime.date.max
+
+        for symbol_name in ["CRUDEOIL", "GOLD"]:
+            if symbol_name in INSTRUMENTS:
+                instr = INSTRUMENTS[symbol_name]
+                inst_type = "FUT" if Config.BROKER == "ZERODHA" else "FUTCOM"
+                
+                mask = (
+                    (self.df['name'] == symbol_name) &
+                    (self.df['exch_seg'] == instr.exchange.upper()) &
+                    (self.df['instrumenttype'] == inst_type)
+                )
+                df_futures = self.df[mask].copy()
+                if df_futures.empty:
+                    continue
+                
+                df_futures['expiry_dt'] = df_futures['expiry'].apply(parse_expiry)
+                # Filter out expired contracts
+                df_futures = df_futures[df_futures['expiry_dt'] >= today]
+                if df_futures.empty:
+                    continue
+                
+                # Sort by expiry date ascending
+                df_futures = df_futures.sort_values('expiry_dt')
+                front_month = df_futures.iloc[0]
+                
+                # Update instrument fields dynamically!
+                new_token = front_month['token']
+                new_expiry_day = front_month['expiry_dt'].day
+                
+                if instr.analysis_token != new_token or instr.expiry_day_of_month != new_expiry_day:
+                    logger.info(
+                        f">>> [Data] Auto-resolved front-month future for {symbol_name}: "
+                        f"{front_month['symbol']} | Token: {new_token} | Expiry: {front_month['expiry']} 🔄"
+                    )
+                    instr.analysis_token = new_token
+                    instr.expiry_day_of_month = new_expiry_day
 
     def get_instrument_by_token(self, token):
         """Returns (tradingsymbol, exch_seg) for a given token."""
@@ -171,16 +229,31 @@ class TokenLookup:
         # Input strike is in rupees — convert to paise for comparison
         strike_paise = float(strike) * 100.0
 
+        query_inst_type = instrument_type.upper()
+        if Config.BROKER == "ZERODHA":
+            if query_inst_type == "FUTCOM" or query_inst_type == "FUTIDX":
+                query_inst_type = "FUT"
+
+        query_exchange = exchange.upper()
+        if Config.BROKER == "ZERODHA" and query_exchange == "MCX":
+            if "OPT" in instrument_type.upper() or query_inst_type in ["CE", "PE"]:
+                query_exchange = "NCO"
+
         mask = (
             (self.df['name'] == symbol_name.upper()) &
-            (self.df['instrumenttype'] == instrument_type.upper()) &
-            (self.df['exch_seg'] == exchange.upper())
+            (self.df['exch_seg'] == query_exchange)
         )
         
         # Only check strike and option_type if it's an Option
-        if "OPT" in instrument_type.upper():
+        if "OPT" in instrument_type.upper() or query_inst_type in ["CE", "PE"]:
+            if Config.BROKER == "ZERODHA":
+                mask &= (self.df['instrumenttype'].isin([option_type.upper(), 'OPTIDX', 'OPTSTK', 'OPTFUT', 'CE', 'PE']))
+            else:
+                mask &= (self.df['instrumenttype'] == query_inst_type)
             mask &= (self.df['strike'] == strike_paise)
             mask &= (self.df['symbol'].str.endswith(option_type))
+        else:
+            mask &= (self.df['instrumenttype'] == query_inst_type)
 
         if expiry_date:
             mask &= (self.df['expiry'] == expiry_date)
@@ -207,14 +280,23 @@ class TokenLookup:
         min_strike = (atm_strike - range_points) * 100.0
         max_strike = (atm_strike + range_points) * 100.0
 
+        query_exchange = exchange.upper()
+        if Config.BROKER == "ZERODHA" and query_exchange == "MCX":
+            if "OPT" in instrument_type.upper() or instrument_type.upper() in ["CE", "PE"]:
+                query_exchange = "NCO"
+
         mask = (
             (self.df['name'] == symbol_name.upper()) &
-            (self.df['instrumenttype'] == instrument_type.upper()) &
-            (self.df['exch_seg'] == exchange.upper()) &
+            (self.df['exch_seg'] == query_exchange) &
             (self.df['expiry'] == expiry_date) &
             (self.df['strike'] >= min_strike) &
             (self.df['strike'] <= max_strike)
         )
+
+        if Config.BROKER == "ZERODHA" and ("OPT" in instrument_type.upper() or instrument_type.upper() in ["CE", "PE"]):
+            mask &= (self.df['instrumenttype'].isin(['OPTIDX', 'OPTSTK', 'OPTFUT', 'CE', 'PE']))
+        else:
+            mask &= (self.df['instrumenttype'] == instrument_type.upper())
 
         subset = self.df[mask].copy()
 

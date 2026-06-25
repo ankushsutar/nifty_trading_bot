@@ -43,7 +43,17 @@ class LifecycleManager:
         """
         Runs main.py with the specified strategy or auto mode.
         """
-        cmd = [sys.executable, "-u", "-m", "bot.main"]
+        python_exe = sys.executable
+        for folder in ["venv", ".venv"]:
+            for bin_name in ["python3", "python"]:
+                p = os.path.join(os.getcwd(), folder, "bin", bin_name)
+                if os.path.exists(p):
+                    python_exe = p
+                    break
+            if python_exe != sys.executable:
+                break
+
+        cmd = [python_exe, "-u", "-m", "bot.main"]
         
         if auto:
             cmd.append("--auto")
@@ -135,12 +145,29 @@ class LifecycleManager:
             self.thread.join(timeout=2)
 
     def _run_loop(self):
-        self.log("Lifecycle Loop Started 🚀")
+        from bot.config.instruments import get_instrument
+        from bot.config.settings import Config
+        
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        start_h, start_m = map(int, instr.market_start.split(":"))
+        end_h, end_m = map(int, instr.market_end.split(":"))
+
+        # We start the strategy 1 minute after market_start
+        start_dt = datetime.datetime.combine(datetime.date.today(), datetime.time(start_h, start_m))
+        strategy_start_time = (start_dt + datetime.timedelta(minutes=1)).time()
+
+        # We stop the strategy 15 minutes before market_end
+        end_dt = datetime.datetime.combine(datetime.date.today(), datetime.time(end_h, end_m))
+        strategy_stop_time = (end_dt - datetime.timedelta(minutes=15)).time()
+        
+        pre_market_time = datetime.time(start_h, start_m)
+
+        self.log(f"Lifecycle Loop Started for {instr.name} 🚀")
         print("\n-------------------------------------------")
-        print("   NIFTY BOT LIFECYCLE MANAGER 🤖⏰")
+        print(f"   {instr.name} BOT LIFECYCLE MANAGER 🤖⏰")
         print("-------------------------------------------")
-        print("1. 09:16 AM -> Switch to Smart Auto Mode")
-        print("2. 15:30 PM -> Auto Shutdown")
+        print(f"1. {strategy_start_time.strftime('%I:%M %p')} -> Switch to Smart Auto Mode")
+        print(f"2. {strategy_stop_time.strftime('%I:%M %p')} -> Auto Shutdown")
         print("-------------------------------------------\n")
 
         try:
@@ -191,18 +218,18 @@ class LifecycleManager:
                 # 2. SCHEDULE LOGIC
                 
                 # A. PRE-MARKET
-                if now < datetime.time(9, 15):
+                if now < pre_market_time:
                     # Heartbeat?
                     pass
 
-                # B. MAIN SESSION (09:16 - 15:15)
-                elif datetime.time(9, 16) <= now < datetime.time(15, 15):
+                # B. MAIN SESSION
+                elif strategy_start_time <= now < strategy_stop_time:
                     if not self.current_process:
                         if self.strategy_type == "AUTO":
-                            self.log("⏰ Time 09:16+ Detected. Activating Main Auto-Strategy Cycle...")
+                            self.log(f"⏰ Time {strategy_start_time.strftime('%H:%M')} Detected. Activating Main Auto-Strategy Cycle...")
                             self.current_process = self.run_strategy(auto=True)
                         else:
-                            self.log(f"⏰ Time 09:16+ Detected. Activating Custom Strategy {self.strategy_type}...")
+                            self.log(f"⏰ Time {strategy_start_time.strftime('%H:%M')} Detected. Activating Custom Strategy {self.strategy_type}...")
                             self.current_process = self.run_strategy(strategy_name=self.strategy_type)
                         time.sleep(60)
 
@@ -211,10 +238,10 @@ class LifecycleManager:
                         self.log("⏰ Starting Selling Engine in background...")
                         self.selling_process = self.run_strategy(strategy_name="SELLING")
                 
-                # D. MARKET CLOSE (> 15:15)
-                elif now >= datetime.time(15, 15):
+                # D. MARKET CLOSE
+                elif now >= strategy_stop_time:
                     if self.current_process:
-                        self.log("⏰ Market End (15:15). Sending kill signal...")
+                        self.log(f"⏰ Market End ({strategy_stop_time.strftime('%H:%M')}). Sending kill signal...")
                         self.current_process.terminate()
                         self.current_process.wait()
                         self.current_process = None

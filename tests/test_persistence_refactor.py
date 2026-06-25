@@ -159,5 +159,42 @@ class TestPersistenceFlow(unittest.TestCase):
         fresh_updated = self.trade_repo.collection.find_one({"id": 2})
         self.assertEqual(fresh_updated["status"], "OPEN")
 
+    def test_get_open_trades_symbol_filtering(self):
+        """Verify that get_open_trades correctly filters by symbol/index."""
+        from bot.core.trade_repo import InMemoryCollection
+        self.trade_repo.collection = InMemoryCollection()
+        
+        # Insert a Nifty trade
+        nifty_trade = {
+            "id": 1,
+            "status": "OPEN",
+            "symbol": "NIFTY26JUN22000CE",
+            "strategy": "MOMENTUM"
+        }
+        self.trade_repo.collection.insert_one(nifty_trade)
+        
+        # Insert a FinNifty trade
+        finnifty_trade = {
+            "id": 2,
+            "status": "OPEN",
+            "symbol": "FINNIFTY26JUN23000PE",
+            "strategy": "MOMENTUM"
+        }
+        self.trade_repo.collection.insert_one(finnifty_trade)
+        
+        # 1. Fetch with NIFTY filter
+        nifty_results = self.trade_repo.get_open_trades(symbol="NIFTY")
+        self.assertEqual(len(nifty_results), 1)
+        self.assertEqual(nifty_results[0]["symbol"], "NIFTY26JUN22000CE")
+        
+        # 2. Fetch with FINNIFTY filter
+        finnifty_results = self.trade_repo.get_open_trades(symbol="FINNIFTY")
+        self.assertEqual(len(finnifty_results), 1)
+        self.assertEqual(finnifty_results[0]["symbol"], "FINNIFTY26JUN23000PE")
+        
+        # 3. Fetch with no symbol filter
+        all_results = self.trade_repo.get_open_trades()
+        self.assertEqual(len(all_results), 2)
+
 if __name__ == "__main__":
     unittest.main()

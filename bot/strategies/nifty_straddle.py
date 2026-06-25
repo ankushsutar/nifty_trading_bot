@@ -371,7 +371,7 @@ class NiftyStrategy:
         
     def resume(self):
         mode = "PAPER" if self.dry_run else "LIVE"
-        open_trades = trade_repo.get_open_trades(mode=mode, strategy="STRADDLE")
+        open_trades = trade_repo.get_open_trades(mode=mode, strategy="STRADDLE", symbol=Config.ACTIVE_SYMBOL)
         if not open_trades: return False
         
         logger.info(f">>> [Resumption] Found {len(open_trades)} Open Straddle Legs.")

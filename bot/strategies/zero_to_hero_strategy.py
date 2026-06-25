@@ -45,7 +45,7 @@ class ZeroToHeroStrategy:
         """Recover from server crash"""
         mode = "PAPER" if self.dry_run else "LIVE"
         try:
-            open_trades = trade_repo.get_open_trades(mode=mode, strategy=self.STRATEGY_NAME)
+            open_trades = trade_repo.get_open_trades(mode=mode, strategy=self.STRATEGY_NAME, symbol=Config.ACTIVE_SYMBOL)
             if open_trades:
                 t = open_trades[0]
                 self.active_position = {

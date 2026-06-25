@@ -20,11 +20,19 @@ class SafetyGatekeeper:
 
     def is_market_open(self):
         """
-        Hard rule: 09:15 to 15:29 IST
+        Dynamic rule based on instrument's market start/end.
         """
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        start_h, start_m = map(int, instr.market_start.split(":"))
+        end_h, end_m = map(int, instr.market_end.split(":"))
+        
         now = datetime.datetime.now().time()
-        start = datetime.time(9, 15)
-        end = datetime.time(15, 29)
+        start = datetime.time(start_h, start_m)
+        end_dt = datetime.datetime.combine(datetime.date.today(), datetime.time(end_h, end_m))
+        end = (end_dt - datetime.timedelta(minutes=1)).time()
         
         if start <= now <= end:
             return True
@@ -317,7 +325,7 @@ class SafetyGatekeeper:
             try:
                 from bot.core.trade_repo import trade_repo
                 mode = "PAPER" if self.dry_run else "LIVE"
-                open_trades = trade_repo.get_open_trades(mode=mode)
+                open_trades = trade_repo.get_open_trades(mode=mode, symbol=Config.ACTIVE_SYMBOL)
                 if open_trades:
                     # We have an open trade, don't compute safety until its real value is supplied.
                     return True
@@ -506,11 +514,16 @@ class SafetyGatekeeper:
             return True
 
     def is_blackout_period(self):
-
         """
         Rule: No new trades between 11:30 AM - 01:00 PM (Configurable).
         """
         from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
+        
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        if instr.asset_type == "COMMODITY":
+            return False
+
         if Config.TRADE_FULL_DAY:
             return False
 
@@ -535,8 +548,8 @@ class SafetyGatekeeper:
 
         vix = 0.0
         try:
-            # 2. Primary: read from shared intelligence file (no API call)
-            state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+            from bot.config.settings import Config
+            state_file = os.path.join(os.getcwd(), "data", f"market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json")
             if os.path.exists(state_file):
                 age = time.time() - os.path.getmtime(state_file)
                 if age < 600:  # fresh enough (< 10 min)

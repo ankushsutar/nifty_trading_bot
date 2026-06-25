@@ -39,7 +39,8 @@ start "Nifty Bot Backend" cmd /k "chcp 65001 >nul && set "PYTHONUTF8=1" && call 
 
 :: 2. Startup Sequencing Guard: Wait for Backend's first intelligence snapshot
 echo.
-set ANALYSIS_FILE=data\market_analysis.json
+for /f "usebackq delims=" %%i in (`powershell -NoProfile -Command "if ($env:ACTIVE_SYMBOL) { $env:ACTIVE_SYMBOL.ToLower() } else { 'nifty' }"`) do set "SYM_LOWER=%%i"
+set ANALYSIS_FILE=data\market_analysis_!SYM_LOWER!.json
 set MAX_WAIT=60
 set WAITED=0
 echo [2/4] Waiting for backend intelligence to be ready (up to %MAX_WAIT%s)...

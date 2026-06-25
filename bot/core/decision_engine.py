@@ -365,14 +365,28 @@ class DecisionEngine:
         # ── BOLLINGER BAND WIDTH (BBW) SQUEEZE GATE ──────────────────────────
         # Allow entry into trending strategies (GAMMA_BLAST and MOMENTUM) only if
         # the current BBW is expanding from a coiling squeeze.
+        # BYPASS: Commodities (e.g. CRUDEOIL, GOLD) trade 14+ hours/day. Their
+        # intraday BBW statistics are less meaningful, and ADX ≥ 40 (parabolic
+        # threshold) already validates trend strength independently. Applying both
+        # would be redundant double-filtering for commodity instruments.
         if selected_strategy in ["MOMENTUM", "GAMMA_BLAST"]:
-            is_squeeze_expansion = regime_data.get('is_squeeze_expansion', True)
-            if not is_squeeze_expansion:
-                logger.warning(
-                    f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
-                    f"Market is not expanding from a coiling BBW squeeze (BBW={regime_data.get('bbw', 0.0):.4f})."
+            from bot.config.instruments import get_instrument
+            _instr = get_instrument(Config.ACTIVE_SYMBOL)
+            _is_commodity = _instr.asset_type == "COMMODITY"
+            
+            if _is_commodity:
+                logger.info(
+                    f">>> [Brain] ✅ BBW Gate bypassed for {Config.ACTIVE_SYMBOL} (COMMODITY). "
+                    f"ADX={regime_data.get('adx', 0):.1f} is the primary trend gate."
                 )
-                return None, 1.0
+            else:
+                is_squeeze_expansion = regime_data.get('is_squeeze_expansion', True)
+                if not is_squeeze_expansion:
+                    logger.warning(
+                        f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
+                        f"Market is not expanding from a coiling BBW squeeze (BBW={regime_data.get('bbw', 0.0):.4f})."
+                    )
+                    return None, 1.0
 
         # BUDGET CHECK — minimum viable margin for 1 lot (tier-aware)
         required = tier.min_capital_threshold * 0.5

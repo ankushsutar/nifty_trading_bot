@@ -44,7 +44,8 @@ class MarketService:
             # --- STARTUP WARM-UP: Load Last Known Intelligence ---
             # This ensures /api/market-data is populated immediately for the UI
             try:
-                state_file = os.path.join(os.getcwd(), "data", "market_analysis.json")
+                from bot.config.settings import Config
+                state_file = os.path.join(os.getcwd(), "data", f"market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json")
                 if os.path.exists(state_file):
                     with open(state_file, "r") as f:
                         shared_state = json.load(f)
@@ -52,7 +53,7 @@ class MarketService:
                         cls._instance.oi_data = shared_state.get('oi_data', {})
                         cls._instance.levels_data = shared_state.get('levels', {})
                         cls._instance.panic_data = shared_state.get('panic_data', {"panic_score": 50, "confidence": "NEUTRAL"})
-                        logger.info("MarketService: Startup Intelligence Loaded from disk 💾")
+                        logger.info(f"MarketService: Startup Intelligence Loaded for {Config.ACTIVE_SYMBOL} from disk 💾")
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
 
@@ -118,58 +119,55 @@ class MarketService:
 
     def get_market_data(self):
         """
-        Fetches Nifty 50 Spot and India VIX.
+        Fetches Spot and VIX.
         Returns dict: { nifty: float, vix: float, pnl: float }
         """
+        from bot.config.settings import Config
+        state_file = f"data/market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json"
+
         # Cache Check (Quick Read)
-        # Increased cache to 20s to further reduce load (Combined with DataFetcher 15s cache)
         if time.time() - self.last_fetch_time < 20 and self.cached_data:
             return self.cached_data
             
         with self._lock:
-            # Double-Checked Locking
             if time.time() - self.last_fetch_time < 20 and self.cached_data:
                 return self.cached_data
 
             # 1. Child Mode: Try loading shared intelligence from master first
             is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
             if not is_master:
-                # --- FIX: Startup Sequencing Guard ---
-                # On first call, poll for the shared file for up to 15s so the
-                # backend master process has time to write its first analysis.
-                # This prevents child processes from firing REST calls at startup
-                # simultaneously with the backend.
-                state_file = "data/market_analysis.json"
-                if not os.path.exists(state_file) or time.time() - os.path.getmtime(state_file) > 300:
-                    # File missing or very stale — wait for backend to warm up
-                    startup_wait_start = time.time()
-                    while time.time() - startup_wait_start < 15:
-                        if os.path.exists(state_file) and time.time() - os.path.getmtime(state_file) < 300:
-                            break
-                        time.sleep(1)
+                # If file doesn't exist or is stale (> 300s), calculate it on-demand!
+                needs_refresh = True
+                if os.path.exists(state_file):
+                    file_age = time.time() - os.path.getmtime(state_file)
+                    if file_age < 310:
+                        needs_refresh = False
+                        
+                if needs_refresh:
+                    logger.info(f"MarketService: State file {state_file} is missing or stale. Calculating on-demand...")
+                    try:
+                        self.refresh_intelligence()
+                    except Exception as e:
+                        logger.error(f"On-demand refresh failed: {e}")
 
                 try:
                     if os.path.exists(state_file):
-                        # Only read if file is fresh (< 3 mins)
-                        if time.time() - os.path.getmtime(state_file) < 310:  # FIX: match 300s backend refresh cadence (+10s buffer)
-                            with open(state_file, "r") as f:
-                                shared_state = json.load(f)
-                                self.analysis_data = shared_state.get('analysis', {})
-                                # Read oi_data dict (new format) or fall back to legacy flat keys
-                                if 'oi_data' in shared_state:
-                                    self.oi_data = shared_state['oi_data']
-                                if 'panic_data' in shared_state:
-                                    self.panic_data = shared_state['panic_data']
-                                if 'levels' in shared_state:
-                                    self.levels_data = shared_state['levels']
-                                else:
-                                    # Legacy format compatibility
-                                    self.oi_data = {
-                                        "bias": shared_state.get("sentiment", "NEUTRAL"),
-                                        "pcr": shared_state.get("pcr", 1.0),
-                                        "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
-                                    }
-                                logger.info("MarketService: Consumed Shared Intelligence 📡")
+                        with open(state_file, "r") as f:
+                            shared_state = json.load(f)
+                            self.analysis_data = shared_state.get('analysis', {})
+                            if 'oi_data' in shared_state:
+                                self.oi_data = shared_state['oi_data']
+                            if 'panic_data' in shared_state:
+                                self.panic_data = shared_state['panic_data']
+                            if 'levels' in shared_state:
+                                self.levels_data = shared_state['levels']
+                            else:
+                                self.oi_data = {
+                                    "bias": shared_state.get("sentiment", "NEUTRAL"),
+                                    "pcr": shared_state.get("pcr", 1.0),
+                                    "delta_ratio": shared_state.get("oi_delta_ratio", 1.0),
+                                }
+                            logger.info(f"MarketService: Consumed Shared Intelligence for {Config.ACTIVE_SYMBOL} 📡")
                 except Exception as e:
                     logger.warning(f"Intelligence Sharing Error: {e}")
 
@@ -186,7 +184,6 @@ class MarketService:
             }
 
         try:
-            from bot.config.settings import Config
             from bot.config.instruments import get_instrument
             instr = get_instrument(Config.ACTIVE_SYMBOL)
             nifty_ltp = self.get_ltp(instr.exchange, instr.spot_symbol, instr.analysis_token)
@@ -211,7 +208,6 @@ class MarketService:
             self.last_fetch_time = time.time()
             
             return data
-
 
         except Exception as e:
             logger.error(f"Market Data Fetch Error: {e}")
@@ -256,12 +252,131 @@ class MarketService:
                 time.sleep(60)
 
 
-    def _analysis_loop(self):
-        """Background loop to refresh Regime and OI analysis every 5 minutes."""
-        import random
-        # 1. Startup De-sync Jitter: prevent master/child overlapping on startup
-        time.sleep(random.uniform(5, 15)) 
+    def refresh_intelligence(self):
+        """
+        Runs the full technical, levels, OI, and panic analysis,
+        and saves it to the symbol-specific state file.
+        """
+        from bot.config.settings import Config
+        from bot.config.instruments import get_instrument
         
+        self._ensure_connection()
+        if not self.api:
+            logger.warning("MarketService: No API connection. Cannot refresh intelligence.")
+            return
+
+        if not self.data_fetcher: 
+            self.data_fetcher = DataFetcher(self.api)
+        if not self.oi_engine: 
+            self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
+        if not hasattr(self, 'alpha_engine') or self.alpha_engine is None:
+            self.alpha_engine = AlphaEngine(self.api, self.token_lookup)
+            
+        levels_provider.data_fetcher.api = self.api
+        
+        self.levels_data = levels_provider.get_levels() or {}
+        
+        instr = get_instrument(Config.ACTIVE_SYMBOL)
+        analysis_tok = instr.analysis_token
+        df = self.data_fetcher.fetch_latest_candles(analysis_tok)
+        
+        if df is None:
+            logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
+            cache_key = f"{analysis_tok}_FIVE_MINUTE_1"
+            df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
+            if df is not None:
+                df = self.data_fetcher._merge_live_candle(df, analysis_tok, "FIVE_MINUTE")
+                
+        if df is not None:
+            self.analysis_data = self.regime_engine.classify(df)
+            
+            try:
+                now_dt = datetime.datetime.now()
+                if 'timestamp' in df.columns:
+                    dates = pd.to_datetime(df['timestamp']).dt.date
+                else:
+                    dates = pd.Series(df.index).dt.date if not isinstance(df.index, pd.DatetimeIndex) else df.index.date
+                
+                mask = (dates == now_dt.date())
+                today_df = df[mask] if not df.empty else None
+                
+                if today_df is not None and not today_df.empty:
+                    if len(today_df) > 1:
+                        ref_df = today_df.iloc[:-1]
+                    else:
+                        ref_df = today_df
+                    
+                    self.analysis_data['hod'] = float(ref_df['high'].max())
+                    self.analysis_data['lod'] = float(ref_df['low'].min())
+                else:
+                    self.analysis_data['hod'] = 0.0
+                    self.analysis_data['lod'] = 0.0
+            except Exception as re_err:
+                logger.warning(f"MarketService: Failed to calculate HOD/LOD reference: {re_err}")
+                self.analysis_data['hod'] = 0.0
+                self.analysis_data['lod'] = 0.0
+                
+            ltp = df.iloc[-1]['close']
+            base_atm = int(round(ltp / instr.strike_step) * instr.strike_step)
+            from bot.utils.expiry_calculator import get_next_weekly_expiry
+            expiry = get_next_weekly_expiry()
+            
+            vix_ltp = 0.0
+            try:
+                vix_ltp = self.get_ltp("NSE", "INDIA VIX", "99926017")
+            except: pass
+            
+            if ltp > 0:
+                analysis = self.oi_engine.get_oi_velocity(expiry, ltp)
+                self.oi_data = analysis
+                
+                panic_analysis = {}
+                try:
+                    panic_analysis = self.alpha_engine.analyze_panic(expiry, base_atm, current_oi=analysis)
+                except Exception as alpha_err:
+                    logger.warning(f"Centralized Panic Analysis Failed: {alpha_err}")
+                    
+                state = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "nifty_ltp": ltp,
+                    "vix": vix_ltp,
+                    "analysis": self.analysis_data,
+                    "oi_data": {
+                        "bias": analysis.get("bias", "NEUTRAL"),
+                        "pcr": analysis.get("pcr", 1.0),
+                        "pcr_velocity": analysis.get("pcr_velocity", 0.0),
+                        "delta_ratio": analysis.get("delta_ratio", 1.0),
+                        "total_ce_oi": analysis.get("total_ce_oi", 0),
+                        "total_pe_oi": analysis.get("total_pe_oi", 0),
+                    },
+                    "panic_data": panic_analysis,
+                    "levels": self.levels_data,
+                    "sentiment": analysis.get("bias", "NEUTRAL"),
+                    "pcr": analysis.get("pcr", 1.0),
+                    "oi_delta_ratio": analysis.get("delta_ratio", 1.0)
+                }
+                if not os.path.exists("data"): os.makedirs("data")
+                
+                state_file = f"data/market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json"
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile('w', dir="data", delete=False) as tf:
+                        json.dump(state, tf, default=str)
+                        temp_path = tf.name
+                    os.replace(temp_path, state_file)
+                except Exception as iox:
+                    logger.error(f"Atomic File Refresh Failed: {iox}")
+                    if temp_path and os.path.exists(temp_path):
+                        try: os.remove(temp_path)
+                        except: pass
+                        
+                logger.info(f"MarketService: Dynamic Tactical Intelligence Refreshed for {Config.ACTIVE_SYMBOL} 🛰️")
+
+    def _analysis_loop(self):
+        """
+        Background loop (runs in MASTER process only).
+        Calculates Trend, ADX, RSI, OI and panic levels, and saves to state file.
+        """
         while True:
             try:
                 # 2. Strict Master Check: only designated BACKEND may fetch
@@ -269,6 +384,7 @@ class MarketService:
                 if not is_master:
                     logger.warning("MarketService Analysis Loop: [CHILD] Detected. Halting child loop.")
                     break
+                
                 self._ensure_connection()
                 if self.api:
                     # Background Trade Reconciliation (syncs DB trades with broker tradeBook)
@@ -278,15 +394,10 @@ class MarketService:
                     except Exception as rec_err:
                         logger.error(f"MarketService Background Reconciliation Error: {rec_err}")
 
-                    if not self.data_fetcher: self.data_fetcher = DataFetcher(self.api)
-                    if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
-                    if not hasattr(self, 'alpha_engine') or self.alpha_engine is None:
-                        self.alpha_engine = AlphaEngine(self.api, self.token_lookup)
-                    levels_provider.data_fetcher.api = self.api # Keep sync
-
                     # --- OPTIMIZATION: Check if another process already refreshed intelligence recently ---
                     # Prevents double-fetching if the server reloaded or if multiple instances are running.
-                    state_file = "data/market_analysis.json"
+                    from bot.config.settings import Config
+                    state_file = f"data/market_analysis_{Config.ACTIVE_SYMBOL.lower()}.json"
                     if os.path.exists(state_file):
                         file_age = time.time() - os.path.getmtime(state_file)
                         if file_age < 120: # If less than 2 mins old, skip this cycle
@@ -294,131 +405,7 @@ class MarketService:
                             time.sleep(120) 
                             continue
 
-                    # 0. Levels Analysis (S&R)
-                    self.levels_data = levels_provider.get_levels() or {}
-                    
-                    from bot.config.settings import Config
-                    from bot.config.instruments import get_instrument
-                    instr = get_instrument(Config.ACTIVE_SYMBOL)
-                    analysis_tok = instr.analysis_token
-                    df = self.data_fetcher.fetch_latest_candles(analysis_tok) # Active symbol
-                    
-                    if df is None:
-                        # EMERGENCY FALLBACK: If API is blocked (AB1004), use ANY cache for up to 4h
-                        logger.warning("MarketService: API BLOCKED. Falling back to 4h stale cache for Regime Analysis... 🏺")
-                        cache_key = f"{analysis_tok}_FIVE_MINUTE_1"
-                        df = self.data_fetcher._read_disk_cache(cache_key, force_fresh=False, max_age=14400)
-                        if df is not None:
-                            df = self.data_fetcher._merge_live_candle(df, analysis_tok, "FIVE_MINUTE")
-                    
-                    if df is not None:
-                        self.analysis_data = self.regime_engine.classify(df)
-                        
-                        # 1b. Intraday High/Low (HOD/LOD) Extraction for Sniper Logic
-                        try:
-                            now_dt = datetime.datetime.now()
-                            
-                            # Select only candles from today
-                            # Armored Fix: Check for 'timestamp' column before defaulting to index.date
-                            # preventing 'RangeIndex has no attribute date' failures.
-                            if 'timestamp' in df.columns:
-                                dates = pd.to_datetime(df['timestamp']).dt.date
-                            else:
-                                # Fallback assuming index might be DatetimeIndex
-                                dates = pd.Series(df.index).dt.date if not isinstance(df.index, pd.DatetimeIndex) else df.index.date
-                            
-                            mask = (dates == now_dt.date())
-                            today_df = df[mask] if not df.empty else None
-                            
-                            if today_df is not None and not today_df.empty:
-                                # Exclude the current active/most-recent candle to get the 
-                                # reference CEILING/FLOOR we are testing a breakout against.
-                                if len(today_df) > 1:
-                                    ref_df = today_df.iloc[:-1]
-                                else:
-                                    ref_df = today_df
-                                
-                                self.analysis_data['hod'] = float(ref_df['high'].max())
-                                self.analysis_data['lod'] = float(ref_df['low'].min())
-                                logger.debug(f"MarketService: Updated Reference Range [LOD: {self.analysis_data['lod']:.1f} | HOD: {self.analysis_data['hod']:.1f}]")
-                            else:
-                                self.analysis_data['hod'] = 0.0
-                                self.analysis_data['lod'] = 0.0
-                        except Exception as re_err:
-                            logger.warning(f"MarketService: Failed to calculate HOD/LOD reference: {re_err}")
-                            self.analysis_data['hod'] = 0.0
-                            self.analysis_data['lod'] = 0.0
-                        
-                        # 2. OI & Panic Sentiment Analysis
-                        ltp = df.iloc[-1]['close']
-                        from bot.config.settings import Config
-                        from bot.config.instruments import get_instrument
-                        instr = get_instrument(Config.ACTIVE_SYMBOL)
-                        base_atm = int(round(ltp / instr.strike_step) * instr.strike_step)
-                        from bot.utils.expiry_calculator import get_next_weekly_expiry
-                        expiry = get_next_weekly_expiry()
-                        
-                        # Fetch VIX for shared state
-                        vix_ltp = 0.0
-                        try:
-                            vix_ltp = self.get_ltp("NSE", "INDIA VIX", "99926017")
-                        except: pass
-
-                        if ltp > 0:
-                            # Use get_oi_velocity to capture centralized history / ROC
-                            analysis = self.oi_engine.get_oi_velocity(expiry, ltp)
-                            self.oi_data = analysis
-                            
-                            # Generate Institutional Panic Metric
-                            panic_analysis = {}
-                            try:
-                                panic_analysis = self.alpha_engine.analyze_panic(expiry, base_atm, current_oi=analysis)
-                            except Exception as alpha_err:
-                                logger.warning(f"Centralized Panic Analysis Failed: {alpha_err}")
-
-                            # 3. Save Shared Intelligence for Child Processes
-                            state = {
-                                "timestamp": datetime.datetime.now().isoformat(),
-                                "nifty_ltp": ltp,
-                                "vix": vix_ltp,
-                                "analysis": self.analysis_data,
-                                "oi_data": {
-                                    "bias": analysis.get("bias", "NEUTRAL"),
-                                    "pcr": analysis.get("pcr", 1.0),
-                                    "pcr_velocity": analysis.get("pcr_velocity", 0.0),
-                                    "delta_ratio": analysis.get("delta_ratio", 1.0),
-                                    "total_ce_oi": analysis.get("total_ce_oi", 0),
-                                    "total_pe_oi": analysis.get("total_pe_oi", 0),
-                                },
-                                "panic_data": panic_analysis,
-                                "levels": self.levels_data,
-                                # Keep legacy flat keys for compatibility
-                                "sentiment": analysis.get("bias", "NEUTRAL"),
-                                "pcr": analysis.get("pcr", 1.0),
-                                "oi_delta_ratio": analysis.get("delta_ratio", 1.0)
-                            }
-                            if not os.path.exists("data"): os.makedirs("data")
-                            
-                            # --- ATOMIC FILE SWAP (Fixes Race Truncation Condition) ---
-                            target_path = "data/market_analysis.json"
-                            temp_path = None
-                            try:
-                                with tempfile.NamedTemporaryFile('w', dir="data", delete=False) as tf:
-                                    json.dump(state, tf, default=str)
-                                    temp_path = tf.name
-                                os.replace(temp_path, target_path) # Atomic swap at OS level
-                            except Exception as iox:
-                                logger.error(f"Atomic File Refresh Failed: {iox}")
-                                if temp_path and os.path.exists(temp_path):
-                                    try: os.remove(temp_path)
-                                    except: pass
-
-                            
-                            logger.info("MarketService: Tactical Intelligence Refreshed 🛰️")
-                        else:
-                            logger.warning("MarketService: Skipping OI analysis - Nifty LTP is zero.")
-                    else:
-                        logger.warning("MarketService: Skipping refresh - No candle data available.")
+                    self.refresh_intelligence()
                 
                 time.sleep(300) # Run every 5 minutes
 
