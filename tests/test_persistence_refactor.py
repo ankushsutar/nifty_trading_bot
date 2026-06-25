@@ -98,6 +98,8 @@ class TestPersistenceFlow(unittest.TestCase):
         """Verify that TradeRepository.save_trade retries on failure (and import time is fixed)."""
         # Mock insert_one to fail twice then succeed
         self.mock_collection.insert_one.side_effect = [Exception("DB Fail"), Exception("DB Fail"), MagicMock()]
+        # Mock find_one to return None so it doesn't try to update an existing active trade
+        self.mock_collection.find_one.return_value = None
         
         # We need a real counter for save_trade
         self.trade_repo.counters = MagicMock()

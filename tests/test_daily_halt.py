@@ -102,37 +102,40 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
 
     def test_profit_protection_activates_kill_switch(self):
         """Verify that triggering profit protection activates the global kill switch."""
-        engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
-        
-        # Mock safety gatekeeper checks to pass time checks
-        engine.gatekeeper.is_market_open = MagicMock(return_value=True)
-        engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
-        
-        # Setup stats file with a high peak profit
-        today = datetime.date.today().isoformat()
-        os.makedirs(os.path.dirname(self.stats_file), exist_ok=True)
-        with open(self.stats_file, "w") as f:
-            json.dump({
-                today: {
-                    "paper": {
-                        "starting_capital": 100000.0,
-                        "peak_profit": 5000.0, # ₹5,000 peak profit
-                        "last_updated": 0
+        from bot.config.settings import Config
+        with patch.object(Config, 'PROFIT_PROTECTION_THRESHOLD', 2000.0):
+            engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
+            
+            # Mock safety gatekeeper checks to pass time checks
+            engine.gatekeeper.is_market_open = MagicMock(return_value=True)
+            engine.gatekeeper.is_blackout_period = MagicMock(return_value=False)
+            
+            # Setup stats file with a high peak profit
+            today = datetime.date.today().isoformat()
+            os.makedirs(os.path.dirname(self.stats_file), exist_ok=True)
+            with open(self.stats_file, "w") as f:
+                json.dump({
+                    today: {
+                        "paper": {
+                            "starting_capital": 100000.0,
+                            "peak_profit": 5000.0, # ₹5,000 peak profit
+                            "last_updated": 0
+                        }
                     }
-                }
-            }, f)
-        
-        # Mock realized pnl to be 2000 (which is < 50% drawdown threshold, i.e., 2500)
-        engine.gatekeeper.get_daily_realized_pnl = MagicMock(return_value=2000.0)
-        
-        # Deactivate first
-        self.assertFalse(is_kill_switch_active())
-        
-        # Trigger selection
-        strat, risk = engine.analyze_and_select()
-        
-        self.assertIsNone(strat)
-        self.assertTrue(is_kill_switch_active())
+                }, f)
+            
+            # Mock realized pnl to be 2000 (which is < 50% drawdown threshold, i.e., 2500)
+            engine.gatekeeper.get_daily_realized_pnl = MagicMock(return_value=2000.0)
+            
+            # Deactivate first
+            self.assertFalse(is_kill_switch_active())
+            
+            # Trigger selection
+            strat, risk = engine.analyze_and_select()
+            
+            self.assertIsNone(strat)
+            self.assertTrue(is_kill_switch_active())
+
 
 if __name__ == "__main__":
     unittest.main()
