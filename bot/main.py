@@ -194,6 +194,7 @@ def run_bot():
     if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "PULLBACK"]:
         bot.execute(expiry=expiry)
     else:
+        # pyrefly: ignore [unexpected-keyword]
         bot.execute(expiry=expiry, action="SELL")
 
     # 7. Record trade for daily limit tracking (only in auto mode)
