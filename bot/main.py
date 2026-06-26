@@ -182,7 +182,8 @@ def run_bot():
     
     # SAFEGUARD: Prevent using past expiry
     try:
-        exp_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
+        from bot.utils.expiry_calculator import parse_expiry_safe
+        exp_date = parse_expiry_safe(expiry)
         if exp_date < datetime.date.today():
              logger.critical(f">>> [CRITICAL ERROR] Calculated Expiry {expiry} is in the PAST! Aborting.")
              return

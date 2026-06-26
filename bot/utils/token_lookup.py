@@ -155,10 +155,11 @@ class TokenLookup:
         
         today = datetime.date.today()
         
+        from bot.utils.expiry_calculator import parse_expiry_safe
         def parse_expiry(exp_str):
             try:
                 # Expecting 'DDMMMYYYY' format (e.g. '20JUL2026')
-                return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
+                return parse_expiry_safe(exp_str)
             except:
                 return datetime.date.max
 

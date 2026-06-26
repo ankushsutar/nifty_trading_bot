@@ -50,7 +50,8 @@ class SellingStrategy:
                     continue
 
                 # Calculate DTE (Days to Expiry)
-                target_expiry_date = datetime.datetime.strptime(expiry, "%d%b%Y").date()
+                from bot.utils.expiry_calculator import parse_expiry_safe
+                target_expiry_date = parse_expiry_safe(expiry)
                 dte = (target_expiry_date - datetime.date.today()).days
                 
                 cycle_data = {

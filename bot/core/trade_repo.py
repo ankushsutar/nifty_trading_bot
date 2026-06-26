@@ -22,6 +22,25 @@ class InMemoryCollection:
         res.inserted_id = doc.get("_id")
         return res
 
+    def delete_one(self, filter, *args, **kwargs):
+        doc = self.find_one(filter)
+        if doc in self._docs:
+            self._docs.remove(doc)
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.deleted_count = 1 if doc else 0
+        return res
+
+    def delete_many(self, filter, *args, **kwargs):
+        matches = [d for d in self._docs if self._match(d, filter)]
+        for doc in matches:
+            if doc in self._docs:
+                self._docs.remove(doc)
+        from unittest.mock import MagicMock
+        res = MagicMock()
+        res.deleted_count = len(matches)
+        return res
+
     def _match(self, doc, filter):
         for k, v in filter.items():
             if isinstance(v, dict):

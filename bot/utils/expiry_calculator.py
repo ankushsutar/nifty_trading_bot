@@ -40,6 +40,31 @@ def _format_expiry(date: datetime.date) -> str:
     return f"{date.day:02d}{_MONTH_ABBR[date.month]}{date.year}"
 
 
+def parse_expiry_safe(exp_str: str) -> datetime.date:
+    """
+    Parses a DDMMMYYYY string into a datetime.date object in a locale-safe way.
+    e.g., '20JUL2026' -> datetime.date(2026, 7, 20)
+    """
+    if not exp_str or len(exp_str) < 9:
+        raise ValueError(f"Invalid expiry string: {exp_str}")
+    try:
+        day = int(exp_str[0:2])
+        mon_str = exp_str[2:5].upper()
+        year = int(exp_str[5:9])
+        
+        months = {
+            "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4,
+            "MAY": 5, "JUN": 6, "JUL": 7, "AUG": 8,
+            "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12
+        }
+        month = months.get(mon_str)
+        if not month:
+            raise ValueError(f"Invalid month: {mon_str}")
+        return datetime.date(year, month, day)
+    except Exception as e:
+        raise ValueError(f"Failed to parse expiry '{exp_str}': {e}")
+
+
 def is_trading_day(date=None):
     """
     Returns True if the given date is a valid NSE trading day.
@@ -88,7 +113,7 @@ def get_next_weekly_expiry(symbol_name=None):
                     today = datetime.date.today()
                     def parse_exp(exp_str):
                         try:
-                            return datetime.datetime.strptime(exp_str, "%d%b%Y").date()
+                            return parse_expiry_safe(exp_str)
                         except:
                             return None
                     options_df['expiry_dt'] = options_df['expiry'].apply(parse_exp)
@@ -98,7 +123,7 @@ def get_next_weekly_expiry(symbol_name=None):
                         sorted_expiries = sorted(options_df['expiry_dt'].dropna().unique())
                         if sorted_expiries:
                             next_expiry = sorted_expiries[0]
-                            return next_expiry.strftime("%d%b%Y").upper()
+                            return _format_expiry(next_expiry)
         except Exception as e:
             # Fallback to standard logic if scrip master lookup fails
             pass
