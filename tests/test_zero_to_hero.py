@@ -38,7 +38,7 @@ class TestZeroToHeroStrategy(unittest.TestCase):
         self.strategy.gatekeeper.is_market_open = MagicMock(side_effect=[True, False]) # Run one iteration, then exit
         self.strategy._find_deep_otm_contract = MagicMock(return_value=("mock_token", "NIFTY26JUN23000CE", 10.0, 23000))
         self.strategy.order_manager.place_smart_limit = MagicMock(return_value="order_abc")
-        self.strategy.order_manager.place_stoploss = MagicMock(return_value="sl_xyz")
+        self.strategy.order_manager.place_sl_order = MagicMock(return_value="sl_xyz")
 
         # Execute
         self.strategy.execute(expiry="26JUN2026")
@@ -52,8 +52,8 @@ class TestZeroToHeroStrategy(unittest.TestCase):
             symbol="NIFTY26JUN23000CE", token="mock_token", qty=260, initial_price=10.0,
             transaction_type="BUY", strategy_name="ZERO_TO_HERO", mode="PAPER"
         )
-        self.strategy.order_manager.place_stoploss.assert_called_with(
-            "NIFTY26JUN23000CE", "mock_token", 260, 4.0, "ZERO_TO_HERO"
+        self.strategy.order_manager.place_sl_order.assert_called_with(
+            "NIFTY26JUN23000CE", "mock_token", 260, 4.0, "CE"
         )
 
         # Verify trade repo saves and updates SL
