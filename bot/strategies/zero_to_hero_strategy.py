@@ -54,7 +54,8 @@ class ZeroToHeroStrategy:
                     'token': t['token'],
                     'qty': t['qty'],
                     'entry_price': t['entry_price'],
-                    'sl_oid': t.get('sl_order_id')
+                    'sl_oid': t.get('sl_order_id'),
+                    'partially_booked': t.get('partially_booked', False)
                 }
                 logger.info(f"♻️ [Z2H] Recovery active for {t['symbol']}")
         except Exception as e:
@@ -177,7 +178,7 @@ class ZeroToHeroStrategy:
             
             # Execution
             mode = "PAPER" if self.dry_run else "LIVE"
-            sl_init = round(prem * (1 - self.FIXED_STOP_LOSS_PCT), 2)
+            sl_init = round(round(prem * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)
             
             trade_id = trade_repo.save_trade(
                 symbol=symbol, token=token, leg=leg, qty=qty, 
@@ -195,7 +196,7 @@ class ZeroToHeroStrategy:
                 notifier.notify_trade_entry("ZERO_TO_HERO", symbol, "BUY", qty, prem, sl=sl_init, target="3x Jackpot (Scale 50% at +200%)")
                 
                 # Drop Emergency Broker-Side SL
-                sl_id = self.order_manager.place_stoploss(symbol, token, qty, sl_init, self.STRATEGY_NAME)
+                sl_id = self.order_manager.place_sl_order(symbol, token, qty, sl_init, leg)
                 self.active_position['sl_oid'] = sl_id
                 trade_repo.update_sl_order_id(trade_id, sl_id)
             else:
@@ -213,7 +214,7 @@ class ZeroToHeroStrategy:
         
         logger.info(f"🛸 WILDCARD MONITORING ACTIVE for {sym} @ ₹{entry}")
         
-        half_booked = False
+        half_booked = self.active_position.get('partially_booked', False)
         
         while self.running:
             ltp = self.data_fetcher.get_ltp(token, "NFO")
@@ -251,7 +252,7 @@ class ZeroToHeroStrategy:
                      self.order_manager.cancel_order(self.active_position['sl_oid'])
                      
             # 2. Disaster Stop Hit Check
-            sl_price = entry * (1 - self.FIXED_STOP_LOSS_PCT)
+            sl_price = round(round(entry * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)
             if ltp <= sl_price and not half_booked:
                  logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)

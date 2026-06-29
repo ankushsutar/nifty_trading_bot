@@ -369,7 +369,7 @@ class PullbackStrategy:
             return
 
         logger.info(f">>> [Pullback] Entry Confirmed for {symbol} @ ₹{quote_ltp} | Qty: {qty}")
-        sl_price = max(0.1, quote_ltp - sl_points)
+        sl_price = max(0.1, round(round((quote_ltp - sl_points) / 0.05) * 0.05, 2))
         target_price = quote_ltp + (sl_points * 1.5) # 1.5:1 reward to risk
 
         trade_context = {
@@ -413,10 +413,10 @@ class PullbackStrategy:
                 return
                 
             fill_price = fill_result['price'] or quote_ltp
-            actual_sl = max(0.1, fill_price - sl_points)
+            actual_sl = max(0.1, round(round((fill_price - sl_points) / 0.05) * 0.05, 2))
             
             # Place initial broker SL order
-            sl_oid = self.order_manager.place_stoploss_order(symbol, token, qty, actual_sl)
+            sl_oid = self.order_manager.place_sl_order(symbol, token, qty, actual_sl, leg)
             
             self.active_position = {
                 'leg': leg, 'symbol': symbol, 'qty': qty, 'token': token,
