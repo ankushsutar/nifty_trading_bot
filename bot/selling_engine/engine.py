@@ -61,7 +61,7 @@ class NiftySellingEngine:
             }
 
         # Step 2: VIX gate
-        vix_result = self.vix_gate.check(vix)
+        vix_result = self.vix_gate.check(vix, adx=market_data.get("adx", 0.0))
         if not vix_result["allowed"]:
             return {
                 "action": "skip",

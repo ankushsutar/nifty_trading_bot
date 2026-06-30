@@ -57,7 +57,9 @@ class MarketService:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
 
             # Start Background Analysis Thread only in MASTER process (Designated Backend)
-            is_master = os.getenv("PROCESS_TYPE") == "BACKEND"
+            proc_type = os.getenv("PROCESS_TYPE")
+            logger.info(f"MarketService init: PID={os.getpid()}, PROCESS_TYPE={proc_type}")
+            is_master = proc_type == "BACKEND"
             if is_master:
                 logger.info("MarketService: [MASTER] Starting Intelligence Loop... 🛰️")
                 threading.Thread(target=cls._instance._analysis_loop, daemon=True).start()

@@ -84,27 +84,22 @@ class TestIronCondorStrategy(unittest.TestCase):
             "token_23300_PE": 18.0,
         }.get(token, 20.0)
 
-        # Mock order placement OIDs
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"oid_{kwargs.get('symbol') or args[0]}_{kwargs.get('transaction_type') or args[4]}"
-
-        # Mock one of the long hedges to fail (TIMEOUT)
-        self.strategy._wait_fill = lambda order_id, fallback: {
-            "oid_NIFTY25JUN202623700CE_BUY": {"status": "FILLED", "price": 15.0},
-            "oid_NIFTY25JUN202623300PE_BUY": {"status": "TIMEOUT", "price": 18.0}
-        }.get(order_id, {"status": "TIMEOUT", "price": 0.0})
+        # Mock order placement: CE succeeds, PE fails and returns None
+        def place_smart_limit_mock(*args, **kwargs):
+            sym = kwargs.get('symbol') or args[0]
+            if "23300PE" in sym:
+                return None
+            return f"oid_{sym}_{kwargs.get('transaction_type') or args[4]}"
+        self.strategy.order_manager.place_smart_limit.side_effect = place_smart_limit_mock
 
         # Run entry
         sc_symbol = "NIFTY25JUN202623600CE"
         sp_symbol = "NIFTY25JUN202623400PE"
         self.strategy._enter_condor(expiry="25JUN2026")
 
-        # Verify that we cancelled both order IDs
-        self.strategy.order_manager.cancel_order.assert_any_call("oid_NIFTY25JUN202623700CE_BUY")
-        self.strategy.order_manager.cancel_order.assert_any_call("oid_NIFTY25JUN202623300PE_BUY")
-
-        # Verify that we sold back the filled Long Call (LC)
-        self.strategy.order_manager.place_smart_limit.assert_any_call(
-            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65, initial_price=13.5,
+        # Verify that we placed a market SELL to square off the filled CE
+        self.strategy.order_manager.place_market.assert_any_call(
+            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65,
             transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
@@ -128,36 +123,31 @@ class TestIronCondorStrategy(unittest.TestCase):
             "token_23300_PE": 18.0,
         }.get(token, 20.0)
 
-        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"oid_{kwargs.get('symbol') or args[0]}_{kwargs.get('transaction_type') or args[4]}"
-
-        # Hedges fill, but one short fails
-        self.strategy._wait_fill = lambda order_id, fallback: {
-            "oid_NIFTY25JUN202623700CE_BUY": {"status": "FILLED", "price": 15.0},
-            "oid_NIFTY25JUN202623300PE_BUY": {"status": "FILLED", "price": 18.0},
-            "oid_NIFTY25JUN202623600CE_SELL": {"status": "FILLED", "price": 35.0},
-            "oid_NIFTY25JUN202623400PE_SELL": {"status": "TIMEOUT", "price": 40.0}
-        }.get(order_id, {"status": "TIMEOUT", "price": 0.0})
+        # Mock order placement: Hedges fill, SC succeeds, SP fails and returns None
+        def place_smart_limit_mock(*args, **kwargs):
+            sym = kwargs.get('symbol') or args[0]
+            side = kwargs.get('transaction_type') or args[4]
+            if "23400PE" in sym and side == "SELL":
+                return None
+            return f"oid_{sym}_{side}"
+        self.strategy.order_manager.place_smart_limit.side_effect = place_smart_limit_mock
 
         # Run entry
         self.strategy._enter_condor(expiry="25JUN2026")
 
-        # Verify that we cancelled short order IDs
-        self.strategy.order_manager.cancel_order.assert_any_call("oid_NIFTY25JUN202623600CE_SELL")
-        self.strategy.order_manager.cancel_order.assert_any_call("oid_NIFTY25JUN202623400PE_SELL")
-
-        # Verify that we bought back the filled short CE (at 1.1x fallback)
-        self.strategy.order_manager.place_smart_limit.assert_any_call(
-            symbol="NIFTY25JUN202623600CE", token="token_23600_CE", qty=65, initial_price=38.5,
+        # Verify that we bought back the filled short CE at market
+        self.strategy.order_manager.place_market.assert_any_call(
+            symbol="NIFTY25JUN202623600CE", token="token_23600_CE", qty=65,
             transaction_type="BUY", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
         # Verify that we sold the Long protection hedges to return to flat cash
-        self.strategy.order_manager.place_smart_limit.assert_any_call(
-            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65, initial_price=13.5,
+        self.strategy.order_manager.place_market.assert_any_call(
+            symbol="NIFTY25JUN202623700CE", token="token_23700_CE", qty=65,
             transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
-        self.strategy.order_manager.place_smart_limit.assert_any_call(
-            symbol="NIFTY25JUN202623300PE", token="token_23300_PE", qty=65, initial_price=16.2,
+        self.strategy.order_manager.place_market.assert_any_call(
+            symbol="NIFTY25JUN202623300PE", token="token_23300_PE", qty=65,
             transaction_type="SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
 
@@ -239,3 +229,44 @@ class TestIronCondorStrategy(unittest.TestCase):
         # Longs (LC_sym, LP_sym) must appear last in the call list
         self.assertIn(call_symbols[2], ['LC_sym', 'LP_sym'])
         self.assertIn(call_symbols[3], ['LC_sym', 'LP_sym'])
+
+    @patch('bot.strategies.straddle_scalp_strategy.trade_repo')
+    @patch('bot.strategies.straddle_scalp_strategy.notifier')
+    def test_close_all_skip_on_sl_hit(self, mock_notifier, mock_trade_repo):
+        """Verify that if one Short leg SL is already filled, we skip buying it back."""
+        self.strategy.lc_position = {'symbol': 'LC_sym', 'entry_price': 15.0, 'token': 'LC_token', 'qty': 65}
+        self.strategy.sc_position = {'symbol': 'SC_sym', 'entry_price': 35.0, 'token': 'SC_token', 'qty': 65, 'sl_oid': 'sl_1'}
+        self.strategy.sp_position = {'symbol': 'SP_sym', 'entry_price': 40.0, 'token': 'SP_token', 'qty': 65, 'sl_oid': 'sl_2'}
+        self.strategy.lp_position = {'symbol': 'LP_sym', 'entry_price': 18.0, 'token': 'LP_token', 'qty': 65}
+
+        # Mock order manager status query: sl_1 is COMPLETE (SL hit), sl_2 is CANCELLED (not hit)
+        def mock_get_order_status(oid):
+            if oid == "sl_1":
+                return {"status": "COMPLETE", "price": 42.0}
+            return {"status": "CANCELLED", "price": 0.0}
+        self.strategy.order_manager.get_order_status.side_effect = mock_get_order_status
+
+        # Mock order manager placing exits
+        self.strategy.order_manager.place_smart_limit.side_effect = lambda *args, **kwargs: f"exit_{kwargs.get('symbol') or args[0]}"
+        self.strategy.data_fetcher.get_ltp.return_value = 20.0
+
+        # Close all
+        self.strategy._close_all("TEST_EXIT")
+
+        # Verify stop loss cancellations
+        self.strategy.order_manager.cancel_order.assert_any_call("sl_1")
+        self.strategy.order_manager.cancel_order.assert_any_call("sl_2")
+
+        # Verify placed exit orders
+        call_symbols = []
+        for call_args in self.strategy.order_manager.place_smart_limit.call_args_list:
+            args, kwargs = call_args
+            sym = kwargs.get('symbol') or (args[0] if len(args) > 0 else None)
+            call_symbols.append(sym)
+        
+        # We must skip buying back SC_sym since its SL was hit!
+        self.assertNotIn('SC_sym', call_symbols)
+        self.assertIn('SP_sym', call_symbols)
+        self.assertIn('LC_sym', call_symbols)
+        self.assertIn('LP_sym', call_symbols)
+

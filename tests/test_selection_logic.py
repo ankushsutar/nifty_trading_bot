@@ -70,5 +70,35 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 20 -> Expected: STRADDLE_SCALP, Got: {strat}")
         self.assertEqual(strat, "STRADDLE_SCALP")
 
+    @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
+    @patch('backend.market_service.market_service.get_market_data')
+    @patch('bot.core.decision_engine.datetime.datetime')
+    def test_straddle_scalp_cutoff(self, mock_dt, mock_market, mock_trades):
+        from bot.utils.expiry_calculator import get_next_weekly_expiry
+        next_expiry = get_next_weekly_expiry()
+        expiry_dt = real_datetime.strptime(next_expiry, "%d%b%Y")
+
+        # Expiry day, 12:35 PM (Past 12:30 cutoff) -> Should return None
+        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 12, 35)
+        mock_market.return_value = {
+            'nifty': 22000,
+            'analysis': {'regime': 'SIDEWAYS', 'trend': 'NEUTRAL', 'adx': 15},
+            'oi_data': {'bias': 'NEUTRAL', 'pcr': 1.0},
+            'levels': {}
+        }
+        strat, risk = self.engine.analyze_and_select()
+        self.assertIsNone(strat)
+
+        # Expiry day, 12:25 PM (Before 12:30 cutoff) -> Should select STRADDLE_SCALP
+        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 12, 25)
+        strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "STRADDLE_SCALP")
+
+        # Non-expiry day, 12:35 PM (Before 15:00 cutoff) -> Should select STRADDLE_SCALP
+        non_expiry_dt = expiry_dt + datetime.timedelta(days=1)
+        mock_dt.now.return_value = real_datetime(non_expiry_dt.year, non_expiry_dt.month, non_expiry_dt.day, 12, 35)
+        strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "STRADDLE_SCALP")
+
 if __name__ == '__main__':
     unittest.main()

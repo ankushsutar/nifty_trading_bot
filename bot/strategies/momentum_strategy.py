@@ -78,19 +78,24 @@ class MomentumStrategy:
             if self.active_position is None:
                 db_trade = trade_repo.get_active_trade(mode="PAPER", strategy="MOMENTUM")
                 if db_trade:
-                    self.active_position = {
-                        'id': db_trade['id'],
-                        'leg': db_trade['leg'],
-                        'symbol': db_trade['symbol'],
-                        'token': db_trade['token'],
-                        'qty': db_trade['qty'],
-                        'entry_price': db_trade['entry_price'],
-                        'sl_price': db_trade['sl_price'],
-                        'sl_order_id': db_trade.get('sl_order_id'),
-                        'atr': 0.0,
-                        'partially_booked': db_trade.get('partially_booked', False)
-                    }
-                    logger.info(f"♻️ PAPER RECOVERY: Found Active Trade in DB! {db_trade['symbol']}")
+                    sym = db_trade['symbol']
+                    if trade_repo._is_symbol_expired(sym):
+                        logger.warning(f"⚠️ [Momentum] PAPER recovery: {sym} is from a past expiry. Closing in DB.")
+                        trade_repo.close_trade(trade_id=db_trade['id'], exit_price=0.0, pnl=0.0, exit_reason="EXPIRED_CONTRACT_ON_RECOVERY")
+                    else:
+                        self.active_position = {
+                            'id': db_trade['id'],
+                            'leg': db_trade['leg'],
+                            'symbol': sym,
+                            'token': db_trade['token'],
+                            'qty': db_trade['qty'],
+                            'entry_price': db_trade['entry_price'],
+                            'sl_price': db_trade['sl_price'],
+                            'sl_order_id': db_trade.get('sl_order_id'),
+                            'atr': 0.0,
+                            'partially_booked': db_trade.get('partially_booked', False)
+                        }
+                        logger.info(f"♻️ PAPER RECOVERY: Found Active Trade in DB! {sym}")
             return
         
         try:
@@ -119,6 +124,11 @@ class MomentumStrategy:
                     int(pos.get('netqty', 0)) != 0):
                     
                     symbol = pos['tradingsymbol']
+
+                    # 📅 EXPIRY GUARD: skip broker positions from past expiry dates
+                    if trade_repo._is_symbol_expired(symbol):
+                        logger.warning(f"⏩ [Momentum] Skipping past-expiry contract from broker positions: {symbol}")
+                        continue
                     
                     # 🛡️ STRATEGY FILTER GUARD: Does this position belong to another strategy in DB?
                     existing_trade = trade_repo.get_active_trade(symbol=symbol, mode="LIVE")

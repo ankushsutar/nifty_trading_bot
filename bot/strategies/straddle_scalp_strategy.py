@@ -57,6 +57,7 @@ class StraddleScalpStrategy:
         self.risk_multiplier = 1.0
         self._last_log_ts   = 0.0
         self._last_trend_check = 0.0
+        self.last_failed_entry_time = 0.0
 
         # Position tracking variables
         self.lc_position = None  # Long Call Protection: symbol, token, qty, entry_price, id
@@ -85,6 +86,26 @@ class StraddleScalpStrategy:
         try:
             query = {"status": {"$in": ["OPEN", "PLACED"]}, "mode": mode, "strategy": self.STRATEGY_NAME}
             open_trades = list(trade_repo.collection.find(query))
+            if not open_trades:
+                return
+
+            # 📅 EXPIRY GUARD: if ANY leg belongs to a past-expiry contract, close ALL
+            # stale DB records and skip recovery entirely — never monitor a dead basket.
+            expired_symbols = [t['symbol'] for t in open_trades if trade_repo._is_symbol_expired(t['symbol'])]
+            if expired_symbols:
+                logger.warning(
+                    f"⚠️ [Straddle Scalp] Past-expiry legs detected on recovery: {expired_symbols}. "
+                    f"Closing all {len(open_trades)} stale DB records."
+                )
+                for t in open_trades:
+                    trade_repo.close_trade(
+                        trade_id=t['id'],
+                        exit_price=0.0,
+                        pnl=0.0,
+                        exit_reason="EXPIRED_CONTRACT_ON_RECOVERY"
+                    )
+                return  # No basket to recover
+
             for t in open_trades:
                 pos = {
                     'id':          t['id'],
@@ -127,6 +148,11 @@ class StraddleScalpStrategy:
         )
 
         while self.running:
+            # 0. Entry Cooldown Circuit Breaker (5 mins)
+            if time.time() - getattr(self, 'last_failed_entry_time', 0.0) < 300:
+                time.sleep(10)
+                continue
+
             # 1. Hard safety checks
             if not self.gatekeeper.is_market_open():
                 logger.warning("Straddle Scalp: 🛑 Market Closed. Exiting.")
@@ -187,7 +213,10 @@ class StraddleScalpStrategy:
                 f"Straddle Scalp: ✅ Entry conditions met — ADX={adx:.1f} | Regime={regime}. "
                 "Entering Iron Condor."
             )
-            self._enter_condor(expiry)
+            success = self._enter_condor(expiry)
+            if success is False:
+                logger.warning("Straddle Scalp: 🛑 Entry failed. Activating 5-minute cooldown circuit breaker.")
+                self.last_failed_entry_time = time.time()
             time.sleep(30)
 
     # ─────────────────────────────────────────────────────────────────────
@@ -212,7 +241,7 @@ class StraddleScalpStrategy:
         nifty_ltp = self.data_fetcher.get_ltp(spot_token, exchange=instr.exchange)
         if not nifty_ltp:
             logger.error(f"Straddle Scalp: Cannot fetch {active_sym} LTP. Aborting.")
-            return
+            return False
 
         atm_strike = round(nifty_ltp / strike_diff) * strike_diff
         
@@ -236,13 +265,13 @@ class StraddleScalpStrategy:
 
         if not all([lc_token, sc_token, sp_token, lp_token]):
             logger.error("Straddle Scalp: Strike token resolution failed. Aborting.")
-            return
+            return False
 
         # Cooldown check
         for sym in [lc_symbol, sc_symbol, sp_symbol, lp_symbol]:
             if not self.gatekeeper.check_instrument_cooldown(sym):
                 logger.warning(f"Straddle Scalp: {sym} is in cooldown. Aborting.")
-                return
+                return False
 
         # Get LTPs to initialize smart limit order prices
         lc_ltp = self.data_fetcher.get_ltp(lc_token, exchange="NFO") or 0.0
@@ -252,10 +281,10 @@ class StraddleScalpStrategy:
 
         if any(ltp <= 0 for ltp in [lc_ltp, sc_ltp, sp_ltp, lp_ltp]):
             logger.error("Straddle Scalp: Cannot fetch LTPs for all legs. Aborting.")
-            return
+            return False
 
-        # Size Position (using ₹35,000 margin per lot for Iron Condor)
-        margin_per_lot = 35000.0
+        # Size Position (using ₹50,000 margin per lot for Iron Condor to ensure short legs never reject)
+        margin_per_lot = 50000.0
         qty_lots = int(
             self.gatekeeper.get_compounded_lots(
                 margin_per_lot=margin_per_lot,
@@ -269,14 +298,14 @@ class StraddleScalpStrategy:
         required_margin = qty_lots * margin_per_lot
         if not self.dry_run and not self.gatekeeper.check_trade_margin(required_margin):
             logger.warning(f"Straddle Scalp: ❌ Insufficient funds. Required: ₹{required_margin:,.2f}")
-            return
+            return False
 
         # Worst-case loss projection daily limit check
         est_net_credit = (sc_ltp + sp_ltp) - (lc_ltp + lp_ltp)
         est_worst_case = est_net_credit * qty_units
         if not self.gatekeeper.check_max_daily_loss(0.0, worst_case_new_loss=est_worst_case):
             logger.critical(f"Straddle Scalp: 🛑 Skipped entry because worst-case loss of ₹{est_worst_case:.2f} would breach daily limit.")
-            return
+            return False
 
         logger.info(f"Straddle Scalp: Placing Iron Condor Basket. Size: {qty_lots} lot(s) ({qty_units} units)")
         mode = "PAPER" if self.dry_run else "LIVE"
@@ -295,53 +324,31 @@ class StraddleScalpStrategy:
         )
 
         if not lc_oid or not lp_oid:
-            logger.error("Straddle Scalp: Long leg placement failed. Cancelling.")
-            if lc_oid: self.order_manager.cancel_order(lc_oid)
-            if lp_oid: self.order_manager.cancel_order(lp_oid)
-            # Delete early PLACED records from DB if they were saved
-            trade_repo.collection.delete_many({
-                "symbol": {"$in": [lc_symbol, lp_symbol]},
-                "strategy": self.STRATEGY_NAME,
-                "status": "PLACED",
-                "mode": mode
-            })
-            return
+            logger.error("Straddle Scalp: Long leg placement failed. Squaring off filled legs.")
+            if lc_oid:
+                fill_res = self._wait_fill(lc_oid, fallback=lc_ltp)
+                entry_p = fill_res.get('price', lc_ltp)
+                trade_repo.save_trade(lc_symbol, lc_token, "LC", qty_units, entry_p, 0.0, "BUY", mode, self.STRATEGY_NAME, status="OPEN")
+                
+                market_oid = self.order_manager.place_market(symbol=lc_symbol, token=lc_token, qty=qty_units, transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+                market_fill = self._wait_fill(market_oid, fallback=entry_p)
+                exit_p = market_fill.get('price', entry_p)
+                pnl = (exit_p - entry_p) * qty_units
+                trade_repo.close_trade(symbol=lc_symbol, exit_price=exit_p, pnl=pnl, exit_reason="ENTRY_FAILED")
+            if lp_oid:
+                fill_res = self._wait_fill(lp_oid, fallback=lp_ltp)
+                entry_p = fill_res.get('price', lp_ltp)
+                trade_repo.save_trade(lp_symbol, lp_token, "LP", qty_units, entry_p, 0.0, "BUY", mode, self.STRATEGY_NAME, status="OPEN")
+                
+                market_oid = self.order_manager.place_market(symbol=lp_symbol, token=lp_token, qty=qty_units, transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+                market_fill = self._wait_fill(market_oid, fallback=entry_p)
+                exit_p = market_fill.get('price', entry_p)
+                pnl = (exit_p - entry_p) * qty_units
+                trade_repo.close_trade(symbol=lp_symbol, exit_price=exit_p, pnl=pnl, exit_reason="ENTRY_FAILED")
+            return False
 
         lc_fill = self._wait_fill(lc_oid, fallback=lc_ltp)
         lp_fill = self._wait_fill(lp_oid, fallback=lp_ltp)
-
-        if lc_fill['status'] != 'FILLED' or lp_fill['status'] != 'FILLED':
-            logger.warning("Straddle Scalp: Long hedge legs failed to fill. Cleaning up.")
-            self.order_manager.cancel_order(lc_oid)
-            self.order_manager.cancel_order(lp_oid)
-            
-            # Clean up/delete any unfilled long leg PLACED records
-            if lc_fill['status'] != 'FILLED':
-                trade_repo.collection.delete_one({
-                    "symbol": lc_symbol,
-                    "strategy": self.STRATEGY_NAME,
-                    "status": "PLACED",
-                    "mode": mode
-                })
-            if lp_fill['status'] != 'FILLED':
-                trade_repo.collection.delete_one({
-                    "symbol": lp_symbol,
-                    "strategy": self.STRATEGY_NAME,
-                    "status": "PLACED",
-                    "mode": mode
-                })
-
-            if lc_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(
-                    symbol=lc_symbol, token=lc_token, qty=qty_units, initial_price=lc_fill['price']*0.9, 
-                    transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-                )
-            if lp_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(
-                    symbol=lp_symbol, token=lp_token, qty=qty_units, initial_price=lp_fill['price']*0.9, 
-                    transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-                )
-            return
 
         logger.info("🛡️ Step 1/2 Complete: Both Long hedges filled successfully.")
 
@@ -359,75 +366,46 @@ class StraddleScalpStrategy:
         )
 
         if not sc_oid or not sp_oid:
-            logger.critical("Straddle Scalp: Short leg placement failed. Triggering immediate emergency cleanup.")
-            if sc_oid: self.order_manager.cancel_order(sc_oid)
-            if sp_oid: self.order_manager.cancel_order(sp_oid)
-            # Delete early PLACED records from DB if they were saved
-            trade_repo.collection.delete_many({
-                "symbol": {"$in": [sc_symbol, sp_symbol]},
-                "strategy": self.STRATEGY_NAME,
-                "status": "PLACED",
-                "mode": mode
-            })
-            # Exit Long legs
-            self.order_manager.place_smart_limit(
-                symbol=lc_symbol, token=lc_token, qty=qty_units, initial_price=lc_fill['price']*0.9, 
-                transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-            )
-            self.order_manager.place_smart_limit(
-                symbol=lp_symbol, token=lp_token, qty=qty_units, initial_price=lp_fill['price']*0.9, 
-                transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-            )
-            return
+            logger.critical("Straddle Scalp: Short leg placement failed. Squaring off filled legs.")
+            
+            # Save the already-filled Long legs first so they have proper database records
+            trade_repo.save_trade(lc_symbol, lc_token, "LC", qty_units, lc_fill.get('price', lc_ltp), 0.0, "BUY", mode, self.STRATEGY_NAME, status="OPEN")
+            trade_repo.save_trade(lp_symbol, lp_token, "LP", qty_units, lp_fill.get('price', lp_ltp), 0.0, "BUY", mode, self.STRATEGY_NAME, status="OPEN")
+
+            # Square off whichever Short leg succeeded
+            if sc_oid:
+                fill_res = self._wait_fill(sc_oid, fallback=sc_ltp)
+                entry_p = fill_res.get('price', sc_ltp)
+                trade_repo.save_trade(sc_symbol, sc_token, "SC", qty_units, entry_p, 0.0, "SELL", mode, self.STRATEGY_NAME, status="OPEN")
+                
+                market_oid = self.order_manager.place_market(symbol=sc_symbol, token=sc_token, qty=qty_units, transaction_type="BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
+                market_fill = self._wait_fill(market_oid, fallback=entry_p)
+                exit_p = market_fill.get('price', entry_p)
+                pnl = (entry_p - exit_p) * qty_units
+                trade_repo.close_trade(symbol=sc_symbol, exit_price=exit_p, pnl=pnl, exit_reason="ENTRY_FAILED")
+                
+            if sp_oid:
+                fill_res = self._wait_fill(sp_oid, fallback=sp_ltp)
+                entry_p = fill_res.get('price', sp_ltp)
+                trade_repo.save_trade(sp_symbol, sp_token, "SP", qty_units, entry_p, 0.0, "SELL", mode, self.STRATEGY_NAME, status="OPEN")
+                
+                market_oid = self.order_manager.place_market(symbol=sp_symbol, token=sp_token, qty=qty_units, transaction_type="BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
+                market_fill = self._wait_fill(market_oid, fallback=entry_p)
+                exit_p = market_fill.get('price', entry_p)
+                pnl = (entry_p - exit_p) * qty_units
+                trade_repo.close_trade(symbol=sp_symbol, exit_price=exit_p, pnl=pnl, exit_reason="ENTRY_FAILED")
+            
+            # Exit Long legs which are already filled
+            for sym, tok, entry_p in [(lc_symbol, lc_token, lc_fill.get('price', lc_ltp)), (lp_symbol, lp_token, lp_fill.get('price', lp_ltp))]:
+                market_oid = self.order_manager.place_market(symbol=sym, token=tok, qty=qty_units, transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+                market_fill = self._wait_fill(market_oid, fallback=entry_p)
+                exit_p = market_fill.get('price', entry_p)
+                pnl = (exit_p - entry_p) * qty_units
+                trade_repo.close_trade(symbol=sym, exit_price=exit_p, pnl=pnl, exit_reason="ENTRY_FAILED")
+            return False
 
         sc_fill = self._wait_fill(sc_oid, fallback=sc_ltp)
         sp_fill = self._wait_fill(sp_oid, fallback=sp_ltp)
-
-        if sc_fill['status'] != 'FILLED' or sp_fill['status'] != 'FILLED':
-            logger.critical("Straddle Scalp: Short legs failed to fill. Initiating emergency rollback.")
-            self.order_manager.cancel_order(sc_oid)
-            self.order_manager.cancel_order(sp_oid)
-            
-            # Clean up/delete any unfilled short leg PLACED records
-            if sc_fill['status'] != 'FILLED':
-                trade_repo.collection.delete_one({
-                    "symbol": sc_symbol,
-                    "strategy": self.STRATEGY_NAME,
-                    "status": "PLACED",
-                    "mode": mode
-                })
-            if sp_fill['status'] != 'FILLED':
-                trade_repo.collection.delete_one({
-                    "symbol": sp_symbol,
-                    "strategy": self.STRATEGY_NAME,
-                    "status": "PLACED",
-                    "mode": mode
-                })
-
-            # Buy back any filled shorts
-            if sc_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(
-                    symbol=sc_symbol, token=sc_token, qty=qty_units, initial_price=sc_fill['price']*1.1, 
-                    transaction_type="BUY", strategy_name=self.STRATEGY_NAME, mode=mode
-                )
-            if sp_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(
-                    symbol=sp_symbol, token=sp_token, qty=qty_units, initial_price=sp_fill['price']*1.1, 
-                    transaction_type="BUY", strategy_name=self.STRATEGY_NAME, mode=mode
-                )
-            # Sell Long hedges
-            self.order_manager.place_smart_limit(
-                symbol=lc_symbol, token=lc_token, qty=qty_units, initial_price=lc_fill['price']*0.9, 
-                transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-            )
-            self.order_manager.place_smart_limit(
-                symbol=lp_symbol, token=lp_token, qty=qty_units, initial_price=lp_fill['price']*0.9, 
-                transaction_type="SELL", strategy_name=self.STRATEGY_NAME, mode=mode
-            )
-            return
-
-        # -----------------------------------------------------------------
-        # STEP 3: Setup database and tracking state
         # -----------------------------------------------------------------
         lc_entry = lc_fill.get('price', lc_ltp)
         sc_entry = sc_fill.get('price', sc_ltp)
@@ -487,10 +465,14 @@ class StraddleScalpStrategy:
         sl_val     = net_credit * (1 + self.STOP_LOSS_PCT)
 
         # Fetch current LTPs
-        lc_ltp = self.data_fetcher.get_ltp(self.lc_position['token'], exchange="NFO") or lc_entry
-        sc_ltp = self.data_fetcher.get_ltp(self.sc_position['token'], exchange="NFO") or sc_entry
-        sp_ltp = self.data_fetcher.get_ltp(self.sp_position['token'], exchange="NFO") or sp_entry
-        lp_ltp = self.data_fetcher.get_ltp(self.lp_position['token'], exchange="NFO") or lp_entry
+        lc_ltp = self.data_fetcher.get_ltp(self.lc_position['token'], exchange="NFO")
+        sc_ltp = self.data_fetcher.get_ltp(self.sc_position['token'], exchange="NFO")
+        sp_ltp = self.data_fetcher.get_ltp(self.sp_position['token'], exchange="NFO")
+        lp_ltp = self.data_fetcher.get_ltp(self.lp_position['token'], exchange="NFO")
+
+        if lc_ltp is None or sc_ltp is None or sp_ltp is None or lp_ltp is None:
+            logger.warning("Straddle Scalp: ⚠️ Failed to fetch LTP for all legs. Skipping monitor iteration.")
+            return "CONTINUE"
 
         current_val = (sc_ltp + sp_ltp) - (lc_ltp + lp_ltp)
         pnl = (net_credit - current_val) * self.sc_position['qty']
@@ -565,6 +547,24 @@ class StraddleScalpStrategy:
         short_pnl = 0.0
         for pos, name in [(self.sc_position, "SC"), (self.sp_position, "SP")]:
             if not pos: continue
+            
+            # Check if stop-loss was hit
+            sl_hit = False
+            sl_price = 0.0
+            if pos.get('sl_oid'):
+                status_res = self.order_manager.get_order_status(pos['sl_oid'])
+                if status_res and status_res.get('status') in ['COMPLETE', 'FILLED']:
+                    logger.info(f"Straddle Scalp: {name} Stop Loss order {pos['sl_oid']} was already FILLED at ₹{status_res.get('price')}. Skipping square-off order.")
+                    sl_hit = True
+                    sl_price = status_res.get('price', pos['entry_price'])
+
+            if sl_hit:
+                pnl = (pos['entry_price'] - sl_price) * pos['qty']
+                short_pnl += pnl
+                trade_repo.close_trade(trade_id=pos.get('id'), symbol=pos['symbol'], exit_price=sl_price, pnl=pnl, exit_reason="SL_HIT")
+                logger.info(f"Straddle Scalp: {name} Short already Closed via SL @ ₹{sl_price:.1f} | P&L: ₹{pnl:+.0f}")
+                continue
+
             ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
             oid = self.order_manager.place_smart_limit(
                 symbol=pos['symbol'], token=pos['token'], qty=pos['qty'], initial_price=ltp, 
@@ -576,7 +576,7 @@ class StraddleScalpStrategy:
             # PnL for short leg: Entry - Exit
             pnl = (pos['entry_price'] - exit_price) * pos['qty']
             short_pnl += pnl
-            trade_repo.close_trade(symbol=pos['symbol'], exit_price=exit_price, pnl=pnl)
+            trade_repo.close_trade(trade_id=pos.get('id'), symbol=pos['symbol'], exit_price=exit_price, pnl=pnl, exit_reason=reason)
             logger.info(f"Straddle Scalp: {name} Short Closed @ ₹{exit_price:.1f} | P&L: ₹{pnl:+.0f}")
 
         # 2. Close Long legs second
@@ -595,7 +595,7 @@ class StraddleScalpStrategy:
             # PnL for long leg: Exit - Entry
             pnl = (exit_price - pos['entry_price']) * pos['qty']
             long_pnl += pnl
-            trade_repo.close_trade(symbol=pos['symbol'], exit_price=exit_price, pnl=pnl)
+            trade_repo.close_trade(trade_id=pos.get('id'), symbol=pos['symbol'], exit_price=exit_price, pnl=pnl, exit_reason=reason)
             logger.info(f"Straddle Scalp: {name} Long Closed @ ₹{exit_price:.1f} | P&L: ₹{pnl:+.0f}")
 
         total_pnl = short_pnl + long_pnl

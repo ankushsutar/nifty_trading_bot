@@ -73,6 +73,11 @@ class PullbackStrategy:
                         symbol = pos.get('tradingsymbol')
                         qty = int(pos['netqty'])
                         entry_price = float(pos.get('avgprice', 0.0))
+
+                        # 📅 EXPIRY GUARD: never resume monitoring a contract past its expiry date
+                        if trade_repo._is_symbol_expired(symbol):
+                            logger.warning(f"⚠️ [Pullback] Skipping past-expiry contract from broker: {symbol}")
+                            continue
                         
                         found_active = {
                             'leg': 'CE' if pos.get('optiontype') == 'CE' else 'PE',

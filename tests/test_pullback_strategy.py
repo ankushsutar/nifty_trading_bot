@@ -116,8 +116,12 @@ class TestPullbackStrategy(unittest.TestCase):
         })
         mock_fetch_candles.return_value = df
         
-        # Call execute
-        self.strategy.execute(expiry="26JUN2026")
+        # Call execute but break the loop after one iteration
+        def fake_sleep(*args, **kwargs):
+            self.strategy.running = False
+            
+        with patch('time.sleep', side_effect=fake_sleep):
+            self.strategy.execute(expiry="26JUN2026")
         
         # Verify it fetched candles
         mock_fetch_candles.assert_called()

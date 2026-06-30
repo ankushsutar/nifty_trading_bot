@@ -65,10 +65,13 @@ class DecisionEngine:
             today_trades = []
             trades_today = 0
 
-        # Resolve tier once using already-fetched capital — no extra API call
+        # Resolve tier once using starting capital to prevent 'Rubber Band' mid-day downgrades
         from bot.config.settings import Config
+        starting_capital = self.gatekeeper.get_starting_capital()
+        tier = Config.get_tier(starting_capital)
+        
+        # Keep track of live cash for actual purchasing power checks later
         available_cash_early = self.gatekeeper.get_current_capital()
-        tier = Config.get_tier(available_cash_early)
 
         if trades_today >= tier.max_trades_per_day:
             logger.warning(
@@ -353,6 +356,14 @@ class DecisionEngine:
                 f"Insufficient volatility fuel for Gamma Blast. Downgrading to MOMENTUM."
             )
             selected_strategy = "MOMENTUM"
+        if selected_strategy == "STRADDLE_SCALP":
+            entry_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(15, 0)
+            if now >= entry_cutoff:
+                logger.info(
+                    f">>> [Brain] ⏸️ STRADDLE_SCALP entry window has closed ({entry_cutoff.strftime('%H:%M:%S')}). "
+                    f"Current time: {now.strftime('%H:%M:%S')}. Staying in CASH."
+                )
+                return None, 1.0
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

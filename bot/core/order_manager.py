@@ -109,22 +109,41 @@ class OrderManager:
             return None
 
     def place_market(self, symbol, token, qty, transaction_type="SELL", strategy_name=None, mode=None):
-        """Places a MARKET order."""
+        """Places a Pseudo-MARKET order (LIMIT order with aggressive buffer to ensure instant fill)."""
         try:
+            # 1. Fetch live LTP
+            ltp_resp = self.api.ltpData("NFO", symbol, token)
+            if not ltp_resp or not ltp_resp.get('status'):
+                logger.error(f"Market Order Error: Could not fetch LTP for {symbol} to calculate pseudo-market limit.")
+                return None
+            current_price = float(ltp_resp['data']['ltp'])
+            
+            # 2. Calculate pseudo-market Limit Price
+            # For BUY, we are willing to pay up to 3% MORE than current LTP.
+            # For SELL, we are willing to accept up to 3% LESS than current LTP.
+            # This ensures an instant fill against the order book.
+            if transaction_type.upper() == "BUY":
+                limit_price = current_price * 1.03
+            else:
+                limit_price = current_price * 0.97
+                
+            # Round to NSE tick size (0.05)
+            limit_price = round(limit_price * 20) / 20
+
             orderparams = {
                 "variety": "NORMAL",
                 "tradingsymbol": symbol,
-                "symboltoken": token,
-                "transactiontype": transaction_type,
+                "symboltoken": str(token),
+                "transactiontype": transaction_type.upper(),
                 "exchange": "NFO",
-                "ordertype": "MARKET",
+                "ordertype": "LIMIT",
                 "producttype": "INTRADAY",
                 "duration": "DAY",
-                "quantity": qty,
-                "price": 0.0,
+                "quantity": int(qty),
+                "price": limit_price,
                 "disclosedquantity": 0
             }
-            logger.info(f"⚡ Placing MARKET Order for {symbol} ({transaction_type})")
+            logger.info(f"⚡ Placing Pseudo-MARKET (LIMIT at {limit_price}) Order for {symbol} ({transaction_type})")
             return self.place_order(orderparams, strategy_name=strategy_name, mode=mode)
         except Exception as e:
             logger.error(f"Market Order Error: {e}")

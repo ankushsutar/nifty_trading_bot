@@ -455,7 +455,7 @@ class TradeRepository:
                 if trade and trade.get('status') != 'CLOSED':
                     trades_to_close.append(trade)
             elif symbol:
-                cursor = self.collection.find({"symbol": symbol, "status": "OPEN"})
+                cursor = self.collection.find({"symbol": symbol, "status": {"$in": ["OPEN", "PLACED"]}})
                 trades_to_close = list(cursor)
 
             if not trades_to_close:
@@ -640,6 +640,97 @@ class TradeRepository:
             logger.error(f"TradeRepository Cleanup Error: {e}")
             return 0
 
+    @staticmethod
+    def _is_symbol_expired(symbol: str) -> bool:
+        import re
+        import datetime
+        try:
+            today = datetime.date.today()
+            
+            # Layer 1: Scrip Master lookup (primary source of truth)
+            try:
+                from bot.utils.token_lookup import TokenLookup
+                tl = TokenLookup()
+                if tl.df is None:
+                    tl.load_scrip_master()
+                if tl.df is not None and len(tl.df) > 1000:
+                    matching_rows = tl.df[tl.df['symbol'] == symbol]
+                    if not matching_rows.empty:
+                        expiry_val = matching_rows.iloc[0].get('expiry')
+                        if expiry_val:
+                            if isinstance(expiry_val, str):
+                                expiry_date = datetime.datetime.strptime(expiry_val[:10], '%Y-%m-%d').date()
+                            elif isinstance(expiry_val, (datetime.date, datetime.datetime)):
+                                expiry_date = expiry_val if isinstance(expiry_val, datetime.date) else expiry_val.date()
+                            else:
+                                expiry_date = None
+                            
+                            if expiry_date:
+                                return expiry_date < today
+                    else:
+                        is_opt_or_fut = re.match(r'^[A-Z]+(\d{2})([A-Z]{3}|\d+)\d*(CE|PE|FUT)?$', symbol.upper())
+                        if is_opt_or_fut:
+                            logger.info(f"Symbol {symbol} not found in active scrip master. Assuming expired.")
+                            return True
+            except Exception as e:
+                logger.error(f"Scrip Master check failed for symbol {symbol}: {e}")
+
+            # Check Weekly Format: INDEX + YY + M/O/N/D + DD + STRIKE + CE/PE
+            w_match = re.match(r'^[A-Z]+(\d{2})([1-9ONDond])(\d{2})\d+(CE|PE)$', symbol.upper())
+            if w_match:
+                yy = int(w_match.group(1)) + 2000
+                m_str = w_match.group(2).upper()
+                month_map = {'O': 10, 'N': 11, 'D': 12}
+                mon = month_map.get(m_str) or int(m_str)
+                day = int(w_match.group(3))
+                try:
+                    expiry = datetime.date(yy, mon, day)
+                    return expiry < today
+                except ValueError:
+                    return False
+            
+            # Check Monthly Format: INDEX + YY + MMM + STRIKE + CE/PE
+            m_match = re.match(r'^[A-Z]+(\d{2})([A-Z]{3})\d+(CE|PE)$', symbol.upper())
+            if m_match:
+                _MONTHS = {
+                    'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+                    'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+                    'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+                }
+                yy = int(m_match.group(1)) + 2000
+                mon = _MONTHS.get(m_match.group(2).upper())
+                if not mon:
+                    return False
+                
+                import calendar
+                try:
+                    last_day = calendar.monthrange(yy, mon)[1]
+                    expiry_date = datetime.date(yy, mon, last_day)
+                    
+                    if yy > 2025 or (yy == 2025 and mon >= 9):
+                        target_weekday = 1  # Tuesday
+                    else:
+                        target_weekday = 3  # Thursday
+                        
+                    while expiry_date.weekday() != target_weekday:
+                        expiry_date -= datetime.timedelta(days=1)
+                    
+                    try:
+                        from bot.utils.expiry_calculator import is_trading_day
+                        while not is_trading_day(expiry_date):
+                            expiry_date -= datetime.timedelta(days=1)
+                    except Exception:
+                        while expiry_date.weekday() >= 5:
+                            expiry_date -= datetime.timedelta(days=1)
+                            
+                    return expiry_date < today
+                except Exception:
+                    return False
+
+            return False
+        except Exception:
+            return False
+
     def reconcile_with_broker(self, api):
         """
         Fetches today's Angel One tradeBook, active positions, and orderBook:
@@ -647,6 +738,7 @@ class TradeRepository:
         2. Closes any OPEN trades if a SELL fill is found.
         3. Closes any OPEN trades that are no longer active at the broker (no position or net quantity is 0).
         4. Closes any PLACED trades that have no corresponding open order at the broker (cancelled/rejected/filled).
+        5. Synchronizes orphaned active positions from broker to MongoDB.
         
         Called on strategy startup and via /api/reconcile-positions.
         """
@@ -655,9 +747,6 @@ class TradeRepository:
 
         # Fetch both OPEN and PLACED trades
         active_trades = list(self.collection.find({"status": {"$in": ["OPEN", "PLACED"]}}))
-        if not active_trades:
-            logger.info("[Reconcile] No open/placed DB trades. Nothing to sync.")
-            return
 
         # --- Fetch tradeBook (real executed fills) ---
         broker_trades = []
@@ -673,6 +762,7 @@ class TradeRepository:
         # --- Fetch active positions to audit open trades ---
         broker_positions = {}
         has_positions_info = False
+        pos_data = []
         try:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
@@ -714,7 +804,6 @@ class TradeRepository:
             logger.error(f"[Reconcile] orderBook() failed: {e}")
 
         # --- Build fill maps ---
-        # symbol -> {transaction_type -> {total_value: float, total_qty: int}}
         fill_map = {}
         for t in broker_trades:
             sym   = t.get('tradingsymbol', '')
@@ -734,7 +823,6 @@ class TradeRepository:
                 fill_map[sym][side]['total_value'] += price * qty
                 fill_map[sym][side]['total_qty']   += qty
 
-        # Calculate weighted averages
         avg_prices = {}
         for sym, sides in fill_map.items():
             avg_prices[sym] = {}
@@ -752,7 +840,6 @@ class TradeRepository:
             
             # 1. Handle PLACED trades
             if status == "PLACED":
-                # For BUY side entry is BUY fill. For SELL side entry is SELL fill.
                 entry_fill_side = side
                 entry_price = avg_prices.get(symbol, {}).get(entry_fill_side)
                 if entry_price:
@@ -760,13 +847,9 @@ class TradeRepository:
                     logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{entry_price})")
                     reconciled += 1
                 elif has_orders_info:
-                    # If we have order info, check if there are any pending/open orders for this symbol.
-                    # Standard Angel One open/pending states: "SUBMITTED", "PENDING", "MODIFY PENDING", "OPEN"
                     orders = broker_orders.get(symbol, [])
                     has_open_order = any(o in ["SUBMITTED", "PENDING", "MODIFY PENDING", "OPEN"] for o in orders)
                     if not has_open_order:
-                        # No open orders found, and it wasn't marked as filled/open.
-                        # Clean up this orphan PLACED trade
                         self.close_trade(trade_id=trade_id, exit_price=0.0, pnl=0.0, exit_reason="SYNC_CANCELLED_OR_REJECTED")
                         logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> CLOSED (No active broker order found)")
                         reconciled += 1
@@ -777,7 +860,6 @@ class TradeRepository:
                 entry_price = float(trade.get('entry_price', 0))
                 qty         = int(trade.get('qty', 0))
                 
-                # For BUY side exit is SELL fill. For SELL side exit is BUY fill.
                 exit_fill_side = "SELL" if side == "BUY" else "BUY"
                 exit_price = avg_prices.get(symbol, {}).get(exit_fill_side)
                 
@@ -791,13 +873,109 @@ class TradeRepository:
                     logger.info(f"[Reconcile] ✅ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Exit: ₹{exit_price} | PnL: {pnl:+.2f})")
                     reconciled += 1
                 elif has_positions_info:
-                    # No exit fill in today's trade book, check if the position is active at the broker
                     net_qty = broker_positions.get(symbol, 0)
                     if net_qty == 0:
-                        # Position is closed at the broker!
-                        self.close_trade(trade_id=trade_id, exit_price=entry_price, pnl=0.0, exit_reason="SYNC_CLOSED_FROM_BROKER_POSITIONS")
-                        logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (No active broker position found)")
+                        is_expired = self._is_symbol_expired(symbol)
+                        if is_expired:
+                            self.close_trade(trade_id=trade_id, exit_price=0.0, pnl=-(entry_price * qty), exit_reason="CONTRACT_EXPIRED_WORTHLESS")
+                            logger.warning(f"[Reconcile] 📅 Trade #{trade_id} ({symbol}): OPEN -> CLOSED (Contract past expiry date — expired worthless)")
+                        else:
+                            self.close_trade(trade_id=trade_id, exit_price=entry_price, pnl=0.0, exit_reason="SYNC_CLOSED_FROM_BROKER_POSITIONS")
+                            logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): OPEN -> CLOSED (No active broker position found)")
                         reconciled += 1
+
+        # 3. Synchronize orphaned active positions from broker to MongoDB
+        if has_positions_info:
+            unrepresented_positions = []
+            for symbol, net_qty in broker_positions.items():
+                if net_qty != 0 and (symbol.upper().startswith("NIFTY") or "NIFTY" in symbol.upper()):
+                    existing_active = self.collection.find_one({
+                        "symbol": symbol,
+                        "status": {"$in": ["OPEN", "PLACED"]}
+                    })
+                    if not existing_active:
+                        unrepresented_positions.append((symbol, net_qty))
+
+            if unrepresented_positions:
+                logger.info(f"[Reconcile] Found {len(unrepresented_positions)} active broker positions not present in DB. Syncing...")
+                calls = []
+                puts = []
+                import re
+                for symbol, net_qty in unrepresented_positions:
+                    opt_type = 'CE' if symbol.upper().endswith('CE') else 'PE'
+                    match_w = re.match(r'^[A-Z]+(?:\d{2})(?:[1-9ONDond])(?:\d{2})(\d+)(CE|PE)$', symbol.upper())
+                    match_m = re.match(r'^[A-Z]+(?:\d{2})(?:[A-Z]{3})(\d+)(CE|PE)$', symbol.upper())
+                    strike = None
+                    if match_w:
+                        strike = int(match_w.group(1))
+                    elif match_m:
+                        strike = int(match_m.group(1))
+                    
+                    if strike:
+                        item = {"symbol": symbol, "net_qty": net_qty, "strike": strike}
+                        if opt_type == 'CE':
+                            calls.append(item)
+                        else:
+                            puts.append(item)
+
+                calls.sort(key=lambda x: x["strike"])
+                for idx, item in enumerate(calls):
+                    leg = "SC" if idx == 0 else "LC"
+                    item["leg"] = leg
+
+                puts.sort(key=lambda x: x["strike"], reverse=True)
+                for idx, item in enumerate(puts):
+                    leg = "SP" if idx == 0 else "LP"
+                    item["leg"] = leg
+
+                for item in (calls + puts):
+                    try:
+                        symbol = item["symbol"]
+                        qty = abs(item["net_qty"])
+                        side = "SELL" if item["net_qty"] < 0 else "BUY"
+                        
+                        avg_price = 0.0
+                        if isinstance(pos_data, list):
+                            for pos in pos_data:
+                                if pos.get('tradingsymbol') == symbol:
+                                    try:
+                                        avg_price = float(pos.get('avgnetprice', 0) or 0)
+                                    except ValueError:
+                                        pass
+                                    break
+                        
+                        if avg_price <= 0:
+                            from bot.core.data_fetcher import DataFetcher
+                            try:
+                                fetcher = DataFetcher(api)
+                                from bot.utils.token_lookup import TokenLookup
+                                tl = TokenLookup()
+                                token = tl.get_token_by_symbol(symbol)
+                                if token:
+                                    avg_price = fetcher.get_ltp(token, exchange="NFO")
+                            except Exception:
+                                avg_price = 10.0
+
+                        from bot.utils.token_lookup import TokenLookup
+                        tl = TokenLookup()
+                        token = tl.get_token_by_symbol(symbol) or "UNKNOWN"
+
+                        self.save_trade(
+                            symbol=symbol,
+                            token=token,
+                            qty=qty,
+                            side=side,
+                            entry_price=avg_price,
+                            sl_price=avg_price * 1.5 if side == "SELL" else avg_price * 0.5,
+                            strategy="STRADDLE_SCALP",
+                            leg=item["leg"],
+                            mode="PAPER" if getattr(api, "dry_run", False) else "LIVE",
+                            status="OPEN"
+                        )
+                        logger.info(f"[Reconcile] ♻️ Reconstructed and synced {item['leg']} Leg: {symbol} (Qty: {qty}, Entry: ₹{avg_price})")
+                        reconciled += 1
+                    except Exception as e:
+                        logger.error(f"[Reconcile] Failed to sync orphaned position {item.get('symbol')}: {e}")
 
         if reconciled:
             logger.info(f"[Reconcile] {reconciled} trade(s) reconciled from broker state.")

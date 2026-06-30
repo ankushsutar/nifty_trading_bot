@@ -41,23 +41,88 @@ class ZeroToHeroStrategy:
         if self.active_position:
              logger.warning("Z2H: Stop signal received. Active wild card remains open. Closing logic suspended for manual handling.")
 
+    def _is_contract_expired(self, symbol: str) -> bool:
+        """
+        Determines if a Zerodha NSE option symbol has already expired.
+
+        Zerodha symbol format (NO year embedded):
+          NIFTY26JUN23800PE  -> day=26, month=JUN, strike=23800, type=PE
+          BANKNIFTY28JUN47000CE -> day=28, month=JUN, strike=47000, type=CE
+
+        The year is inferred from today's date. If the candidate date with the current
+        year is more than 180 days in the past, we assume it refers to next year's expiry.
+
+        Returns True if expiry date < today. Returns False on any parse error (fail-safe).
+        """
+        import re
+        _MONTHS = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+            'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+            'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+        }
+        try:
+            # Zerodha format: INDEX + DD + MMM + STRIKE + OPTTYPE  (no year in symbol)
+            m = re.match(r'[A-Z]+?(\d{2})([A-Z]{3})\d+(CE|PE)', symbol.upper())
+            if not m:
+                return False
+
+            day = int(m.group(1))
+            mon = _MONTHS.get(m.group(2))
+            if not mon:
+                return False
+
+            today = datetime.date.today()
+            try:
+                expiry = datetime.date(today.year, mon, day)
+            except ValueError:
+                return False  # Invalid calendar date
+
+            # If result is more than 180 days in the past, it could be a next-year contract
+            if (today - expiry).days > 180:
+                try:
+                    expiry = datetime.date(today.year + 1, mon, day)
+                except ValueError:
+                    pass
+
+            return expiry < today
+        except Exception as e:
+            logger.warning(f"[Z2H] Expiry parse error for '{symbol}': {e}")
+            return False  # Assume not expired on any error
+
+
     def sync_state(self):
-        """Recover from server crash"""
+        """Recover from server crash. Checks for past-expiry contracts before resuming."""
         mode = "PAPER" if self.dry_run else "LIVE"
         try:
             open_trades = trade_repo.get_open_trades(mode=mode, strategy=self.STRATEGY_NAME)
             if open_trades:
                 t = open_trades[0]
+                sym = t['symbol']
+
+                # --- Expiry Guard: never resume monitoring an expired contract ---
+                if self._is_contract_expired(sym):
+                    logger.warning(
+                        f"⚠️ [Z2H] Recovered trade {t['id']} ({sym}) is from a past expiry. "
+                        f"Closing cleanly in DB — no monitoring will resume."
+                    )
+                    trade_repo.close_trade(
+                        trade_id=t['id'],
+                        exit_price=float(t.get('entry_price', 0)),
+                        pnl=0.0,
+                        exit_reason="EXPIRED_CONTRACT_ON_RECOVERY"
+                    )
+                    return
+
                 self.active_position = {
                     'id': t['id'],
-                    'symbol': t['symbol'],
+                    'symbol': sym,
                     'token': t['token'],
                     'qty': t['qty'],
                     'entry_price': t['entry_price'],
                     'sl_oid': t.get('sl_order_id'),
                     'partially_booked': t.get('partially_booked', False)
                 }
-                logger.info(f"♻️ [Z2H] Recovery active for {t['symbol']}")
+                logger.info(f"♻️ [Z2H] Recovery active for {sym}")
         except Exception as e:
             logger.error(f"Z2H recovery fail: {e}")
 
@@ -217,6 +282,16 @@ class ZeroToHeroStrategy:
         half_booked = self.active_position.get('partially_booked', False)
         
         while self.running:
+            # --- Safety: abort immediately if the contract has expired ---
+            if self._is_contract_expired(sym):
+                logger.warning(f"⚠️ [Z2H] Contract {sym} expiry has passed. Closing trade #{tid}.")
+                ltp_now = self.data_fetcher.get_ltp(token, "NFO") or entry
+                pnl_val = (ltp_now - entry) * qty
+                trade_repo.close_trade(trade_id=tid, exit_price=ltp_now, pnl=pnl_val, exit_reason="CONTRACT_EXPIRED")
+                notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "CONTRACT_EXPIRED")
+                self.active_position = None
+                break
+
             ltp = self.data_fetcher.get_ltp(token, "NFO")
             if not ltp:
                 time.sleep(1)
