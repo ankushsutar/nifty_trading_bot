@@ -659,7 +659,25 @@ class TradeRepository:
                         expiry_val = matching_rows.iloc[0].get('expiry')
                         if expiry_val:
                             if isinstance(expiry_val, str):
-                                expiry_date = datetime.datetime.strptime(expiry_val[:10], '%Y-%m-%d').date()
+                                if '-' in expiry_val:
+                                    expiry_date = datetime.datetime.strptime(expiry_val[:10], '%Y-%m-%d').date()
+                                else:
+                                    _MONTHS_MAP = {
+                                        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+                                        'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+                                        'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+                                    }
+                                    match_exp = re.match(r'^(\d{1,2})([A-Z]{3})(\d{4})', expiry_val.upper())
+                                    if match_exp:
+                                        d_val = int(match_exp.group(1))
+                                        m_val = _MONTHS_MAP.get(match_exp.group(2))
+                                        y_val = int(match_exp.group(3))
+                                        if m_val:
+                                            expiry_date = datetime.date(y_val, m_val, d_val)
+                                        else:
+                                            expiry_date = None
+                                    else:
+                                        expiry_date = None
                             elif isinstance(expiry_val, (datetime.date, datetime.datetime)):
                                 expiry_date = expiry_val if isinstance(expiry_val, datetime.date) else expiry_val.date()
                             else:
