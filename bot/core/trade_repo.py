@@ -803,6 +803,7 @@ class TradeRepository:
         # --- Fetch order book to audit placed trades ---
         broker_orders = {}
         has_orders_info = False
+        raw_orders_list = []
         try:
             from bot.utils.rate_limiter import rate_limiter
             rate_limiter.wait()
@@ -811,6 +812,7 @@ class TradeRepository:
                 ord_data = ord_resp.get('data')
                 if isinstance(ord_data, list):
                     has_orders_info = True
+                    raw_orders_list = ord_data
                     for ord_item in ord_data:
                         sym = ord_item.get('tradingsymbol')
                         status = ord_item.get('status', '').upper()
@@ -978,7 +980,7 @@ class TradeRepository:
                         tl = TokenLookup()
                         token = tl.get_token_by_symbol(symbol) or "UNKNOWN"
 
-                        self.save_trade(
+                        trade_id = self.save_trade(
                             symbol=symbol,
                             token=token,
                             qty=qty,
@@ -990,6 +992,26 @@ class TradeRepository:
                             mode="PAPER" if getattr(api, "dry_run", False) else "LIVE",
                             status="OPEN"
                         )
+                        
+                        # Find and link stop-loss order ID if active on the broker
+                        sl_oid = None
+                        if isinstance(raw_orders_list, list):
+                            for o in raw_orders_list:
+                                o_sym = o.get('tradingsymbol')
+                                o_status = str(o.get('status', '')).upper()
+                                o_type = str(o.get('ordertype', o.get('order_type', ''))).upper()
+                                o_variety = str(o.get('variety', '')).upper()
+                                
+                                if (o_sym == symbol and 
+                                        o_status in ["TRIGGER PENDING", "PENDING", "OPEN", "ACTIVE"] and 
+                                        ("STOPLOSS" in o_type or o_type in ["SL", "SL-M"] or o_variety == "STOPLOSS")):
+                                    sl_oid = o.get('orderid', o.get('order_id'))
+                                    break
+                                    
+                        if sl_oid:
+                            self.update_sl_order_id(trade_id, sl_oid)
+                            logger.info(f"[Reconcile] Linked active broker SL order {sl_oid} to reconstructed trade #{trade_id}")
+                            
                         logger.info(f"[Reconcile] ♻️ Reconstructed and synced {item['leg']} Leg: {symbol} (Qty: {qty}, Entry: ₹{avg_price})")
                         reconciled += 1
                     except Exception as e:
