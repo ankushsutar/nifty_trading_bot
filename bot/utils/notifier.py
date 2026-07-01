@@ -119,4 +119,29 @@ class TelegramNotifier:
         )
         self.send_message(msg)
 
+    def notify_straddle_entry(self, lc_sym, lp_sym, lc_entry, lp_entry, qty_units):
+        net_debit = lc_entry + lp_entry
+        max_risk = net_debit * qty_units
+        msg = (
+            f"📢 <b>MARKET SETUP (STRADDLE BUYING)</b> ⚖️\n"
+            f"Setup: <b>Long Straddle Basket</b> | Qty: {qty_units} units\n"
+            f"Long CE: <code>{lc_sym}</code> @ ₹{lc_entry:.1f}\n"
+            f"Long PE: <code>{lp_sym}</code> @ ₹{lp_entry:.1f}\n"
+            f"Premium Paid: <b>~₹{net_debit:.1f}/lot</b> | Premium Budget: <b>₹{max_risk:,.0f}</b>"
+        )
+        self.send_message(msg)
+
+    def notify_straddle_exit(self, reason, total_pnl):
+        icon = "🎯" if total_pnl > 0 else "🛑"
+        status = "PROFIT" if total_pnl > 0 else "LOSS"
+        pnl_sign = "+" if total_pnl > 0 else ""
+        pnl_formatted = f"₹{pnl_sign}{total_pnl:,.2f}"
+        
+        msg = (
+            f"{icon} <b>STRADDLE CLOSED (STRADDLE BUYING)</b>\n"
+            f"Reason: <b>{reason}</b>\n"
+            f"Net P&L: <b>{pnl_formatted}</b>"
+        )
+        self.send_message(msg)
+
 notifier = TelegramNotifier()
