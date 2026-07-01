@@ -44,10 +44,7 @@ def analyze_expiries(initial_capital=None):
             t_date = datetime.strptime(t["date"], "%Y-%m-%d").date()
             is_expiry = (t_date.weekday() == 3) # Thursday
             
-            if t.get("direction") == "STRADDLE":
-                roi = (t["entry"] - t["exit"]) / t["entry"] * 100
-            else:
-                roi = (t["exit"] - t["entry"]) / t["entry"] * 100
+            roi = (t["exit"] - t["entry"]) / t["entry"] * 100
             
             daily_stats.append({
                 "Date": t_date,

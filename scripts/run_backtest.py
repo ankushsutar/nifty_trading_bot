@@ -98,10 +98,7 @@ def run_ranked_backtest(initial_capital=None):
     for name, m in results.items():
         if "trades" in m:
             for t in m["trades"]:
-                if t.get("direction") == "STRADDLE":
-                    roi = (t["entry"] - t["exit"]) / t["entry"] * 100
-                else:
-                    roi = (t["exit"] - t["entry"]) / t["entry"] * 100
+                roi = (t["exit"] - t["entry"]) / t["entry"] * 100
                 if roi >= 100:
                     hero_trades.append({
                         "Strategy": name,

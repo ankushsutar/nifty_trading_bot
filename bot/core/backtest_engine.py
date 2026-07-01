@@ -443,11 +443,11 @@ class BacktestEngine:
 
             # --- Option premium & sizing ---
             if direction == "STRADDLE":
-                # Combined premium of CE + PE (OTM legs of Iron Condor)
-                entry_premium = max(25.0, atr * 2.5)
-                delta, sl_mult, tgt_mult = 0.08, 1.00, 0.50   # 100% SL, 50% TP target
-                sl_price     = entry_premium * (1 + sl_mult)  # Stop loss is higher (e.g. doubles)
-                target_price = entry_premium * (1 - tgt_mult) # Target is lower (e.g. halves)
+                # Combined premium of CE + PE (ATM Long Straddle)
+                entry_premium = max(100.0, atr * 8.0)
+                sl_price     = entry_premium * 0.85  # 15% stop loss (decay)
+                target_price = entry_premium * 1.25  # 25% take profit (expansion)
+                delta = 0.50
             elif strategy_name == "PULLBACK":
                 entry_premium = max(5.0, atr * self.option_premium_atr_mult)
                 delta, sl_mult, tgt_mult = 0.50, 0.25, 0.375
@@ -469,14 +469,16 @@ class BacktestEngine:
                 sl_price     = entry_premium * (1 - sl_mult)
                 target_price = entry_premium * (1 + tgt_mult)
 
-            # Phase 3: Capital & Lot Sizing Optimization (₹35,000 Specific)
+            # Sizing for Long Straddle Option Buying (uses premium budget only)
             if direction == "STRADDLE":
-                lots = max(1, int(capital / 35000.0))
+                lots = max(1, int(capital / 10000.0))
                 lots = min(lots, self.max_lots)
                 qty = lots * self.lot_size
-                estimated_cost = lots * 35000.0
+                estimated_cost = entry_premium * qty
                 if estimated_cost > capital:
-                    continue
+                    lots = max(1, int(capital / (entry_premium * self.lot_size)))
+                    qty = lots * self.lot_size
+                    estimated_cost = entry_premium * qty
             else:
                 if 30000 <= capital <= 40000:
                     if entry_premium <= 80:
@@ -510,10 +512,7 @@ class BacktestEngine:
             # --- Apply Entry Slippage ---
             # Straddles trade TWO instruments, effectively doubling bid-ask friction
             slip_mult = 2.0 if direction == "STRADDLE" else 1.0
-            if direction == "STRADDLE":
-                entry_premium_slippage = entry_premium * (1 - self.slippage_pct * slip_mult)
-            else:
-                entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
+            entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
 
             # Brokerage + Realistic Taxes (STT, GST, Transaction Charges ≈ 0.1% of turnover)
             # Straddles involve two legs, doubling the total transaction instances
@@ -548,12 +547,8 @@ class BacktestEngine:
             )
 
             # --- Apply Exit Slippage ---
-            if direction == "STRADDLE":
-                exit_price_slippage = exit_price * (1 + self.slippage_pct * slip_mult)
-                pnl = (entry_premium_slippage - exit_price_slippage) * qty - total_cost
-            else:
-                exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
-                pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
+            exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
+            pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
             capital += pnl
             daily_pnl[date]   = daily_pnl.get(date, 0.0) + pnl
             daily_count[date] = d_count + 1
@@ -615,28 +610,22 @@ class BacktestEngine:
 
         for ts, row in future_bars.iterrows():
             if direction == "STRADDLE":
-                # For short Iron Condor:
+                # For Long Straddle:
                 index_move = abs(row["close"] - entry_index)
-                # Option price increases with index move (loss) and decreases with time decay (profit)
+                # Basket price expands non-linearly with index move (long straddle gamma effect)
+                # and decays with time (theta)
                 elapsed_min = (ts - start_ts).total_seconds() / 60
-                decayed_premium = entry_price * (0.24 * (elapsed_min / 375.0)) # ~24% decay per day
-                option_price = entry_price + (index_move * delta) - decayed_premium
-                option_price = max(0.01, option_price)
+                decayed_premium = entry_price * (0.15 * (elapsed_min / 375.0)) # ~15% decay per day
+                option_price = entry_price + (index_move * 0.05) + (index_move ** 2 * 0.0035) - decayed_premium
+                option_price = max(1.0, option_price)
                 
                 # Exits
                 if ts.time() >= dtime(15, 10): # Exits at 3:10 PM
                     return option_price, "TIME_EXIT", ts
-                if option_price >= current_sl:
+                if option_price <= current_sl:
                     return current_sl, "STOPLOSS", ts
-                if option_price <= target_price:
+                if option_price >= target_price:
                     return target_price, "TARGET", ts
-                # Trend-Kill Exit for Option Writing (STRADDLE)
-                if adx_series is not None:
-                    ts_floor = ts.floor("5min")
-                    if ts_floor in adx_series.index:
-                        if adx_series.loc[ts_floor] >= 30.0:
-                            # Exit with current simulated option price at Trend-Kill time
-                            return option_price, "TREND_KILL", ts
                 continue
             else:
                 index_move = (row["close"] - entry_index) if direction == "CE" else (entry_index - row["close"])
