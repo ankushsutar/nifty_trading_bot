@@ -39,6 +39,26 @@ class TestPullbackStrategy(unittest.TestCase):
         self.assertGreater(df_indicators['EMA20'].iloc[-1], 23000)
         self.assertGreater(df_indicators['VWAP'].iloc[-1], 23000)
 
+    def test_indicator_calculations_zero_volume(self):
+        # Build mock dataframe of 5-min candles with 0 volume
+        timestamps = pd.date_range(start="2026-06-25 09:15:00", periods=25, freq="5min")
+        data = {
+            'timestamp': timestamps,
+            'open': [23000.0 + i * 2 for i in range(25)],
+            'high': [23005.0 + i * 2 for i in range(25)],
+            'low': [22995.0 + i * 2 for i in range(25)],
+            'close': [23001.0 + i * 2 for i in range(25)],
+            'volume': [0.0 for _ in range(25)]
+        }
+        df = pd.DataFrame(data)
+        
+        df_indicators = self.strategy.calculate_indicators(df)
+        
+        # Verify VWAP is reasonable (not quadrillions, but close to spot/average close)
+        last_vwap = df_indicators['VWAP'].iloc[-1]
+        self.assertLess(last_vwap, 24000)
+        self.assertGreater(last_vwap, 22000)
+
     def test_check_pullback_signal_bullish(self):
         # Build candles representing a bullish trend that pulled back to EMA20/VWAP and rejected it
         timestamps = pd.date_range(start="2026-06-25 09:15:00", periods=23, freq="5min")

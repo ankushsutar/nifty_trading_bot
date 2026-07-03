@@ -324,12 +324,18 @@ class ZeroToHeroStrategy:
                  half_booked = True
                  # Cancel old SL, let final runner have NO stop-loss! Ultimate freedom.
                  if self.active_position.get('sl_oid'):
-                     self.order_manager.cancel_order(self.active_position['sl_oid'])
+                     self.order_manager.cancel_order(self.active_position['sl_oid'], variety="STOPLOSS")
+                     self.active_position['sl_oid'] = None
                      
             # 2. Disaster Stop Hit Check
             sl_price = round(round(entry * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)
             if ltp <= sl_price and not half_booked:
                  logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
+                 sl_oid = self.active_position.get('sl_oid')
+                 if sl_oid and not self.dry_run:
+                     logger.info(f"Cancelling pending stop-loss order {sl_oid} before hard floor liquidation")
+                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                 
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
                  
                  pnl_val = (ltp - entry) * qty
@@ -342,6 +348,11 @@ class ZeroToHeroStrategy:
             now = datetime.datetime.now().time()
             if now >= datetime.time(15, 10):
                  logger.info(f"⏰ End of Day. Liquidating Wildcard final runner at ₹{ltp}")
+                 sl_oid = self.active_position.get('sl_oid')
+                 if sl_oid and not self.dry_run:
+                     logger.info(f"Cancelling pending stop-loss order {sl_oid} before EOD liquidation")
+                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                 
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
                  
                  pnl_val = (ltp - entry) * qty

@@ -144,9 +144,10 @@ class PullbackStrategy:
             
         df['date'] = df['timestamp'].dt.date
         df['tp_vol'] = typical_price * volume
+        df['volume_adj'] = volume
         
         df['cum_tp_vol'] = df.groupby('date')['tp_vol'].cumsum()
-        df['cum_vol'] = df.groupby('date')['volume'].cumsum()
+        df['cum_vol'] = df.groupby('date')['volume_adj'].cumsum()
         df['VWAP'] = df['cum_tp_vol'] / df['cum_vol'].replace(0, 1e-10)
         
         return df

@@ -151,6 +151,18 @@ class TokenLookup:
                 return subset.iloc[0]['symbol'], subset.iloc[0]['exch_seg']
         return None, None
 
+    def get_token_by_symbol(self, symbol):
+        """Returns the token for a given symbol name."""
+        if self.df is None:
+            self.load_scrip_master()
+        if self.df is not None:
+            mask = (self.df['symbol'] == str(symbol))
+            subset = self.df[mask]
+            if not subset.empty:
+                return str(subset.iloc[0]['token'])
+        return None
+
+
     def get_token(self, symbol_name, expiry_date, strike, option_type, instrument_type='OPTIDX', exchange='NFO'):
         """
         Finds the Angel One token for any instrument.
