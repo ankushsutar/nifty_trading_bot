@@ -332,6 +332,12 @@ class MomentumStrategy:
                         self.close_position("TIME_EXIT")
                     break
 
+                today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+                is_expiry_day = (expiry == today_str)
+                if is_expiry_day and now_time >= datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME) and not self.active_position:
+                    logger.info(f"Expiry Day Block Time reached ({datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME).strftime('%H:%M')}) with no active position. Exiting Momentum strategy.")
+                    break
+
                 # --- SLOW LOOP (Trend Analysis) ---
                 if datetime.datetime.now() >= next_check:
                     # Recalculate next check boundary

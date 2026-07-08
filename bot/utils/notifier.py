@@ -2,7 +2,7 @@ import requests
 import os
 import datetime
 import threading
-from bot.config.settings import Config
+from bot.config.settings import Config, is_test_env
 from bot.utils.logger import logger
 
 class TelegramNotifier:
@@ -20,9 +20,7 @@ class TelegramNotifier:
         """Asynchronously sends a text message to the configured Telegram chat."""
         if not self.enabled: return
         
-        import sys
-        is_testing = 'unittest' in sys.modules or 'pytest' in sys.modules or 'TESTING' in os.environ
-        if is_testing:
+        if is_test_env():
             message = f"🧪 <b>[TEST NOTIFICATION - NOT LIVE]</b>\n\n{message}"
         
         # Dispatch the HTTP POST request to a background thread to keep trading execution non-blocking

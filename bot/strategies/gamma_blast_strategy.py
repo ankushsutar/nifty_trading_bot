@@ -168,6 +168,17 @@ class GammaBlastStrategy:
         logger.info(f"🚀 --- GAMMA BLAST OTM STRATEGY ACTIVATED ({expiry}) ---")
         
         while self.running:
+            # Expiry Block Time check
+            now_time = datetime.datetime.now().time()
+            today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+            is_expiry_day = (expiry == today_str)
+            if is_expiry_day and now_time >= datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME):
+                mode = "PAPER" if self.dry_run else "LIVE"
+                active_trade = trade_repo.get_active_trade(mode=mode, strategy="GAMMA_BLAST")
+                if not active_trade and not self.active_position:
+                    logger.info(f"Expiry Day Block Time reached ({datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME).strftime('%H:%M')}) with no active position. Exiting Gamma Blast strategy.")
+                    break
+
             # 1.5 Global Safety Guards
             if not self.gatekeeper.is_market_open():
                 logger.warning("Gamma Blast: 🛑 Execution Aborted - Market is Closed.")

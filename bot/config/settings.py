@@ -7,6 +7,33 @@ from dotenv import load_dotenv
 load_dotenv(override=False)
 
 
+def is_test_env() -> bool:
+    """
+    Robustly checks if the code is currently running inside a test environment.
+    Avoids checking 'unittest' in sys.modules because libraries like SciPy/NumPy
+    can import unittest at runtime during production execution.
+    """
+    import sys
+    if os.getenv("TESTING") == "true":
+        return True
+    
+    # If pytest is loaded, it is a test runner (scipy/numpy don't load pytest)
+    if "pytest" in sys.modules:
+        return True
+        
+    # Check if the entry point script or any arguments correspond to a test runner
+    main_script = os.path.basename(sys.argv[0]) if sys.argv else ""
+    if "pytest" in main_script or "unittest" in main_script:
+        return True
+        
+    # Check if run via "python -m unittest"
+    if sys.argv and len(sys.argv) > 1 and sys.argv[1] == "unittest":
+        return True
+        
+    return False
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CAPITAL TIER SYSTEM
 # ─────────────────────────────────────────────────────────────────────────────
@@ -223,9 +250,7 @@ class ConfigMeta(type):
 
     @property
     def MONGO_DB(cls):
-        import sys
-        is_testing = 'unittest' in sys.modules or 'pytest' in sys.modules or 'TESTING' in os.environ
-        if is_testing:
+        if is_test_env():
             return "nifty_bot_test"
         return os.getenv("MONGO_DB", "nifty_bot")
 

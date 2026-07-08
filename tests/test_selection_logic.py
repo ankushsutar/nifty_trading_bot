@@ -100,5 +100,38 @@ class TestSelection(unittest.TestCase):
         strat, risk = self.engine.analyze_and_select()
         self.assertEqual(strat, "STRADDLE_SCALP")
 
+    @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
+    @patch('backend.market_service.market_service.get_market_data')
+    @patch('bot.core.decision_engine.datetime.datetime')
+    def test_expiry_lotto_window_selection(self, mock_dt, mock_market, mock_trades):
+        from bot.utils.expiry_calculator import get_next_weekly_expiry
+        next_expiry = get_next_weekly_expiry()
+        expiry_dt = real_datetime.strptime(next_expiry, "%d%b%Y")
+
+        # Expiry day, 14:00 PM (After 13:30, before 14:30) -> Should return None (CASH)
+        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 14, 0)
+        mock_market.return_value = {
+            'nifty': 22000,
+            'vix': 15.0,
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 25},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'levels': {}
+        }
+        strat, risk = self.engine.analyze_and_select()
+        self.assertIsNone(strat)
+
+        # Expiry day, 14:45 PM (During lotto window, ADX 20, volume_spike=True) -> Should select ZERO_TO_HERO
+        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 14, 45)
+        mock_market.return_value = {
+            'nifty': 22000,
+            'vix': 15.0,
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20, 'volume_spike': True},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'levels': {}
+        }
+        strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "ZERO_TO_HERO")
+
+
 if __name__ == '__main__':
     unittest.main()

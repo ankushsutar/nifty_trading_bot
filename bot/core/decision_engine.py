@@ -141,6 +141,18 @@ class DecisionEngine:
         now = datetime.datetime.now().time()
         logger.info(f">>> [Brain] Current Time: {now}")
 
+        today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+        expiry_calc = get_next_weekly_expiry()
+        is_expiry_day = (expiry_calc == today_str)
+        is_expiry_lotto_window = is_expiry_day and (datetime.time(14, 30) <= now <= datetime.time(15, 10))
+        is_lotto_candidate = is_expiry_lotto_window and "ZERO_TO_HERO" in tier.allowed_strategies
+
+        # --- EXPIRY DAY SAFETY CUTOFF FOR STANDARD STRATEGIES ---
+        if is_expiry_day and now >= datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME):
+             if not is_expiry_lotto_window:
+                 logger.info(f">>> [Brain] ⏸️ Expiry Day standard entry window has closed ({datetime.time(*Config.EXPIRY_ENTRY_BLOCK_TIME).strftime('%H:%M')}). Staying in CASH.")
+                 return None, 1.0
+
 
         # 3. Market Regime Analysis
         logger.info(">>> [Brain] 📊 Fetching Market Data from Service Layer...")
@@ -246,7 +258,7 @@ class DecisionEngine:
         momentum_adx_threshold = 30.0 if is_chop_hours_pb else 25.0
         is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
         
-        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"] and not is_pullback_candidate:
+        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"] and not is_pullback_candidate and not is_lotto_candidate:
             logger.info(
                 f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
                 f"{tier.min_adx_to_trade + adx_boost} minimum"
@@ -302,6 +314,10 @@ class DecisionEngine:
         # --- SUPERNOVA DETECTED: Upgrade to ZERO_TO_HERO Wildcard ---
         if confluence_score >= 6 and adx >= 50.0:
             logger.info(f"🛸 [SUPERNOVA] Confluence {confluence_score}/7 & ADX {adx:.1f} detected. Launching Zero-To-Hero Wildcard mode! 🚀")
+            selected_strategy = "ZERO_TO_HERO"
+        
+        elif is_expiry_lotto_window and (regime == "TRENDING" or volume_spike or is_breakout or adx >= 20.0):
+            logger.info(f"🛸 [LOTTO] Expiry Lotto window active. Launching Zero-To-Hero Wildcard mode! 🚀")
             selected_strategy = "ZERO_TO_HERO"
         
         elif panic_data.get('panic_score', 50) >= 80:
@@ -443,6 +459,9 @@ class DecisionEngine:
             float: score in [0, 100]. Returns 100.0 (pass-through) when
             insufficient historical data exists (warm-up period).
         """
+        if strategy_name == "ZERO_TO_HERO":
+            return 100.0
+
         try:
             from bot.core.trade_repo import trade_repo
             mode = "PAPER" if self.dry_run else "LIVE"

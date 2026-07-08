@@ -205,9 +205,15 @@ class ZeroToHeroStrategy:
                 time.sleep(10)
                 continue
             
-            # Z2H specific ADX Gate - must be blazing
-            if adx < 45:
-                logger.info(f"Z2H Sleep: ADX {adx:.1f} too low for explosive lotto. Need 45+.")
+            # Z2H specific ADX Gate - must be blazing (loosened during the Expiry Lotto Window)
+            now_t = datetime.datetime.now().time()
+            today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
+            is_expiry_day = (expiry == today_str)
+            is_expiry_lotto_window = is_expiry_day and (datetime.time(14, 30) <= now_t <= datetime.time(15, 10))
+            
+            required_adx = 15.0 if is_expiry_lotto_window else 45.0
+            if adx < required_adx:
+                logger.info(f"Z2H Sleep: ADX {adx:.1f} too low for explosive lotto. Need {required_adx}+.")
                 time.sleep(60)
                 continue
             
@@ -217,11 +223,13 @@ class ZeroToHeroStrategy:
             ema21 = analysis.get('ema21')
             
             if not ema9 or not ema21:
+                logger.info("Z2H Waiting: EMA9 or EMA21 indicators missing from market analysis.")
                 time.sleep(30)
                 continue
                 
             leg = "CE" if nifty_ltp > ema9 > ema21 else ("PE" if nifty_ltp < ema9 < ema21 else None)
             if not leg:
+                logger.info(f"Z2H Waiting: Nifty LTP ({nifty_ltp:.2f}) not aligned with EMA9 ({ema9:.2f}) and EMA21 ({ema21:.2f}) for trend direction.")
                 time.sleep(30)
                 continue
                 
@@ -233,13 +241,15 @@ class ZeroToHeroStrategy:
                 continue
             
             # 4. Size fixed at risk limit
-            # Max ₹3000 = roughly 2-3 lots at ₹10 premium
-            max_allowed_qty = (self.MAX_ABSOLUTE_RISK / prem)
+            # Dynamic risk sizing: 5% of total capital (with a minimum ₹3,000 floor to maintain viable sizing)
+            current_capital = self.gatekeeper.get_current_capital()
+            dynamic_risk_limit = max(3000.0, current_capital * 0.05)
+            max_allowed_qty = (dynamic_risk_limit / prem)
             lots = int(max_allowed_qty // Config.NIFTY_LOT_SIZE)
             qty = int(max(1, lots) * Config.NIFTY_LOT_SIZE)
             
             total_deployed = qty * prem
-            logger.info(f"🛸 Deploying Wild Card: Buying {qty} {symbol} @ ₹{prem}. Est Cost: ₹{total_deployed:.2f}")
+            logger.info(f"🛸 Deploying Wild Card: Buying {qty} {symbol} @ ₹{prem}. Est Cost: ₹{total_deployed:.2f} (Risk Limit: ₹{dynamic_risk_limit:.2f} based on ₹{current_capital:.2f} capital)")
             
             # Execution
             mode = "PAPER" if self.dry_run else "LIVE"

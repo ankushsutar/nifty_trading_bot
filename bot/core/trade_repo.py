@@ -5,7 +5,7 @@ import os
 import sys
 # pyrefly: ignore [missing-import]
 from pymongo import MongoClient, ASCENDING, DESCENDING
-from bot.config.settings import Config
+from bot.config.settings import Config, is_test_env
 from bot.utils.logger import logger
 
 class InMemoryCollection:
@@ -115,8 +115,7 @@ class TradeRepository:
         return cls._instance
 
     def _init_db(self):
-        is_testing = 'unittest' in sys.modules or 'pytest' in sys.modules or 'TESTING' in os.environ
-        if is_testing:
+        if is_test_env():
             logger.info("TradeRepository: Test environment detected. Using InMemoryCollection.")
             from unittest.mock import MagicMock
             self.client = MagicMock()
