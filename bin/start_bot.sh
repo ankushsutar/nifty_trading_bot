@@ -5,6 +5,10 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 echo -e "${GREEN}>>> Starting Nifty Bot Auto-Trader 🤖${NC}"
 echo -e "${GREEN}>>> Mode: Lifecycle Manager (Scheduler)${NC}"
 
@@ -28,4 +32,4 @@ else
 fi
 
 # Execute Lifecycle Manager and pass all arguments (e.g. --test, --dry-run)
-python3 lifecycle_manager.py "$@"
+python3 -m bot.lifecycle_manager "$@"

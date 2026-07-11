@@ -6,6 +6,10 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 echo -e "${BLUE}>>> Authorization: STOPPING Nifty Trading Bot System... 🛑${NC}"
 
 # 1. Frontend

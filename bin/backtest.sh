@@ -4,6 +4,10 @@
 # Usage: ./backtest.sh [days]
 # Example: ./backtest.sh 60
 
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 DAYS=${1:-30}
 CAPITAL=${2:-38000}
 VENV_PATH="./venv/bin/python3"

@@ -5,6 +5,10 @@ GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 echo -e "${BLUE}>>> Nifty Trading Bot Setup Details 🚀${NC}"
 
 # 1. Python Details
@@ -84,5 +88,5 @@ else
     exit 1
 fi
 
-echo -e "\n${GREEN}🎉 Setup Complete! Run ./run.sh to start the bot.${NC}"
-chmod +x run.sh
+echo -e "\n${GREEN}🎉 Setup Complete! Run ./bin/run.sh to start the bot.${NC}"
+chmod +x bin/run.sh

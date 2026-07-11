@@ -1,8 +1,8 @@
 #!/bin/bash
 # setup_cron.sh: Configures the crontab for automatic trading hours
 
-AUTOSTART="/home/cwd/ankush/agent/nifty_trading_bot/scripts/autostart.sh"
-AUTOSTOP="/home/cwd/ankush/agent/nifty_trading_bot/scripts/autostop.sh"
+AUTOSTART="/home/cwd/ankush/agent/nifty_trading_bot/bin/autostart.sh"
+AUTOSTOP="/home/cwd/ankush/agent/nifty_trading_bot/bin/autostop.sh"
 
 # Ensure scripts are executable
 chmod +x $AUTOSTART

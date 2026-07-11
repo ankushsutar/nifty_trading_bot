@@ -7,6 +7,10 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 echo -e "${BLUE}>>> Starting Nifty Trading Bot System 📈${NC}"
 
 # 0. Activate Virtual Environment
@@ -14,7 +18,7 @@ if [ -d "venv" ]; then
     echo -e "${BLUE}>>> Activating virtual environment...${NC}"
     source venv/bin/activate
 else
-    echo -e "${YELLOW}>>> Warning: venv not found. Please run ./setup.sh first.${NC}"
+    echo -e "${YELLOW}>>> Warning: venv not found. Please run ./bin/setup.sh first.${NC}"
 fi
 
 # Function to kill all child processes on exit

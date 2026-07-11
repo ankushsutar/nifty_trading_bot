@@ -1,6 +1,10 @@
 #!/bin/bash
 
 # --- Configuration ---
+# Navigate to project root directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+cd "$SCRIPT_DIR/.."
+
 STRATEGY="SELLING"
 LOG_FILE="logs/selling_engine.log"
 PID_FILE="data/selling_engine.pid"
