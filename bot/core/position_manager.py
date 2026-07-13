@@ -118,6 +118,57 @@ class LadderedTrailingManager:
             active_position['ladder_stage'] = 3
             current_stage = 3
 
+        # Stage 3.5: ROI Stop Gate (Lock in profit at 100% ROI)
+        roi = points_up / entry_price
+        if current_stage < 3.5 and roi >= 1.0:
+            new_sl = entry_price * 1.5
+            if new_sl > current_sl:
+                # Dynamic scale out size: 25% on Expiries or Super-Parabolic trends to protect moonshots, 50% otherwise
+                from bot.utils.expiry_calculator import get_next_weekly_expiry
+                current_time = self._get_current_time()
+                today_str = current_time.strftime("%d%b%Y").upper()
+                is_expiry_day = (get_next_weekly_expiry(today=current_time.date()) == today_str)
+                adx_val = self._get_current_adx()
+                is_super_parabolic = (adx_val >= 40.0)
+                
+                if is_expiry_day or is_super_parabolic:
+                    book_ratio = 0.25
+                    logger.info(f"🏆 ROI Stop Gate: Expiry/Super-Parabolic active (ADX: {adx_val:.1f} | Expiry: {is_expiry_day}). Scale-out = 25% (preserving 75% runners) | SL: {new_sl}")
+                else:
+                    book_ratio = 0.50
+                    logger.info(f"🏆 ROI Stop Gate: Normal regime active (ADX: {adx_val:.1f}). Scale-out = 50% (preserving 50% runners) | SL: {new_sl}")
+                
+                total_qty = active_position.get('qty', 0)
+                if total_qty > Config.NIFTY_LOT_SIZE:
+                    lots_total = total_qty // Config.NIFTY_LOT_SIZE
+                    lots_to_sell = max(1, int(lots_total * book_ratio))
+                    qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
+                    remaining_sl_qty = total_qty - qty_to_sell
+                    
+                    logger.info(f"⏳ Updating Broker SL for ROI Stop: Reducing quantity to {remaining_sl_qty}...")
+                    sl_updated_ok = self._apply_sl_update(strategy_name, active_position, new_sl, stage=3.5, override_qty=remaining_sl_qty)
+                    
+                    if not sl_updated_ok:
+                        logger.error(f"❌ Failed to update Stop-Loss price/quantity on broker for ROI Stop. Aborting partial booking.")
+                    else:
+                        logger.info(f"💰 PARTIAL BOOKING (ROI Stop): Securing {lots_to_sell} lots. Letting the rest RUN.")
+                        oid = self.order_manager.place_smart_limit(symbol, token, qty_to_sell, ltp, "SELL", strategy_name=strategy_name)
+                        if oid:
+                            pnl_booked = (ltp - entry_price) * qty_to_sell
+                            trade_repo.reduce_position(active_position['id'], qty_to_sell, ltp, pnl_booked, "STAGE_3_5_PARTIAL")
+                            active_position['qty'] = total_qty - qty_to_sell
+                        else:
+                            # Rollback SL quantity to original if booking failed/cancelled
+                            sl_oid = active_position.get('sl_order_id')
+                            if sl_oid and not self.order_manager.dry_run:
+                                logger.warning(f"⚠️ Partial booking order failed/cancelled. Restoring Broker SL Order {sl_oid} quantity to {total_qty}...")
+                                self.order_manager.modify_sl_order(
+                                    sl_oid, active_position['sl_price'], symbol, token, total_qty
+                                )
+                else:
+                    self._apply_sl_update(strategy_name, active_position, new_sl, stage=3.5)
+                current_stage = 3.5
+
         if current_stage >= 3:
             now = time.time()
             if now - self._last_ema_check > 10: 
@@ -192,13 +243,42 @@ class LadderedTrailingManager:
         
         return True
 
-
+    def _get_current_time(self):
+        return datetime.datetime.now()
+        
+    def _get_current_adx(self):
+        try:
+            from bot.config.instruments import get_instrument
+            import pandas as pd
+            instr = get_instrument(Config.ACTIVE_SYMBOL)
+            spot_tok = instr.analysis_token
+            df5 = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE", exchange=instr.exchange)
+            if df5 is not None and len(df5) >= 20:
+                df = df5.copy()
+                period = 14
+                df['up'] = df['high'] - df['high'].shift(1)
+                df['dn'] = df['low'].shift(1) - df['low']
+                df['pdm'] = df['up'].where((df['up'] > df['dn']) & (df['up'] > 0), 0)
+                df['ndm'] = df['dn'].where((df['dn'] > df['up']) & (df['dn'] > 0), 0)
+                df['tr1'] = df['high'] - df['low']
+                df['tr2'] = abs(df['high'] - df['close'].shift(1))
+                df['tr3'] = abs(df['low'] - df['close'].shift(1))
+                df['tr'] = df[['tr1', 'tr2', 'tr3']].max(axis=1)
+                df['atr'] = df['tr'].ewm(alpha=1/period, adjust=False).mean()
+                df['pdi'] = 100 * (df['pdm'].ewm(alpha=1/period, adjust=False).mean() / df['atr'])
+                df['ndi'] = 100 * (df['ndm'].ewm(alpha=1/period, adjust=False).mean() / df['atr'])
+                df['dx'] = 100 * abs(df['pdi'] - df['ndi']) / (df['pdi'] + df['ndi'])
+                adx_series = df['dx'].ewm(alpha=1/period, adjust=False).mean()
+                return adx_series.iloc[-1]
+        except Exception as e:
+            logger.warning(f"Error calculating ADX in trailing manager: {e}")
+        return 0.0
 
     def is_killswitch_time(self):
         """
         Regardless of profit, if the time is 15:10 (3:10 PM), execute a MARKET exit.
         """
-        now = datetime.datetime.now().time()
+        now = self._get_current_time().time()
         if now >= datetime.time(15, 10):
             return True
         return False

@@ -563,6 +563,53 @@ class GammaBlastStrategy:
                 logger.info(f"🔥 SQUEEZE DEPLOYMENT: Bypassing lot fraction handicap. Deploying 100% of risk-parity lots ({lots}).")
             else:
                 lots = int(raw_lots * _tier.gamma_blast_lot_pct)
+
+            # --- DYNAMIC PYRAMIDING & CAPITAL SCALING (VOLATILITY EXPANSION) ---
+            is_vol_expansion = False
+            try:
+                spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+                df5 = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE")
+                if df5 is not None and len(df5) >= 20:
+                    tp = (df5['high'] + df5['low'] + df5['close']) / 3
+                    volume = df5['volume'].fillna(0)
+                    if (volume == 0).all():
+                        volume = pd.Series(1.0, index=df5.index)
+                    df5['date'] = df5['timestamp'].dt.date if 'timestamp' in df5.columns else df5.index.date
+                    df5['tp_vol'] = tp * volume
+                    df5['volume_adj'] = volume
+                    cum_tp_vol = df5.groupby('date')['tp_vol'].cumsum()
+                    cum_vol = df5.groupby('date')['volume_adj'].cumsum()
+                    df5['VWAP'] = cum_tp_vol / cum_vol.replace(0, 1e-10)
+                    
+                    df5['std'] = df5['close'].rolling(window=20).std()
+                    df5['vwap_lower'] = df5['VWAP'] - 2.5 * df5['std']
+                    df5['vwap_upper'] = df5['VWAP'] + 2.5 * df5['std']
+                    
+                    df5_adx = self.calculate_adx(df5)
+                    if len(df5_adx) >= 2:
+                        curr_adx = df5_adx.iloc[-1]
+                        prev_adx = df5_adx.iloc[-2]
+                        adx_slope = curr_adx - prev_adx
+                        
+                        last_row = df5.iloc[-1]
+                        vwap_lower = last_row.get('vwap_lower', 0)
+                        vwap_upper = last_row.get('vwap_upper', 0)
+                        
+                        if curr_adx > 30 and adx_slope > 0:
+                            if leg == "CE" and ltp > vwap_upper:
+                                is_vol_expansion = True
+                            elif leg == "PE" and ltp < vwap_lower:
+                                is_vol_expansion = True
+            except Exception as e:
+                logger.warning(f"Error checking volatility expansion bands: {e}")
+
+            if is_vol_expansion:
+                daily_realized_pnl = self.gatekeeper.get_daily_realized_pnl()
+                if daily_realized_pnl > 0:
+                    old_lots = lots
+                    lots = int(lots * 1.5)
+                    logger.info(f"🔥 VOLATILITY EXPANSION DETECTED (ADX: {curr_adx:.1f} | Price outside 2.5 SD VWAP) + positive daily realized PnL (₹{daily_realized_pnl:.0f}).")
+                    logger.info(f"📈 Pyramiding: Scaling up initial lots from {old_lots} to {lots} (1.5x).")
             if lots < 1:
                 # Only force 1 lot if capital can actually cover a single lot
                 estimated_cost = margin_per_lot

@@ -22,8 +22,8 @@ class TestSelection(unittest.TestCase):
     @patch('backend.market_service.market_service.get_market_data')
     @patch('bot.core.decision_engine.datetime.datetime')
     def test_logic(self, mock_dt, mock_market, mock_trades):
-        # Case 1: 9:45 AM, ADX 35 (Should be ORB)
-        mock_dt.now.return_value = real_datetime(2026, 2, 27, 9, 45)
+        # Case 1: 9:45 AM, Friday (weekday 4), ADX 35 (Should be MOMENTUM)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 9, 45)  # Friday
         mock_market.return_value = {
             'nifty': 22000,
             'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
@@ -34,7 +34,7 @@ class TestSelection(unittest.TestCase):
         print(f"9:45 AM, ADX 35 -> Expected: MOMENTUM, Got: {strat}")
         self.assertEqual(strat, "MOMENTUM")
 
-        # Case 2: 11:00 AM, ADX 35 (Should be MOMENTUM)
+        # Case 2: 11:00 AM, Friday, ADX 35 (Should be MOMENTUM)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
@@ -46,7 +46,7 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 35 -> Expected: MOMENTUM, Got: {strat}")
         self.assertEqual(strat, "MOMENTUM")
 
-        # Case 3: 11:00 AM, ADX 50 (Should be GAMMA_BLAST)
+        # Case 3: 11:00 AM, Friday, ADX 50 (Should be GAMMA_BLAST)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
@@ -58,7 +58,7 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 50 -> Expected: GAMMA_BLAST, Got: {strat}")
         self.assertEqual(strat, "GAMMA_BLAST")
 
-        # Case 4: 11:00 AM, ADX 20 (Should be STRADDLE_SCALP via Sideways exception)
+        # Case 4: 11:00 AM, Friday, ADX 20 (Should be None/CASH because STRADDLE_SCALP is deactivated)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
@@ -67,38 +67,48 @@ class TestSelection(unittest.TestCase):
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
-        print(f"11:00 AM, ADX 20 -> Expected: STRADDLE_SCALP, Got: {strat}")
-        self.assertEqual(strat, "STRADDLE_SCALP")
+        print(f"11:00 AM, ADX 20 -> Expected: None, Got: {strat}")
+        self.assertIsNone(strat)
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')
     @patch('bot.core.decision_engine.datetime.datetime')
-    def test_straddle_scalp_cutoff(self, mock_dt, mock_market, mock_trades):
-        from bot.utils.expiry_calculator import get_next_weekly_expiry
-        next_expiry = get_next_weekly_expiry()
-        expiry_dt = real_datetime.strptime(next_expiry, "%d%b%Y")
-
-        # Expiry day, 12:35 PM (Past 12:30 cutoff) -> Should return None
-        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 12, 35)
+    def test_tuesday_expiry_priority(self, mock_dt, mock_market, mock_trades):
+        # Tuesday (weekday 1), 11:00 AM, ADX 20, trending -> Should force GAMMA_BLAST
+        mock_dt.now.return_value = real_datetime(2026, 3, 10, 11, 0)  # Tuesday
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'SIDEWAYS', 'trend': 'NEUTRAL', 'adx': 15},
-            'oi_data': {'bias': 'NEUTRAL', 'pcr': 1.0},
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "GAMMA_BLAST")
+
+    @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
+    @patch('backend.market_service.market_service.get_market_data')
+    @patch('bot.core.decision_engine.datetime.datetime')
+    def test_thursday_pullback_morning_filter(self, mock_dt, mock_market, mock_trades):
+        # Thursday morning (weekday 3), 9:30 AM, ADX 20, regime TRENDING -> Should select PULLBACK
+        mock_dt.now.return_value = real_datetime(2026, 3, 5, 9, 30)  # Thursday
+        mock_market.return_value = {
+            'nifty': 22000,
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'levels': {}
+        }
+        strat, risk = self.engine.analyze_and_select()
+        self.assertEqual(strat, "PULLBACK")
+
+        # Wednesday morning (weekday 2), 9:30 AM, ADX 20, regime TRENDING -> Should return None (CASH)
+        mock_dt.now.return_value = real_datetime(2026, 3, 4, 9, 30)  # Wednesday
+        strat, risk = self.engine.analyze_and_select()
         self.assertIsNone(strat)
 
-        # Expiry day, 12:25 PM (Before 12:30 cutoff) -> Should select STRADDLE_SCALP
-        mock_dt.now.return_value = real_datetime(expiry_dt.year, expiry_dt.month, expiry_dt.day, 12, 25)
+        # Wednesday afternoon (weekday 2), 12:30 PM, ADX 20, regime TRENDING -> Should select PULLBACK (not morning)
+        mock_dt.now.return_value = real_datetime(2026, 3, 4, 12, 30)  # Wednesday afternoon
         strat, risk = self.engine.analyze_and_select()
-        self.assertEqual(strat, "STRADDLE_SCALP")
-
-        # Non-expiry day, 12:35 PM (Before 15:00 cutoff) -> Should select STRADDLE_SCALP
-        non_expiry_dt = expiry_dt + datetime.timedelta(days=1)
-        mock_dt.now.return_value = real_datetime(non_expiry_dt.year, non_expiry_dt.month, non_expiry_dt.day, 12, 35)
-        strat, risk = self.engine.analyze_and_select()
-        self.assertEqual(strat, "STRADDLE_SCALP")
+        self.assertEqual(strat, "PULLBACK")
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')
@@ -131,7 +141,6 @@ class TestSelection(unittest.TestCase):
         }
         strat, risk = self.engine.analyze_and_select()
         self.assertEqual(strat, "ZERO_TO_HERO")
-
 
 if __name__ == '__main__':
     unittest.main()

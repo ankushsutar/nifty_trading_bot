@@ -28,7 +28,7 @@ class BacktestEngine:
 
     # Market session constants
     SESSION_START = dtime(9, 15)
-    SESSION_END   = dtime(15, 15)        # Time-exit cutoff
+    SESSION_END   = dtime(15, 10)        # Time-exit cutoff
     BLACKOUT_START = dtime(11, 30)
     BLACKOUT_END   = dtime(13, 0)
     OHL_WINDOW_END = dtime(9, 20)
@@ -124,6 +124,23 @@ class BacktestEngine:
         self.df_1m  = df
         self.df_5m  = self._resample(df, "5min")
         self.df_15m = self._resample(df, "15min")
+
+        # Compute 2.5 SD VWAP bands for df_5m (used for GAMMA_BLAST pyramiding)
+        df5 = self.df_5m
+        tp = (df5['high'] + df5['low'] + df5['close']) / 3
+        volume = df5['volume'].fillna(0)
+        if (volume == 0).all():
+            volume = pd.Series(1.0, index=df5.index)
+        dates = df5.index.date
+        
+        df_temp = pd.DataFrame({'tp_vol': tp * volume, 'volume': volume, 'date': dates}, index=df5.index)
+        cum_tp_vol = df_temp.groupby('date')['tp_vol'].cumsum()
+        cum_vol = df_temp.groupby('date')['volume'].cumsum()
+        
+        self.df_5m['VWAP'] = cum_tp_vol / cum_vol.replace(0, 1e-10)
+        self.df_5m['std'] = df5['close'].rolling(window=20).std()
+        self.df_5m['vwap_lower'] = self.df_5m['VWAP'] - 2.5 * self.df_5m['std']
+        self.df_5m['vwap_upper'] = self.df_5m['VWAP'] + 2.5 * self.df_5m['std']
 
         logger.info(
             f"[Backtest] Data loaded: {len(df)} 1m bars | "
@@ -350,6 +367,11 @@ class BacktestEngine:
         adx_threshold = is_chop_hours.map(lambda x: 30.0 if x else 25.0)
         adx_ok = (df5["adx"] >= 18.0) & (df5["adx"] < adx_threshold)
         
+        # Isolate morning pullback signals (before 10:30 AM) exclusively to Thursdays (weekday 3)
+        is_morning = df5.index.time < dtime(10, 30)
+        is_thursday = df5.index.weekday == 3
+        pullback_allowed = ~(is_morning & ~is_thursday)
+        
         # Bullish signal conditions
         touched_ema_bull = prev_low <= prev_ema20 * 1.0005
         touched_vwap_bull = prev_low <= prev_vwap * 1.0005
@@ -362,6 +384,7 @@ class BacktestEngine:
             adx_ok &
             (rejected_ema_bull | rejected_vwap_bull) &
             is_bullish_candle &
+            pullback_allowed &
             self._in_session(df5) &
             ~self._in_blackout(df5)
         )
@@ -378,6 +401,7 @@ class BacktestEngine:
             adx_ok &
             (rejected_ema_bear | rejected_vwap_bear) &
             is_bearish_candle &
+            pullback_allowed &
             self._in_session(df5) &
             ~self._in_blackout(df5)
         )
@@ -497,6 +521,35 @@ class BacktestEngine:
                 
                 # Realistic Cap: Never trade more than max_lots
                 lots = min(lots, self.max_lots)
+
+                # --- DYNAMIC PYRAMIDING & CAPITAL SCALING (VOLATILITY EXPANSION) ---
+                is_vol_expansion = False
+                if strategy_name == "GAMMA_BLAST" and ts in self.df_5m.index:
+                    row_5m = self.df_5m.loc[ts]
+                    adx_val = row_5m.get('adx', 0)
+                    idx_pos = self.df_5m.index.get_loc(ts)
+                    if idx_pos > 0:
+                        prev_adx_val = self.df_5m.iloc[idx_pos - 1].get('adx', 0)
+                        adx_slope = adx_val - prev_adx_val
+                    else:
+                        adx_slope = 0
+                    
+                    spot_close = row_5m.get('close', 0)
+                    vwap_lower = row_5m.get('vwap_lower', 0)
+                    vwap_upper = row_5m.get('vwap_upper', 0)
+                    
+                    if adx_val > 30 and adx_slope > 0:
+                        if direction == "CE" and spot_close > vwap_upper:
+                            is_vol_expansion = True
+                        elif direction == "PE" and spot_close < vwap_lower:
+                            is_vol_expansion = True
+                
+                if is_vol_expansion and daily_pnl.get(date, 0.0) > 0:
+                    old_lots = lots
+                    lots = int(lots * 1.5)
+                    lots = min(lots, self.max_lots)
+                    logger.debug(f"[Backtest] Volatility Expansion Pyramiding! Scaling lots from {old_lots} to {lots} (1.5x) on date {date}.")
+
                 qty  = lots * self.lot_size
 
                 # Margin check: estimated cost <= 90% of capital
@@ -532,7 +585,7 @@ class BacktestEngine:
             # Get all 1m bars AFTER confirmed completion of the signaling bar
             future_bars = df1[df1.index >= execution_ts]
             future_day  = future_bars[future_bars.index.date == date]
-            future_day  = future_day[future_day.index.time <= dtime(15, 15)]
+            future_day  = future_day[future_day.index.time <= dtime(15, 10)]
 
             if future_day.empty:
                 continue
@@ -682,6 +735,14 @@ class BacktestEngine:
                 if stage < 3 and points_up >= threshold_3_0:
                     stage = 3
                 
+                # Stage 3.5: ROI Stop Gate
+                roi = points_up / entry_price
+                if stage < 3.5 and roi >= 1.0:
+                    new_sl = entry_price * 1.5
+                    if new_sl > current_sl:
+                        current_sl = new_sl
+                        stage = 3.5
+                
                 # --- STAGE 4: MOONSHOT MODE (X-FACTOR) ---
                 if stage < 4 and points_up >= threshold_4_0: 
                     new_sl = entry_price + min(45.0, round(3.0 * initial_risk, 1)) # Scaled moonshot floor
@@ -696,7 +757,7 @@ class BacktestEngine:
                         current_sl = trail_sl
 
             # Exits
-            if ts.time() >= dtime(15, 15):
+            if ts.time() >= dtime(15, 10):
                 return option_price, "TIME_EXIT", ts
 
             if option_price <= current_sl:

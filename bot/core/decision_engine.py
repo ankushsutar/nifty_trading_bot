@@ -138,11 +138,12 @@ class DecisionEngine:
             return None, 1.0
 
         # 2. Check Time
-        now = datetime.datetime.now().time()
+        today_dt = datetime.datetime.now()
+        now = today_dt.time()
         logger.info(f">>> [Brain] Current Time: {now}")
 
-        today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
-        expiry_calc = get_next_weekly_expiry()
+        today_str = today_dt.strftime("%d%b%Y").upper()
+        expiry_calc = get_next_weekly_expiry(today=today_dt.date())
         is_expiry_day = (expiry_calc == today_str)
         is_expiry_lotto_window = is_expiry_day and (datetime.time(14, 30) <= now <= datetime.time(15, 10))
         is_lotto_candidate = is_expiry_lotto_window and "ZERO_TO_HERO" in tier.allowed_strategies
@@ -267,8 +268,9 @@ class DecisionEngine:
             )
             return None, 1.0
         # 6. Hybrid Strategy Switcher (The "At Any Cost" Logic)
-        today_str = datetime.datetime.now().strftime("%d%b%Y").upper()
-        expiry_calc = get_next_weekly_expiry()
+        today_dt = datetime.datetime.now()
+        today_str = today_dt.strftime("%d%b%Y").upper()
+        expiry_calc = get_next_weekly_expiry(today=today_dt.date())
         is_expiry_day = (expiry_calc == today_str)
         is_afternoon  = (datetime.datetime.now().time() >= datetime.time(13, 0))
         is_morning    = (datetime.datetime.now().time() < datetime.time(10, 30))
@@ -330,6 +332,11 @@ class DecisionEngine:
             logger.info(f"🚀 [SNIPER ACTIVATE] Explosive Volume Breakout confirmed. Overriding ADX Lag -> Selecting GAMMA_BLAST")
             selected_strategy = "GAMMA_BLAST"
 
+        # --- TUESDAY EXPIRY PRIORITY FOR GAMMA_BLAST ---
+        elif datetime.datetime.now().weekday() == 1 and (adx >= 20.0 or regime == "TRENDING" or volume_spike or is_breakout):
+            logger.info(f"📅 [TUESDAY REGIME] Priority Expiry routing (ADX: {adx:.1f} | Regime: {regime}). Selected: GAMMA_BLAST")
+            selected_strategy = "GAMMA_BLAST"
+        
         elif adx >= tier.adx_gamma_blast:
             # PARABOLIC TREND -> Use Gamma Blast on ANY day
             logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
@@ -349,15 +356,26 @@ class DecisionEngine:
             selected_strategy = "PULLBACK"
         
         elif is_morning and adx < 20:
-            # Morning Sideways -> Straddle Scalp
-            selected_strategy = "STRADDLE_SCALP"
+            # Morning Sideways -> No entry since STRADDLE_SCALP is deactivated
+            selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else None
             
         elif adx < 18:
-            # Range-Bound Regime
-            selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else "STRADDLE_SCALP"
+            # Range-Bound Regime -> No entry since STRADDLE_SCALP is deactivated
+            selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else None
         else:
-            # Transition Phase
-            selected_strategy = "STRADDLE_SCALP"
+            # Transition Phase -> No entry
+            selected_strategy = None
+
+        # Handle None strategy selection
+        if selected_strategy is None:
+            logger.info(">>> [Brain] ⏸️ No viable strategy active for the current market regime. Staying in CASH.")
+            return None, 1.0
+
+        # --- WEEKDAY GATE FOR PULLBACK MORNING ENTRY ---
+        # Isolate morning PULLBACK entries exclusively to Thursday mornings (weekday == 3)
+        if selected_strategy == "PULLBACK" and is_morning and datetime.datetime.now().weekday() != 3:
+            logger.warning(">>> [Brain] ⏸️ PULLBACK Morning Entry blocked: Restricted exclusively to post-expiry cycle setup hours (Thursday morning).")
+            return None, 1.0
         
         # ── VOLATILITY DEADZONE OVERRIDE ─────────────────────────────────────
         # Explosive options buying relies on volatility 'fuel'. If VIX is historically
@@ -372,14 +390,6 @@ class DecisionEngine:
                 f"Insufficient volatility fuel for Gamma Blast. Downgrading to MOMENTUM."
             )
             selected_strategy = "MOMENTUM"
-        if selected_strategy == "STRADDLE_SCALP":
-            entry_cutoff = datetime.time(12, 30) if is_expiry_day else datetime.time(15, 0)
-            if now >= entry_cutoff:
-                logger.info(
-                    f">>> [Brain] ⏸️ STRADDLE_SCALP entry window has closed ({entry_cutoff.strftime('%H:%M:%S')}). "
-                    f"Current time: {now.strftime('%H:%M:%S')}. Staying in CASH."
-                )
-                return None, 1.0
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

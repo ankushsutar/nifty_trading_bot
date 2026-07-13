@@ -180,5 +180,101 @@ class TestPartialBookingSLReduction(unittest.TestCase):
         # Verify position quantity was updated locally
         self.assertEqual(self.active_position['qty'], 65)
 
+    @patch('bot.core.position_manager.trade_repo')
+    def test_roi_stop_gate_success_normal_day(self, mock_repo):
+        """Test that Stage 3.5 ROI Stop Gate triggers and scales out 50% on a normal day (Friday)."""
+        import datetime as dt_module
+        self.manager._get_current_time = MagicMock(return_value=dt_module.datetime(2026, 3, 6, 11, 0)) # Friday
+        self.mock_order_manager.modify_sl_order.return_value = True
+        self.mock_order_manager.place_smart_limit.return_value = 'roi_oid_111'
+        
+        # Initialize stage to 3.0, atr to 30.0, and qty to 260 (4 lots of 65)
+        self.active_position['ladder_stage'] = 3.0
+        self.active_position['sl_price'] = 110.0
+        self.active_position['atr'] = 30.0
+        self.active_position['qty'] = 260
+        
+        # Entry = 100.0, LTP = 200.0 (ROI = 100%)
+        ltp = 200.0
+        
+        should_close, exit_type = self.manager.update_trailing_sl(
+            strategy_name="GAMMA_BLAST",
+            active_position=self.active_position,
+            ltp=ltp
+        )
+        
+        self.assertFalse(should_close)
+        
+        # Verify SL was updated to entry_price * 1.5 = 150.0
+        self.assertEqual(self.active_position['sl_price'], 150.0)
+        self.assertEqual(self.active_position['ladder_stage'], 3.5)
+        
+        # For 50% scale-out on 4 lots (260 qty), we sell 2 lots (130 qty), leaving 130 qty
+        self.mock_order_manager.modify_sl_order.assert_any_call(
+            'sl_order_999',
+            150.0,
+            'NIFTY2662323900PE',
+            '12345',
+            130
+        )
+        
+        # Verify place_smart_limit was called for 130 qty
+        self.mock_order_manager.place_smart_limit.assert_called_once_with(
+            'NIFTY2662323900PE',
+            '12345',
+            130,
+            ltp,
+            'SELL',
+            strategy_name='GAMMA_BLAST'
+        )
+
+    @patch('bot.core.position_manager.trade_repo')
+    def test_roi_stop_gate_expiry_day(self, mock_repo):
+        """Test that Stage 3.5 ROI Stop Gate triggers and scales out only 25% on an Expiry Day (Tuesday)."""
+        import datetime as dt_module
+        self.manager._get_current_time = MagicMock(return_value=dt_module.datetime(2026, 3, 10, 11, 0)) # Tuesday (Expiry)
+        self.mock_order_manager.modify_sl_order.return_value = True
+        self.mock_order_manager.place_smart_limit.return_value = 'roi_oid_222'
+        
+        # Initialize stage to 3.0, atr to 30.0, and qty to 260 (4 lots of 65)
+        self.active_position['ladder_stage'] = 3.0
+        self.active_position['sl_price'] = 110.0
+        self.active_position['atr'] = 30.0
+        self.active_position['qty'] = 260
+        
+        # Entry = 100.0, LTP = 200.0 (ROI = 100%)
+        ltp = 200.0
+        
+        should_close, exit_type = self.manager.update_trailing_sl(
+            strategy_name="GAMMA_BLAST",
+            active_position=self.active_position,
+            ltp=ltp
+        )
+        
+        self.assertFalse(should_close)
+        
+        # Verify SL was updated to entry_price * 1.5 = 150.0
+        self.assertEqual(self.active_position['sl_price'], 150.0)
+        self.assertEqual(self.active_position['ladder_stage'], 3.5)
+        
+        # For 25% scale-out on 4 lots (260 qty), we sell 1 lot (65 qty), leaving 195 qty
+        self.mock_order_manager.modify_sl_order.assert_any_call(
+            'sl_order_999',
+            150.0,
+            'NIFTY2662323900PE',
+            '12345',
+            195
+        )
+        
+        # Verify place_smart_limit was called for 65 qty
+        self.mock_order_manager.place_smart_limit.assert_called_once_with(
+            'NIFTY2662323900PE',
+            '12345',
+            65,
+            ltp,
+            'SELL',
+            strategy_name='GAMMA_BLAST'
+        )
+
 if __name__ == '__main__':
     unittest.main()

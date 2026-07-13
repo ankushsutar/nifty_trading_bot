@@ -55,7 +55,7 @@ def is_trading_day(date=None):
     return True
 
 
-def get_next_weekly_expiry(symbol_name=None):
+def get_next_weekly_expiry(symbol_name=None, today=None):
     """
     Returns the next weekly expiry for the active or given symbol as 'DDMMMYYYY' (e.g. '06JAN2026').
     
@@ -71,7 +71,11 @@ def get_next_weekly_expiry(symbol_name=None):
     instr = get_instrument(symbol_name)
     target_weekday = instr.expiry_day  # 1=Tue, 2=Wed, etc.
 
-    today = datetime.date.today()
+    if today is None:
+        today = datetime.date.today()
+    elif hasattr(today, "date") and callable(getattr(today, "date", None)):
+        today = today.date()
+
     days_ahead = (target_weekday - today.weekday()) % 7
     next_expiry = today + datetime.timedelta(days=days_ahead)
 
