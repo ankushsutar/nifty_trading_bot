@@ -16,6 +16,7 @@ from bot.core.trade_repo import trade_repo
 from bot.core.order_manager import OrderManager
 from bot.core.position_manager import LadderedTrailingManager
 from bot.core.oi_analyzer import OIAnalyzer
+from bot.utils.notifier import notifier
 
 class PullbackStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -119,11 +120,20 @@ class PullbackStrategy:
                         qty = self.active_position['qty']
                         pnl = (fill_price - entry_p) * qty
                         
+                        try:
+                            notifier.notify_trade_exit("PULLBACK", self.active_position['symbol'], pnl, "BROKER_SL_HIT")
+                        except Exception as e:
+                            logger.error(f"Notification Error: {e}")
+                        
                         trade_repo.close_trade(trade_id=trade_id, symbol=self.active_position['symbol'], exit_price=fill_price, pnl=round(pnl, 2), exit_reason="BROKER_SL_HIT")
                         self.active_position = None
                         return
-
+ 
                 logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
+                try:
+                    notifier.notify_trade_exit("PULLBACK", self.active_position['symbol'], 0.0, "EXTERNAL_SYNC_RESET")
+                except Exception as e:
+                    logger.error(f"Notification Error: {e}")
                 trade_repo.close_trade(symbol=self.active_position['symbol'], exit_reason="EXTERNAL_SYNC_RESET")
                 self.active_position = None
                 
@@ -399,6 +409,10 @@ class PullbackStrategy:
             if tid:
                 self.active_position['id'] = tid
                 trade_repo.update_trade_context(tid, trade_context)
+            try:
+                notifier.notify_trade_entry("PULLBACK", symbol, "BUY", qty, quote_ltp, sl=sl_price, target=target_price)
+            except Exception as e:
+                logger.error(f"Notification Error: {e}")
             return
 
         # Place Order
@@ -442,6 +456,10 @@ class PullbackStrategy:
                 self.active_position['id'] = tid
                 if sl_oid:
                     trade_repo.update_sl_order(tid, sl_oid)
+            try:
+                notifier.notify_trade_entry("PULLBACK", symbol, "BUY", qty, fill_price, sl=actual_sl, target=fill_price + (sl_points * 1.5))
+            except Exception as e:
+                logger.error(f"Notification Error: {e}")
                     
         except Exception as e:
             logger.error(f"Pullback Order Error: {e}")
@@ -526,6 +544,11 @@ class PullbackStrategy:
         mode = "PAPER" if self.dry_run else "LIVE"
         pnl = (exit_price - self.active_position['entry_price']) * qty
         
+        try:
+            notifier.notify_trade_exit("PULLBACK", symbol, pnl, reason)
+        except Exception as e:
+            logger.error(f"Notification Error: {e}")
+
         trade_repo.close_trade(
             trade_id=self.active_position.get('id'), symbol=symbol,
             exit_price=exit_price, pnl=round(pnl, 2), exit_reason=reason
