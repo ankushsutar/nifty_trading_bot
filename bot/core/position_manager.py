@@ -110,18 +110,19 @@ class LadderedTrailingManager:
                 else:
                     self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
                 
-                current_stage = 2
-
-        # Stage 3: The Runner (1m 21-EMA Trail with Volatility Buffer)
+                # Stage 3: The Runner (1m 21-EMA Trail with Volatility Buffer)
         if current_stage < 3 and points_up >= threshold_3_0:
             logger.info(f"🏃 Stage 3: Runner Mode Active. Transitioning to 1m 21-EMA Trail.")
             active_position['ladder_stage'] = 3
             current_stage = 3
 
-        # Stage 3.5: ROI Stop Gate (Lock in profit at 100% ROI)
+        # Stage 3.5: ROI Stop Gate (Lock in profit dynamically based on VIX)
         roi = points_up / entry_price
-        if current_stage < 3.5 and roi >= 1.0:
-            new_sl = entry_price * 1.5
+        vix_val = self._get_current_vix()
+        roi_threshold = 0.6 if vix_val < 12.0 else 1.0
+        
+        if current_stage < 3.5 and roi >= roi_threshold:
+            new_sl = entry_price * (1.3 if vix_val < 12.0 else 1.5)
             if new_sl > current_sl:
                 # Dynamic scale out size: 25% on Expiries or Super-Parabolic trends to protect moonshots, 50% otherwise
                 from bot.utils.expiry_calculator import get_next_weekly_expiry
@@ -133,10 +134,10 @@ class LadderedTrailingManager:
                 
                 if is_expiry_day or is_super_parabolic:
                     book_ratio = 0.25
-                    logger.info(f"🏆 ROI Stop Gate: Expiry/Super-Parabolic active (ADX: {adx_val:.1f} | Expiry: {is_expiry_day}). Scale-out = 25% (preserving 75% runners) | SL: {new_sl}")
+                    logger.info(f"🏆 ROI Stop Gate: Expiry/Super-Parabolic active (ADX: {adx_val:.1f} | Expiry: {is_expiry_day}). Scale-out = 25% (preserving 75% runners) | SL: {new_sl} [VIX: {vix_val}]")
                 else:
                     book_ratio = 0.50
-                    logger.info(f"🏆 ROI Stop Gate: Normal regime active (ADX: {adx_val:.1f}). Scale-out = 50% (preserving 50% runners) | SL: {new_sl}")
+                    logger.info(f"🏆 ROI Stop Gate: Normal regime active (ADX: {adx_val:.1f}). Scale-out = 50% (preserving 50% runners) | SL: {new_sl} [VIX: {vix_val}]")
                 
                 total_qty = active_position.get('qty', 0)
                 if total_qty > Config.NIFTY_LOT_SIZE:
@@ -176,9 +177,20 @@ class LadderedTrailingManager:
                 # Use 1m 21-EMA as the anchor
                 ema_val = self._get_1m_ema(token, period=21)
                 if ema_val > 0:
-                    # Anchor at EMA but ensure 1.2 ATR of room from LTP
-                    ema_sl = round(ema_val - (0.3 * atr), 1)
-                    hard_room_sl = round(ltp - (1.8 * atr), 1) # Fallback room
+                    vix_val = self._get_current_vix()
+                    if vix_val < 12.0:
+                        ema_room = 0.1
+                        fallback_room = 1.2
+                    elif vix_val > 18.0:
+                        ema_room = 0.5
+                        fallback_room = 2.2
+                    else:
+                        ema_room = 0.3
+                        fallback_room = 1.8
+
+                    # Anchor at EMA but ensure room from LTP
+                    ema_sl = round(ema_val - (ema_room * atr), 1)
+                    hard_room_sl = round(ltp - (fallback_room * atr), 1) # Fallback room
                     new_sl = max(ema_sl, hard_room_sl)
                     
                     if new_sl > current_sl and new_sl < ltp - (0.5 * atr):
@@ -202,6 +214,16 @@ class LadderedTrailingManager:
             return True, "MARKET"
 
         return False, None
+
+    def _get_current_vix(self):
+        try:
+            # INDIA VIX token: 99926017, exchange: NSE
+            vix_resp = self.order_manager.api.ltpData("NSE", "INDIA VIX", "99926017")
+            if vix_resp and vix_resp.get('status'):
+                return float(vix_resp['data']['ltp'])
+        except Exception as e:
+            logger.warning(f"Error fetching VIX in trailing manager: {e}")
+        return 15.0  # Fallback standard VIX
 
     def _get_1m_ema(self, token, period=21):
         try:

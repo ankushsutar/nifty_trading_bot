@@ -77,10 +77,31 @@ class OrderManager:
             logger.error(f"Order Placement Error: {e}")
             return None
 
+    def check_spread_safe(self, symbol, token):
+        """Checks if the bid-ask spread is within safe limits (<1.5%)."""
+        if self.dry_run or not self.live_trade_enabled:
+            return True
+        try:
+            l1 = self.api.get_order_book_l1("NFO", symbol, token)
+            bid = float(l1.get("bid", 0.0))
+            ask = float(l1.get("ask", 0.0))
+            ltp = float(l1.get("ltp", 0.0))
+            if bid > 0 and ask > 0 and ltp > 0:
+                spread = (ask - bid) / ltp
+                if spread > 0.015:
+                    logger.warning(f"⚠️ [Safety] Bid-Ask spread too wide for {symbol}: {spread:.2%} (Bid: {bid}, Ask: {ask}, LTP: {ltp}). Rejecting trade to prevent slippage.")
+                    return False
+        except Exception as e:
+            logger.error(f"Error checking bid-ask spread: {e}")
+        return True
+
     def place_limit_order(self, symbol, token, qty, price, transaction_type="BUY"):
         """
         Places a LIMIT order with optional price rounding.
         """
+        if transaction_type.upper() == "BUY" and not self.check_spread_safe(symbol, token):
+            return None
+
         try:
             # Round to 0.05 tick size, then snap to 2 decimal places to
             # eliminate floating-point artifacts like 116.60000000000001
@@ -110,6 +131,9 @@ class OrderManager:
 
     def place_market(self, symbol, token, qty, transaction_type="SELL", strategy_name=None, mode=None):
         """Places a Pseudo-MARKET order (LIMIT order with aggressive buffer to ensure instant fill)."""
+        if transaction_type.upper() == "BUY" and not self.check_spread_safe(symbol, token):
+            return None
+
         try:
             # 1. Fetch live LTP
             ltp_resp = self.api.ltpData("NFO", symbol, token)
@@ -118,14 +142,28 @@ class OrderManager:
                 return None
             current_price = float(ltp_resp['data']['ltp'])
             
-            # 2. Calculate pseudo-market Limit Price
-            # For BUY, we are willing to pay up to 3% MORE than current LTP.
-            # For SELL, we are willing to accept up to 3% LESS than current LTP.
-            # This ensures an instant fill against the order book.
-            if transaction_type.upper() == "BUY":
-                limit_price = current_price * 1.03
+            # 2. Fetch India VIX to determine dynamic slippage buffer
+            vix = 15.0
+            try:
+                vix_resp = self.api.ltpData("NSE", "INDIA VIX", "99926017")
+                if vix_resp and vix_resp.get('status'):
+                    vix = float(vix_resp['data']['ltp'])
+            except Exception as e:
+                logger.warning(f"Failed to fetch India VIX for dynamic slippage: {e}")
+
+            if vix < 12.0:
+                buffer_pct = 0.015
+            elif vix > 18.0:
+                buffer_pct = 0.05
             else:
-                limit_price = current_price * 0.97
+                buffer_pct = 0.03
+
+            # For BUY, we are willing to pay up to buffer_pct MORE than current LTP.
+            # For SELL, we are willing to accept up to buffer_pct LESS than current LTP.
+            if transaction_type.upper() == "BUY":
+                limit_price = current_price * (1.0 + buffer_pct)
+            else:
+                limit_price = current_price * (1.0 - buffer_pct)
                 
             # Round to NSE tick size (0.05)
             limit_price = round(limit_price * 20) / 20
@@ -143,7 +181,7 @@ class OrderManager:
                 "price": limit_price,
                 "disclosedquantity": 0
             }
-            logger.info(f"⚡ Placing Pseudo-MARKET (LIMIT at {limit_price}) Order for {symbol} ({transaction_type})")
+            logger.info(f"⚡ Placing Pseudo-MARKET (LIMIT at {limit_price}) Order for {symbol} ({transaction_type}) [Dynamic Buffer: {buffer_pct:.1%}]")
             return self.place_order(orderparams, strategy_name=strategy_name, mode=mode)
         except Exception as e:
             logger.error(f"Market Order Error: {e}")

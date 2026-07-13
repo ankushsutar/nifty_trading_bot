@@ -134,12 +134,19 @@ class OIAnalyzer:
                 if not opt_info:
                     continue
 
+                # Calculate distance weight centering on ATM (base_strike)
+                dist = abs(opt_info['strike'] - base_strike) / strike_diff
+                weight = max(0.2, 1.0 - (dist * 0.16))
+
+                weighted_current_oi = current_oi * weight
+                weighted_delta_oi = delta_oi * weight
+
                 if opt_info['type'] == 'CE':
-                    total_ce_oi += current_oi
-                    total_ce_delta += delta_oi
+                    total_ce_oi += weighted_current_oi
+                    total_ce_delta += weighted_delta_oi
                 else:
-                    total_pe_oi += current_oi
-                    total_pe_delta += delta_oi
+                    total_pe_oi += weighted_current_oi
+                    total_pe_delta += weighted_delta_oi
 
             # Calculations
             pcr = total_pe_oi / total_ce_oi if total_ce_oi > 0 else 1.0

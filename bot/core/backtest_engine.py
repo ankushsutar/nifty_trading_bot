@@ -565,10 +565,18 @@ class BacktestEngine:
                 if estimated_cost > capital:
                     continue  # Genuinely unaffordable
 
-            # --- Apply Entry Slippage ---
+            # --- Apply Dynamic Entry Slippage ---
+            # Scale slippage based on volatility (ATR)
+            if atr < 15.0:
+                current_slippage_pct = self.slippage_pct * 0.5
+            elif atr > 30.0:
+                current_slippage_pct = self.slippage_pct * 1.5
+            else:
+                current_slippage_pct = self.slippage_pct
+
             # Straddles trade TWO instruments, effectively doubling bid-ask friction
             slip_mult = 2.0 if direction == "STRADDLE" else 1.0
-            entry_premium_slippage = entry_premium * (1 + self.slippage_pct * slip_mult)
+            entry_premium_slippage = entry_premium * (1 + current_slippage_pct * slip_mult)
 
             # Brokerage + Realistic Taxes (STT, GST, Transaction Charges ≈ 0.1% of turnover)
             # Straddles involve two legs, doubling the total transaction instances
@@ -602,8 +610,8 @@ class BacktestEngine:
                 adx_series=self.df_5m["adx"]
             )
 
-            # --- Apply Exit Slippage ---
-            exit_price_slippage = exit_price * (1 - self.slippage_pct * slip_mult)
+            # --- Apply Dynamic Exit Slippage ---
+            exit_price_slippage = exit_price * (1 - current_slippage_pct * slip_mult)
             pnl = (exit_price_slippage - entry_premium_slippage) * qty - total_cost
             capital += pnl
             daily_pnl[date]   = daily_pnl.get(date, 0.0) + pnl
@@ -738,10 +746,11 @@ class BacktestEngine:
                 if stage < 3 and points_up >= threshold_3_0:
                     stage = 3
                 
-                # Stage 3.5: ROI Stop Gate
+                # Stage 3.5: ROI Stop Gate (VIX/ATR-adjusted)
                 roi = points_up / entry_price
-                if stage < 3.5 and roi >= 1.0:
-                    new_sl = entry_price * 1.5
+                roi_threshold = 0.6 if atr < 15.0 else 1.0
+                if stage < 3.5 and roi >= roi_threshold:
+                    new_sl = entry_price * (1.3 if atr < 15.0 else 1.5)
                     if new_sl > current_sl:
                         current_sl = new_sl
                         stage = 3.5
@@ -754,8 +763,15 @@ class BacktestEngine:
                         stage = 4
 
                 if stage >= 3:
-                    # Trailing Stop: Use 10% of current premium trailing stop in runner mode
-                    trail_sl = option_price * 0.90
+                    # Trailing Stop: Adaptive trailing stop based on volatility proxy
+                    if atr < 15.0:
+                        trail_pct = 0.93  # 7% trailing room
+                    elif atr > 30.0:
+                        trail_pct = 0.85  # 15% trailing room
+                    else:
+                        trail_pct = 0.90  # 10% trailing room
+                    
+                    trail_sl = option_price * trail_pct
                     if trail_sl > current_sl:
                         current_sl = trail_sl
 

@@ -35,6 +35,7 @@ class TestPartialBookingSLReduction(unittest.TestCase):
         self.mock_order_manager.modify_sl_order.reset_mock()
         self.mock_order_manager.place_smart_limit.reset_mock()
         self.mock_data_fetcher.get_ltp.return_value = 150.0
+        self.manager._get_current_vix = MagicMock(return_value=15.0)
 
     @patch('bot.core.position_manager.trade_repo')
     def test_partial_booking_success(self, mock_repo):
@@ -275,6 +276,59 @@ class TestPartialBookingSLReduction(unittest.TestCase):
             'SELL',
             strategy_name='GAMMA_BLAST'
         )
+
+    @patch('bot.core.position_manager.trade_repo')
+    def test_roi_stop_gate_low_vix(self, mock_repo):
+        """Test that in a low-VIX regime, the ROI Stop Gate triggers early at 60% and sets SL to entry * 1.3."""
+        import datetime as dt_module
+        self.manager._get_current_time = MagicMock(return_value=dt_module.datetime(2026, 3, 6, 11, 0)) # Friday
+        self.manager._get_current_vix = MagicMock(return_value=10.0) # Low VIX
+        self.mock_order_manager.modify_sl_order.return_value = True
+        self.mock_order_manager.place_smart_limit.return_value = 'roi_oid_low_vix'
+        
+        self.active_position['ladder_stage'] = 3.0
+        self.active_position['sl_price'] = 110.0
+        self.active_position['atr'] = 30.0
+        self.active_position['qty'] = 260
+        
+        # Entry = 100.0, LTP = 160.0 (ROI = 60%)
+        ltp = 160.0
+        
+        should_close, exit_type = self.manager.update_trailing_sl(
+            strategy_name="GAMMA_BLAST",
+            active_position=self.active_position,
+            ltp=ltp
+        )
+        
+        self.assertFalse(should_close)
+        # Verify SL was updated to entry_price * 1.3 = 130.0
+        self.assertEqual(self.active_position['sl_price'], 130.0)
+        self.assertEqual(self.active_position['ladder_stage'], 3.5)
+
+    @patch('bot.core.position_manager.trade_repo')
+    def test_trailing_stop_low_vix_tightening(self, mock_repo):
+        """Test that in low-VIX regime, trailing stop is tightened (0.1 ATR room from EMA)."""
+        import time as time_module
+        self.manager._last_ema_check = 0
+        self.manager._get_current_vix = MagicMock(return_value=10.0) # Low VIX
+        self.manager._get_1m_ema = MagicMock(return_value=180.0)
+        self.mock_order_manager.modify_sl_order.return_value = True
+        
+        self.active_position['ladder_stage'] = 3.0
+        self.active_position['sl_price'] = 110.0
+        self.active_position['atr'] = 10.0
+        self.active_position['qty'] = 65
+        
+        # LTP = 190.0, EMA = 180.0. Under low VIX, room from EMA is 0.1 * ATR = 1.0. SL = 180.0 - 1.0 = 179.0.
+        ltp = 190.0
+        
+        should_close, exit_type = self.manager.update_trailing_sl(
+            strategy_name="GAMMA_BLAST",
+            active_position=self.active_position,
+            ltp=ltp
+        )
+        
+        self.assertEqual(self.active_position['sl_price'], 179.0)
 
 if __name__ == '__main__':
     unittest.main()
