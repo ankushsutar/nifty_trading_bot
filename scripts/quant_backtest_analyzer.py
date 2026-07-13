@@ -176,5 +176,12 @@ if __name__ == "__main__":
     if not os.path.exists(DATA):
         print("No data found.")
         sys.exit(1)
-    out = "/home/cwd/.gemini/antigravity/brain/1dc73332-4c7a-4652-88e9-7e172d335e39/quant_analysis_report.md"
+    
+    # Default to current active conversation ID path
+    default_out = "/home/cwd/.gemini/antigravity/brain/6c0986b8-bf06-476c-b9d5-0b7ccd20b9dc/quant_analysis_report.md"
+    out = sys.argv[1] if len(sys.argv) > 1 else default_out
+    
+    # Ensure directory exists
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    
     run_quant_assessment(DATA, out)

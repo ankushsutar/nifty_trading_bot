@@ -87,7 +87,7 @@ class BacktestEngine:
             risk_per_trade_pct=tier.risk_per_trade_pct,
             max_trades_per_day=tier.max_trades_per_day,
             min_gamma_adx=tier.adx_gamma_blast,
-            max_lots=tier.max_lots * 3, # Allow reasonable upper growth room in backtest
+            max_lots=tier.max_lots * 3 if tier.max_lots > 0 else 0, # Allow reasonable upper growth room in backtest, 0 = unlimited
             tier_sl_pct=tier.sl_pct
         )
 
@@ -496,7 +496,8 @@ class BacktestEngine:
             # Sizing for Long Straddle Option Buying (uses premium budget only)
             if direction == "STRADDLE":
                 lots = max(1, int(capital / 10000.0))
-                lots = min(lots, self.max_lots)
+                if self.max_lots > 0:
+                    lots = min(lots, self.max_lots)
                 qty = lots * self.lot_size
                 estimated_cost = entry_premium * qty
                 if estimated_cost > capital:
@@ -520,7 +521,8 @@ class BacktestEngine:
                     lots = max(1, int(risk_amount / max_loss_per_lot)) if max_loss_per_lot > 0 else 1
                 
                 # Realistic Cap: Never trade more than max_lots
-                lots = min(lots, self.max_lots)
+                if self.max_lots > 0:
+                    lots = min(lots, self.max_lots)
 
                 # --- DYNAMIC PYRAMIDING & CAPITAL SCALING (VOLATILITY EXPANSION) ---
                 is_vol_expansion = False
@@ -547,7 +549,8 @@ class BacktestEngine:
                 if is_vol_expansion and daily_pnl.get(date, 0.0) > 0:
                     old_lots = lots
                     lots = int(lots * 1.5)
-                    lots = min(lots, self.max_lots)
+                    if self.max_lots > 0:
+                        lots = min(lots, self.max_lots)
                     logger.debug(f"[Backtest] Volatility Expansion Pyramiding! Scaling lots from {old_lots} to {lots} (1.5x) on date {date}.")
 
                 qty  = lots * self.lot_size
