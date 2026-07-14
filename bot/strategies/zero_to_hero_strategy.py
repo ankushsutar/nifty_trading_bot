@@ -232,6 +232,22 @@ class ZeroToHeroStrategy:
                 logger.info(f"Z2H Waiting: Nifty LTP ({nifty_ltp:.2f}) not aligned with EMA9 ({ema9:.2f}) and EMA21 ({ema21:.2f}) for trend direction.")
                 time.sleep(30)
                 continue
+
+            # Sentiment/PCR alignment check to prevent counter-sentiment trading
+            oi_data = md.get('oi_data', {})
+            pcr = oi_data.get('pcr') if isinstance(oi_data, dict) else md.get('pcr', 1.0)
+            if pcr is None:
+                pcr = 1.0
+
+            if leg == "PE" and pcr > 1.15:
+                logger.info(f"Z2H Blocked: PE entry blocked because PCR ({pcr:.2f}) is bullish (> 1.15).")
+                time.sleep(30)
+                continue
+            if leg == "CE" and pcr < 0.85:
+                logger.info(f"Z2H Blocked: CE entry blocked because PCR ({pcr:.2f}) is bearish (< 0.85).")
+                time.sleep(30)
+                continue
+
                 
             # 3. Locate the cheap rocket
             token, symbol, prem, strike = self._find_deep_otm_contract(leg, nifty_ltp, expiry)
