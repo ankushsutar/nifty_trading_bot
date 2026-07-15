@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bot.core.trade_repo import TradeRepository, trade_repo
-from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 
 def test_is_symbol_expired():
     # Patch TokenLookup to disable scrip master layer, forcing Layer 2 regex fallback
@@ -130,36 +129,3 @@ def test_reconcile_with_broker_sync():
          assert call_symbols['NIFTY26JUN1822000CE'] == 'SC'
          assert call_symbols['NIFTY26JUN1822100CE'] == 'LC'
 
-def test_straddle_scalp_resumption():
-    api = MagicMock()
-    loader = MagicMock()
-    
-    strategy = StraddleScalpStrategy(api, loader, dry_run=True)
-    
-    # Mock trade_repo.get_open_trades to return expired trades
-    expired_trade = {
-        'id': 'trade_123',
-        'symbol': 'NIFTY24JUN0322000CE', # expired
-        'token': '12345',
-        'leg': 'LC',
-        'qty': 50,
-        'entry_price': 100.0,
-        'strategy': 'STRADDLE_SCALP'
-    }
-    
-    with patch.object(trade_repo.collection, 'find') as mock_find, \
-         patch.object(trade_repo, 'close_trade') as mock_close, \
-         patch.object(TradeRepository, '_is_symbol_expired', return_value=True):
-         
-         mock_find.return_value = [expired_trade]
-         
-         # Try resuming
-         strategy.sync_state()
-         
-         # And close_trade should have been called on the expired trade
-         mock_close.assert_called_once_with(
-             trade_id='trade_123',
-             exit_price=0.0,
-             pnl=0.0,
-             exit_reason='EXPIRED_CONTRACT_ON_RECOVERY'
-         )

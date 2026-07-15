@@ -137,10 +137,8 @@ export default function MissionControl() {
           <option value="AUTO">🤖 AUTO-PILOT</option>
           <option value="MOMENTUM">⚡ MOMENTUM</option>
           <option value="GAMMA_BLAST">🚀 GAMMA BLAST</option>
-          <option value="STRADDLE_SCALP">🎯 STRADDLE SCALP</option>
           <option value="ZERO_TO_HERO">🛸 ZERO-TO-HERO</option>
           <option value="PULLBACK">📈 PULLBACK (VWAP/EMA)</option>
-          <option value="STRADDLE">📉 9:20 STRADDLE</option>
           <option value="SELLING">💰 SELLING ENGINE</option>
         </select>
       </section>

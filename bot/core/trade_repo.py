@@ -979,6 +979,22 @@ class TradeRepository:
                         tl = TokenLookup()
                         token = tl.get_token_by_symbol(symbol) or "UNKNOWN"
 
+                        # Try to inherit actual strategy and leg from the most recent DB record of this symbol
+                        reconstructed_strategy = "MOMENTUM"
+                        reconstructed_leg = item["leg"]
+                        
+                        try:
+                            recent_db_trade = self.collection.find_one(
+                                {"symbol": symbol, "mode": "PAPER" if getattr(api, "dry_run", False) else "LIVE"},
+                                sort=[("id", -1)]
+                            )
+                            if recent_db_trade:
+                                reconstructed_strategy = recent_db_trade.get("strategy", "MOMENTUM")
+                                if recent_db_trade.get("leg"):
+                                    reconstructed_leg = recent_db_trade["leg"]
+                        except Exception as inherit_err:
+                            logger.warning(f"[Reconcile] Could not inherit strategy for {symbol}: {inherit_err}")
+
                         trade_id = self.save_trade(
                             symbol=symbol,
                             token=token,
@@ -986,8 +1002,8 @@ class TradeRepository:
                             side=side,
                             entry_price=avg_price,
                             sl_price=avg_price * 1.5 if side == "SELL" else avg_price * 0.5,
-                            strategy="STRADDLE_SCALP",
-                            leg=item["leg"],
+                            strategy=reconstructed_strategy,
+                            leg=reconstructed_leg,
                             mode="PAPER" if getattr(api, "dry_run", False) else "LIVE",
                             status="OPEN"
                         )

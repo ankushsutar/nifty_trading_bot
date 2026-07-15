@@ -58,7 +58,7 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 50 -> Expected: GAMMA_BLAST, Got: {strat}")
         self.assertEqual(strat, "GAMMA_BLAST")
 
-        # Case 4: 11:00 AM, Friday, ADX 20 (Should be None/CASH because STRADDLE_SCALP is deactivated)
+        # Case 4: 11:00 AM, Friday, ADX 20 (Should be None/CASH because STRADDLE_SCALP is removed)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,

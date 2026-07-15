@@ -24,7 +24,7 @@ from bot.utils.logger import logger
 class BacktestEngine:
     """Vectorized backtesting engine that mirrors live strategy logic."""
 
-    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "PULLBACK"]
+    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "PULLBACK"]
 
     # Market session constants
     SESSION_START = dtime(9, 15)
@@ -202,7 +202,6 @@ class BacktestEngine:
         dispatch = {
             "MOMENTUM":   self._momentum_signals,
             "GAMMA_BLAST":self._gamma_blast_signals,
-            "STRADDLE_SCALP": self._straddle_scalp_signals,
             "PULLBACK": self._pullback_signals,
         }
         fn = dispatch.get(strategy_name)
@@ -313,27 +312,6 @@ class BacktestEngine:
             
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
-    # ---- STRADDLE SCALP (ADX < 20 Sideways Market) ---- #
-
-    def _straddle_scalp_signals(self) -> pd.DataFrame:
-        df5 = self.df_5m.copy()
-        df5["adx"] = self._adx(df5, 14)
-        df5["atr"] = self._atr(df5, 14)
-
-        # Signal: Entry when ADX < 20 and it's morning session
-        # Strategy doesn't care about direction (buys both CE and PE)
-        # Session filtering is handled by _simulate_session as well.
-        entry_signals = (
-            (df5["adx"] < 20) &
-            self._in_session(df5) &
-            (df5.index.time <= dtime(11, 0))  # Strategy limit
-        )
-
-        rows = []
-        for ts in entry_signals[entry_signals].index:
-            rows.append({"timestamp": ts, "direction": "STRADDLE", "atr": df5.loc[ts, "atr"]})
-            
-        return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
     # ---- PULLBACK (VWAP/20-EMA touch-and-rejection in low-ADX trends) ---- #
 
@@ -587,7 +565,7 @@ class BacktestEngine:
 
             # --- FIX: Lookahead Bias Prevention ---
             # Signals are emitted at bar-start. We MUST wait for the bar to CLOSE before executing.
-            # Our core trinity (GAMMA_BLAST, MOMENTUM, STRADDLE_SCALP) all use 5-min timeframes.
+            # Our core strategies (GAMMA_BLAST, MOMENTUM) use 5-min timeframes.
             timeframe_delay = 5  # Wait for 5m bar to complete
 
             execution_ts = ts + pd.Timedelta(minutes=timeframe_delay)

@@ -229,9 +229,9 @@ class DecisionEngine:
             is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
             
             if not confidence_high and adx <= tier.min_adx_to_trade + adx_boost:
-                # EXCEPTION: Allow low-ADX chop regimes through so Straddle Scalp can be evaluated, or PULLBACK setups
+                # EXCEPTION: Allow low-ADX chop regimes through so SELLING can be evaluated, or PULLBACK setups
                 if (regime in ["SIDEWAYS", "CHOP"] and adx < 24) or is_pullback_candidate:
-                    logger.info(">>> [Brain] Small Account: Allowing setup through A+ filter for potential Scalp/Selling or Pullback.")
+                    logger.info(">>> [Brain] Small Account: Allowing setup through A+ filter for potential Selling or Pullback.")
                 else:
                     reasons = []
                     if is_misaligned:
@@ -251,7 +251,7 @@ class DecisionEngine:
         # ── HARD ADX GATE ─────────────────────────────────────────────────────────
         # No trade unless trend is strong enough for the current capital tier.
         # Larger accounts tolerate lower ADX; small accounts need strong trends only.
-        # EXCEPTION: Sideways/Chop regimes skip this gate to allow Straddle Scalps.
+        # EXCEPTION: Sideways/Chop regimes skip this gate to allow SELLING strategies.
         # EXCEPTION: Low-ADX trending setups allow Pullback strategies.
         adx = regime_data.get('adx', 0)
         is_chop_hours_pb = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
@@ -356,11 +356,11 @@ class DecisionEngine:
             selected_strategy = "PULLBACK"
         
         elif is_morning and adx < 20:
-            # Morning Sideways -> No entry since STRADDLE_SCALP is deactivated
+            # Morning Sideways -> No entry since STRADDLE_SCALP is removed
             selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else None
             
         elif adx < 18:
-            # Range-Bound Regime -> No entry since STRADDLE_SCALP is deactivated
+            # Range-Bound Regime -> No entry since STRADDLE_SCALP is removed
             selected_strategy = "SELLING" if "SELLING" in tier.allowed_strategies else None
         else:
             # Transition Phase -> No entry
@@ -380,16 +380,22 @@ class DecisionEngine:
         # ── VOLATILITY DEADZONE OVERRIDE ─────────────────────────────────────
         # Explosive options buying relies on volatility 'fuel'. If VIX is historically
         # depressed, explosive moves frequently fail to sustain.
-        # Downgrade to lower-leverage Momentum.
         vix = float(market_data.get('vix', 15.0) or 15.0)
-        MIN_VIX_FOR_GAMMA = 11.5
+        MIN_VIX_FOR_OPTION_BUYING = 10.5
         
-        if selected_strategy == "GAMMA_BLAST" and vix < MIN_VIX_FOR_GAMMA:
-            logger.warning(
-                f">>> [Brain] 🛡️ VIX DEADZONE DETECTED ({vix:.1f} < {MIN_VIX_FOR_GAMMA}). "
-                f"Insufficient volatility fuel for Gamma Blast. Downgrading to MOMENTUM."
-            )
-            selected_strategy = "MOMENTUM"
+        if selected_strategy in ["GAMMA_BLAST", "MOMENTUM", "PULLBACK"] and vix < MIN_VIX_FOR_OPTION_BUYING:
+            if not is_expiry_day:
+                logger.warning(
+                    f">>> [Brain] 🛡️ VIX DEADZONE DETECTED ({vix:.1f} < {MIN_VIX_FOR_OPTION_BUYING}). "
+                    f"Blocking option buying strategy {selected_strategy} on non-expiry day due to low volatility."
+                )
+                selected_strategy = None
+            elif selected_strategy == "GAMMA_BLAST":
+                logger.warning(
+                    f">>> [Brain] 🛡️ VIX DEADZONE DETECTED ({vix:.1f} < {MIN_VIX_FOR_OPTION_BUYING}). "
+                    f"Insufficient volatility fuel for Gamma Blast on expiry day. Downgrading to MOMENTUM."
+                )
+                selected_strategy = "MOMENTUM"
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

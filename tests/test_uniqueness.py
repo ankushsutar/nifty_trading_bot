@@ -28,7 +28,7 @@ class TestUniquenessAndRollback(unittest.TestCase):
             "entry_price": 0.0,
             "status": "PLACED",
             "mode": "LIVE",
-            "strategy": "STRADDLE_SCALP"
+            "strategy": "MOMENTUM"
         }
         self.repo.collection.find_one.return_value = existing_placed
 
@@ -39,7 +39,7 @@ class TestUniquenessAndRollback(unittest.TestCase):
             qty=50,
             entry_price=10.5,
             mode="LIVE",
-            strategy="STRADDLE_SCALP"
+            strategy="MOMENTUM"
         )
 
         self.assertEqual(trade_id, 123)
@@ -78,7 +78,7 @@ class TestUniquenessAndRollback(unittest.TestCase):
                 initial_price=100.0,
                 transaction_type="BUY",
                 max_walk_ticks=1,
-                strategy_name="STRADDLE_SCALP",
+                strategy_name="MOMENTUM",
                 mode="LIVE"
             )
             

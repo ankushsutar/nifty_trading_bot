@@ -88,7 +88,7 @@ def test_main_resumption_logic():
     detected = trade_repo.get_active_trade(mode=mode)
     
     if detected:
-        strategy_name = detected.get('strategy', 'STRADDLE')
+        strategy_name = detected.get('strategy', 'MOMENTUM')
         print(f"♻️  System detect: {strategy_name}")
         args.strategy = strategy_name
         args.auto = False

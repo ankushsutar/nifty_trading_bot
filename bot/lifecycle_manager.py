@@ -234,7 +234,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Run in dry run mode")
     parser.add_argument("--test", action="store_true", help="Run in test mode")
     parser.add_argument("--selling", action="store_true", help="Enable Selling Engine in background")
-    parser.add_argument("--strategy", type=str, default="AUTO", choices=["AUTO", "STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="AUTO", choices=["AUTO", "MOMENTUM", "GAMMA_BLAST", "SELLING", "ZERO_TO_HERO", "PULLBACK"], help="Choose Strategy")
     args = parser.parse_args()
     
     manager = LifecycleManager(dry_run=args.dry_run, test_mode=args.test, with_selling=args.selling, strategy_type=args.strategy)

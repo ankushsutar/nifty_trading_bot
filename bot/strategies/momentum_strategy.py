@@ -1262,13 +1262,11 @@ class MomentumStrategy:
             # SL VERIFICATION: If SL placement failed, we cannot hold the position safely.
             if not sl_oid and not self.dry_run:
                 logger.critical(f"🚨 MOMENTUM: SL placement FAILED for {symbol}. Emergency exiting position for safety!")
-                exit_params = {
-                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO",
-                    "ordertype": "MARKET", "price": 0,
-                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-                }
-                self.order_manager.place_order(exit_params)
+                mode = "PAPER" if self.dry_run else "LIVE"
+                self.order_manager.place_market(
+                    symbol=symbol, token=token, qty=qty, 
+                    transaction_type="SELL", strategy_name="MOMENTUM", mode=mode
+                )
                 return
 
             if sl_oid:
@@ -1334,15 +1332,21 @@ class MomentumStrategy:
 
         if not self.dry_run:
             try:
-                broker_ordertype = "LIMIT" if exit_type == "LIMIT" else "MARKET"
-                orderparams = {
-                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO", 
-                    "ordertype": broker_ordertype,
-                    "price": self.active_position.get('sl_price', 0) if broker_ordertype == "LIMIT" else 0,
-                    "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
-                }
-                oid = self.order_manager.place_order(orderparams)
+                mode = "PAPER" if self.dry_run else "LIVE"
+                if exit_type == "LIMIT":
+                    orderparams = {
+                        "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
+                        "transactiontype": "SELL", "exchange": "NFO", 
+                        "ordertype": "LIMIT",
+                        "price": self.active_position.get('sl_price', 0),
+                        "producttype": "INTRADAY", "duration": "DAY", "quantity": qty
+                    }
+                    oid = self.order_manager.place_order(orderparams)
+                else:
+                    oid = self.order_manager.place_market(
+                        symbol=symbol, token=token, qty=qty, 
+                        transaction_type="SELL", strategy_name="MOMENTUM", mode=mode
+                    )
                 
                 if not oid:
                     logger.error("❌ Exit Order API returned None! Retrying next loop...")

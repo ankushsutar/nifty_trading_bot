@@ -6,12 +6,10 @@ import time
 import os
 from bot.core.session import get_session
 from bot.utils.token_lookup import TokenLookup
-from bot.strategies.nifty_straddle import NiftyStrategy
 from bot.core.mock_connect import MockSmartConnect, MockTokenLookup
 from bot.utils.expiry_calculator import get_next_weekly_expiry
 from bot.strategies.momentum_strategy import MomentumStrategy
 from bot.strategies.gamma_blast_strategy import GammaBlastStrategy
-from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 from bot.strategies.selling_strategy import SellingStrategy
 from bot.strategies.zero_to_hero_strategy import ZeroToHeroStrategy
 from bot.core.decision_engine import DecisionEngine
@@ -59,7 +57,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="MOMENTUM", choices=["MOMENTUM", "GAMMA_BLAST", "SELLING", "ZERO_TO_HERO", "PULLBACK"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -102,7 +100,7 @@ def run_bot():
     orphaned_trade = trade_repo.get_active_trade(mode=mode, symbol=Config.ACTIVE_SYMBOL)
     
     if orphaned_trade:
-        strategy_name = orphaned_trade.get('strategy', 'STRADDLE')
+        strategy_name = orphaned_trade.get('strategy', 'MOMENTUM')
         logger.info(f"\n>>> [System] ♻️ ORPHANED TRADE DETECTED: {orphaned_trade['symbol']} ({strategy_name})")
         logger.info(f"    Resuming monitoring for Trade #{orphaned_trade['id']}...")
         args.strategy = strategy_name
@@ -153,10 +151,6 @@ def run_bot():
         logger.info(f"\n>>> [Strategy] Selected: Gamma Blast (OTM Momentum) 🚀💎")
         bot = GammaBlastStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
-    elif args.strategy == "STRADDLE_SCALP":
-        logger.info(f"\n>>> [Strategy] Selected: Straddle Scalp (ATM CE+PE Ranging) 🎯")
-        bot = StraddleScalpStrategy(api, loader, dry_run=args.dry_run)
-        bot.risk_multiplier = risk_multiplier
     elif args.strategy == "ZERO_TO_HERO":
         logger.info(f"\n>>> [Strategy] Selected: 🛸 ZERO TO HERO WILD CARD! 🚀💎")
         bot = ZeroToHeroStrategy(api, loader, dry_run=args.dry_run)
@@ -170,8 +164,9 @@ def run_bot():
         logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
         bot = SellingStrategy(api, loader, dry_run=args.dry_run)
     else:
-        logger.info(f"\n>>> [Strategy] Selected: 9:20 Straddle (Short) 📉")
-        bot = NiftyStrategy(api, loader, dry_run=args.dry_run)
+        logger.info(f"\n>>> [Strategy] Default Fallback Selected: Momentum (EMA Crossover) ⚡")
+        bot = MomentumStrategy(api, loader, dry_run=args.dry_run)
+        bot.risk_multiplier = risk_multiplier
         
     bot_instance = bot 
 
@@ -190,10 +185,7 @@ def run_bot():
         logger.warning(f">>> [Warning] Expiry Date Parsing Failed: {e}")
 
     # 6. Execute Strategy
-    if args.strategy in ["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "PULLBACK"]:
-        bot.execute(expiry=expiry)
-    else:
-        bot.execute(expiry=expiry, action="SELL")
+    bot.execute(expiry=expiry)
 
     # 7. Record trade for daily limit tracking (only in auto mode)
     # This increments the DecisionEngine's daily counter so the 2-trade cap works.

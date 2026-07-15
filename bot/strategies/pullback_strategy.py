@@ -527,13 +527,11 @@ class PullbackStrategy:
 
         if not self.dry_run:
             try:
-                orderparams = {
-                    "variety": "NORMAL", "tradingsymbol": symbol, "symboltoken": token,
-                    "transactiontype": "SELL", "exchange": "NFO", 
-                    "ordertype": "MARKET", "producttype": "INTRADAY", 
-                    "duration": "DAY", "quantity": qty
-                }
-                oid = self.order_manager.place_order(orderparams)
+                mode = "PAPER" if self.dry_run else "LIVE"
+                oid = self.order_manager.place_market(
+                    symbol=symbol, token=token, qty=qty, 
+                    transaction_type="SELL", strategy_name="PULLBACK", mode=mode
+                )
                 if oid:
                     fill_res = self.wait_for_fill(oid)
                     if fill_res['status'] == 'FILLED':
