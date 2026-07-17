@@ -85,30 +85,7 @@ class TestSelection(unittest.TestCase):
         strat, risk = self.engine.analyze_and_select()
         self.assertEqual(strat, "GAMMA_BLAST")
 
-    @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
-    @patch('backend.market_service.market_service.get_market_data')
-    @patch('bot.core.decision_engine.datetime.datetime')
-    def test_thursday_pullback_morning_filter(self, mock_dt, mock_market, mock_trades):
-        # Thursday morning (weekday 3), 9:30 AM, ADX 20, regime TRENDING -> Should select PULLBACK
-        mock_dt.now.return_value = real_datetime(2026, 3, 5, 9, 30)  # Thursday
-        mock_market.return_value = {
-            'nifty': 22000,
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 20},
-            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
-            'levels': {}
-        }
-        strat, risk = self.engine.analyze_and_select()
-        self.assertEqual(strat, "PULLBACK")
 
-        # Wednesday morning (weekday 2), 9:30 AM, ADX 20, regime TRENDING -> Should return None (CASH)
-        mock_dt.now.return_value = real_datetime(2026, 3, 4, 9, 30)  # Wednesday
-        strat, risk = self.engine.analyze_and_select()
-        self.assertIsNone(strat)
-
-        # Wednesday afternoon (weekday 2), 12:30 PM, ADX 20, regime TRENDING -> Should select PULLBACK (not morning)
-        mock_dt.now.return_value = real_datetime(2026, 3, 4, 12, 30)  # Wednesday afternoon
-        strat, risk = self.engine.analyze_and_select()
-        self.assertEqual(strat, "PULLBACK")
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')

@@ -24,7 +24,7 @@ from bot.utils.logger import logger
 class BacktestEngine:
     """Vectorized backtesting engine that mirrors live strategy logic."""
 
-    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST", "PULLBACK"]
+    STRATEGIES = ["MOMENTUM", "GAMMA_BLAST"]
 
     # Market session constants
     SESSION_START = dtime(9, 15)
@@ -202,7 +202,6 @@ class BacktestEngine:
         dispatch = {
             "MOMENTUM":   self._momentum_signals,
             "GAMMA_BLAST":self._gamma_blast_signals,
-            "PULLBACK": self._pullback_signals,
         }
         fn = dispatch.get(strategy_name)
         if fn is None:
@@ -313,89 +312,7 @@ class BacktestEngine:
         return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
 
-    # ---- PULLBACK (VWAP/20-EMA touch-and-rejection in low-ADX trends) ---- #
 
-    def _pullback_signals(self) -> pd.DataFrame:
-        df5 = self.df_5m.copy()
-        
-        # Calculate indicators
-        df5["EMA20"] = df5["close"].ewm(span=20, adjust=False).mean()
-        df5["VWAP"] = self._rolling_vwap(df5)
-        df5["adx"] = self._adx(df5, 14)
-        df5["atr"] = self._atr(df5, 14)
-        
-        # We need the previous rows to verify touch and rejection.
-        prev_low = df5["low"].shift(1)
-        prev_high = df5["high"].shift(1)
-        prev_open = df5["open"].shift(1)
-        prev_close = df5["close"].shift(1)
-        prev_ema20 = df5["EMA20"].shift(1)
-        prev_vwap = df5["VWAP"].shift(1)
-        
-        # Trend check
-        is_bullish_trend = (df5["close"] > df5["EMA20"]) & (df5["close"] > df5["VWAP"])
-        is_bearish_trend = (df5["close"] < df5["EMA20"]) & (df5["close"] < df5["VWAP"])
-        
-        # Pullback / ADX filter matching DecisionEngine routing
-        t = df5.index.time
-        is_chop_hours = pd.Series(
-            [((dtime(10, 30) <= x < dtime(11, 30)) or (dtime(13, 0) <= x < dtime(13, 30))) for x in t],
-            index=df5.index, dtype=bool
-        )
-        adx_threshold = is_chop_hours.map(lambda x: 30.0 if x else 25.0)
-        adx_ok = (df5["adx"] >= 18.0) & (df5["adx"] < adx_threshold)
-        
-        # Isolate morning pullback signals (before 10:30 AM) exclusively to Thursdays (weekday 3)
-        is_morning = df5.index.time < dtime(10, 30)
-        is_thursday = df5.index.weekday == 3
-        pullback_allowed = ~(is_morning & ~is_thursday)
-        
-        # Bullish signal conditions
-        touched_ema_bull = prev_low <= prev_ema20 * 1.0005
-        touched_vwap_bull = prev_low <= prev_vwap * 1.0005
-        rejected_ema_bull = touched_ema_bull & (prev_close >= prev_ema20)
-        rejected_vwap_bull = touched_vwap_bull & (prev_close >= prev_vwap)
-        is_bullish_candle = prev_close >= prev_open
-        
-        bullish = (
-            is_bullish_trend &
-            adx_ok &
-            (rejected_ema_bull | rejected_vwap_bull) &
-            is_bullish_candle &
-            pullback_allowed &
-            self._in_session(df5) &
-            ~self._in_blackout(df5)
-        )
-        
-        # Bearish signal conditions
-        touched_ema_bear = prev_high >= prev_ema20 * 0.9995
-        touched_vwap_bear = prev_high >= prev_vwap * 0.9995
-        rejected_ema_bear = touched_ema_bear & (prev_close <= prev_ema20)
-        rejected_vwap_bear = touched_vwap_bear & (prev_close <= prev_vwap)
-        is_bearish_candle = prev_close <= prev_open
-        
-        bearish = (
-            is_bearish_trend &
-            adx_ok &
-            (rejected_ema_bear | rejected_vwap_bear) &
-            is_bearish_candle &
-            pullback_allowed &
-            self._in_session(df5) &
-            ~self._in_blackout(df5)
-        )
-        
-        rows = []
-        for ts, bull in bullish[bullish].items():
-            atr_val = df5.loc[ts, "atr"]
-            rows.append({"timestamp": ts, "direction": "CE", "atr": atr_val})
-        for ts, bear in bearish[bearish].items():
-            atr_val = df5.loc[ts, "atr"]
-            rows.append({"timestamp": ts, "direction": "PE", "atr": atr_val})
-            
-        if not rows:
-            return pd.DataFrame(columns=["timestamp", "direction", "atr"])
-            
-        return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
 
     # ------------------------------------------------------------------ #
     #  Trade Simulation Engine                                             #
@@ -450,11 +367,7 @@ class BacktestEngine:
                 sl_price     = entry_premium * 0.85  # 15% stop loss (decay)
                 target_price = entry_premium * 1.25  # 25% take profit (expansion)
                 delta = 0.50
-            elif strategy_name == "PULLBACK":
-                entry_premium = max(5.0, atr * self.option_premium_atr_mult)
-                delta, sl_mult, tgt_mult = 0.50, 0.25, 0.375
-                sl_price     = entry_premium * (1 - sl_mult)
-                target_price = entry_premium * (1 + tgt_mult)
+
             else:
                 entry_premium = max(5.0, atr * self.option_premium_atr_mult)
                 # Volatility-adjusted strike: high ATR → deeper OTM (lower premium ÷ higher leverage)
@@ -579,8 +492,8 @@ class BacktestEngine:
             if future_day.empty:
                 continue
 
-            # Enable progressive trail for GAMMA_BLAST, MOMENTUM and PULLBACK
-            use_progressive = (strategy_name in ["GAMMA_BLAST", "MOMENTUM", "PULLBACK"])
+            # Enable progressive trail for GAMMA_BLAST and MOMENTUM
+            use_progressive = (strategy_name in ["GAMMA_BLAST", "MOMENTUM"])
 
             exit_price, exit_reason, exit_time = self._find_exit(
                 future_day, direction, entry_premium, sl_price, target_price,

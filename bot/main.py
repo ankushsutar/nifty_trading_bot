@@ -57,7 +57,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--strategy", type=str, default="MOMENTUM", choices=["MOMENTUM", "GAMMA_BLAST", "SELLING", "ZERO_TO_HERO", "PULLBACK"], help="Choose Strategy")
+    parser.add_argument("--strategy", type=str, default="MOMENTUM", choices=["MOMENTUM", "GAMMA_BLAST", "SELLING", "ZERO_TO_HERO"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()
 
@@ -155,11 +155,7 @@ def run_bot():
         logger.info(f"\n>>> [Strategy] Selected: 🛸 ZERO TO HERO WILD CARD! 🚀💎")
         bot = ZeroToHeroStrategy(api, loader, dry_run=args.dry_run)
         bot.risk_multiplier = risk_multiplier
-    elif args.strategy == "PULLBACK":
-        logger.info(f"\n>>> [Strategy] Selected: VWAP & 20-EMA Pullback 📈")
-        from bot.strategies.pullback_strategy import PullbackStrategy
-        bot = PullbackStrategy(api, loader, dry_run=args.dry_run)
-        bot.risk_multiplier = risk_multiplier
+
     elif args.strategy == "SELLING":
         logger.info(f"\n>>> [Strategy] Selected: Nifty Selling Engine (IC/SS/IF) 📉")
         bot = SellingStrategy(api, loader, dry_run=args.dry_run)

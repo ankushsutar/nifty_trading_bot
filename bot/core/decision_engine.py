@@ -222,16 +222,10 @@ class DecisionEngine:
             adx = regime_data.get('adx', 0)
             is_misaligned = (trend == "BULLISH" and bias == "BEARISH") or (trend == "BEARISH" and bias == "BULLISH")
             
-            # Determine if this meets the requirements for a pullback strategy candidate
-            is_chop_hours_pb = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
-                               (datetime.time(13, 0) <= now < datetime.time(13, 30))
-            momentum_adx_threshold = 30.0 if is_chop_hours_pb else 25.0
-            is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
-            
             if not confidence_high and adx <= tier.min_adx_to_trade + adx_boost:
-                # EXCEPTION: Allow low-ADX chop regimes through so SELLING can be evaluated, or PULLBACK setups
-                if (regime in ["SIDEWAYS", "CHOP"] and adx < 24) or is_pullback_candidate:
-                    logger.info(">>> [Brain] Small Account: Allowing setup through A+ filter for potential Selling or Pullback.")
+                # EXCEPTION: Allow low-ADX chop regimes through so SELLING can be evaluated
+                if (regime in ["SIDEWAYS", "CHOP"] and adx < 24):
+                    logger.info(">>> [Brain] Small Account: Allowing setup through A+ filter for potential Selling.")
                 else:
                     reasons = []
                     if is_misaligned:
@@ -248,26 +242,7 @@ class DecisionEngine:
                 else:
                     logger.info(f">>> [Brain] 🚀 Strong Trend detected (ADX: {adx:.1f}). Overriding Confluence.")
 
-        # ── HARD ADX GATE ─────────────────────────────────────────────────────────
-        # No trade unless trend is strong enough for the current capital tier.
-        # Larger accounts tolerate lower ADX; small accounts need strong trends only.
-        # EXCEPTION: Sideways/Chop regimes skip this gate to allow SELLING strategies.
-        # EXCEPTION: Low-ADX trending setups allow Pullback strategies.
-        adx = regime_data.get('adx', 0)
-        is_chop_hours_pb = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
-                           (datetime.time(13, 0) <= now < datetime.time(13, 30))
-        momentum_adx_threshold = 30.0 if is_chop_hours_pb else 25.0
-        is_pullback_candidate = (regime == "TRENDING" and 18.0 <= adx < momentum_adx_threshold)
-        
-        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"] and not is_pullback_candidate and not is_lotto_candidate:
-            logger.info(
-                f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
-                f"{tier.min_adx_to_trade + adx_boost} minimum"
-                + (f" (base {tier.min_adx_to_trade} + session boost {adx_boost})" if adx_boost else "")
-                + ". Skipping Trend strategy — waiting for momentum."
-            )
-            return None, 1.0
-        # 6. Hybrid Strategy Switcher (The "At Any Cost" Logic)
+        # 6. Hybrid Strategy Switcher (The "At Any Cost" Logic) & Overrides
         today_dt = datetime.datetime.now()
         today_str = today_dt.strftime("%d%b%Y").upper()
         expiry_calc = get_next_weekly_expiry(today=today_dt.date())
@@ -277,7 +252,6 @@ class DecisionEngine:
         is_power_hour = (datetime.time(13, 15) <= datetime.datetime.now().time() <= datetime.time(15, 0))
         
         # --- X-FACTOR: Institutional Panic Check (AlphaEngine) ---
-        # Consume pre-calculated panic data from Master process to avoid REST calls in child
         panic_data = market_data.get('panic_data', {"panic_score": 50, "confidence": "NEUTRAL"})
         nifty_ltp = market_data.get('nifty', 0)
         
@@ -286,18 +260,12 @@ class DecisionEngine:
         risk_multiplier *= alpha_multiplier
         logger.info(f">>> [Brain] AlphaEngine Multiplier: {alpha_multiplier}x (Confidence: {panic_data.get('confidence')})")
 
-        # 6. Hybrid Strategy Switcher (Time + Regime + Panic)
-        adx = regime_data.get('adx', 0)
-        
         # RECOVERY MODE
         if adx_boost > 0:
             logger.warning(">>> [Brain] 🛡️ RECOVERY MODE ACTIVE: Reducing risk multiplier by 50%.")
             risk_multiplier *= 0.5
 
         # ── SNIPER OVERRIDE: GEOMETRIC BREAKOUT DETECTION ─────────────────────
-        # If in the Afternoon Power Hour, and price pierces previous HOD/LOD
-        # with an explicit Institutional Volume Spike, trigger GammaBlast 
-        # IMMEDIATELY, bypassing the 15-30 minute ADX lag.
         hod = regime_data.get('hod', 0)
         lod = regime_data.get('lod', 0)
         volume_spike = regime_data.get('volume_spike', False)
@@ -310,6 +278,24 @@ class DecisionEngine:
             elif lod > 0 and nifty_ltp < lod:
                 is_breakout = True
                 logger.info(f"🎯 [SNIPER] LOD BREAKDOWN DETECTED! (Spot {nifty_ltp:.1f} < Floor {lod:.1f} with Volume Spike)")
+
+        adx = regime_data.get('adx', 0)
+        is_tuesday_priority = (today_dt.weekday() == 1 and (adx >= 20.0 or regime == "TRENDING" or volume_spike or is_breakout))
+        is_panic_override = (panic_data.get('panic_score', 50) >= 80)
+
+        # ── HARD ADX GATE ─────────────────────────────────────────────────────────
+        # No trade unless trend is strong enough for the current capital tier.
+        # Larger accounts tolerate lower ADX; small accounts need strong trends only.
+        # EXCEPTION: Sideways/Chop regimes skip this gate to allow SELLING strategies.
+        # EXCEPTION: Tuesday priority, breakouts, institutional panic, and lotto candidates bypass this gate.
+        if adx < tier.min_adx_to_trade + adx_boost and regime not in ["SIDEWAYS", "CHOP"] and not is_lotto_candidate and not is_tuesday_priority and not is_breakout and not is_panic_override:
+            logger.info(
+                f">>> [Brain] ⏸️ ADX GATE [{tier.name}]: ADX={adx:.1f} < "
+                f"{tier.min_adx_to_trade + adx_boost} minimum"
+                + (f" (base {tier.min_adx_to_trade} + session boost {adx_boost})" if adx_boost else "")
+                + ". Skipping Trend strategy — waiting for momentum."
+            )
+            return None, 1.0
 
         # ── STRATEGY SELECTION MATRIX ────────────────────────────────────────
         
@@ -351,9 +337,7 @@ class DecisionEngine:
                 logger.info(f"⚡ Trend confirmed during chop hours (ADX: {adx:.1f} >= 30.0). Selected: MOMENTUM")
             selected_strategy = "MOMENTUM"
         
-        elif regime == "TRENDING" and adx >= 18.0:
-            logger.info(f"📈 Grinding Low ADX Trend detected (Regime: TRENDING | ADX: {adx:.1f}). Selected: PULLBACK")
-            selected_strategy = "PULLBACK"
+
         
         elif is_morning and adx < 20:
             # Morning Sideways -> No entry since STRADDLE_SCALP is removed
@@ -371,11 +355,7 @@ class DecisionEngine:
             logger.info(">>> [Brain] ⏸️ No viable strategy active for the current market regime. Staying in CASH.")
             return None, 1.0
 
-        # --- WEEKDAY GATE FOR PULLBACK MORNING ENTRY ---
-        # Isolate morning PULLBACK entries exclusively to Thursday mornings (weekday == 3)
-        if selected_strategy == "PULLBACK" and is_morning and datetime.datetime.now().weekday() != 3:
-            logger.warning(">>> [Brain] ⏸️ PULLBACK Morning Entry blocked: Restricted exclusively to post-expiry cycle setup hours (Thursday morning).")
-            return None, 1.0
+
         
         # ── VOLATILITY DEADZONE OVERRIDE ─────────────────────────────────────
         # Explosive options buying relies on volatility 'fuel'. If VIX is historically
@@ -383,7 +363,7 @@ class DecisionEngine:
         vix = float(market_data.get('vix', 15.0) or 15.0)
         MIN_VIX_FOR_OPTION_BUYING = 10.5
         
-        if selected_strategy in ["GAMMA_BLAST", "MOMENTUM", "PULLBACK"] and vix < MIN_VIX_FOR_OPTION_BUYING:
+        if selected_strategy in ["GAMMA_BLAST", "MOMENTUM"] and vix < MIN_VIX_FOR_OPTION_BUYING:
             if not is_expiry_day:
                 logger.warning(
                     f">>> [Brain] 🛡️ VIX DEADZONE DETECTED ({vix:.1f} < {MIN_VIX_FOR_OPTION_BUYING}). "
