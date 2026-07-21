@@ -21,8 +21,8 @@ class ZeroToHeroStrategy:
     STRATEGY_NAME = "ZERO_TO_HERO"
     MIN_TARGET_PREMIUM = 5.0
     MAX_TARGET_PREMIUM = 15.0
-    MAX_ABSOLUTE_RISK = 3000.0  # Absolute rupee limit for this wild card ticket.
-    FIXED_STOP_LOSS_PCT = 0.60  # Hard safety floor at 60% loss (keeps final 40% of capital).
+    MAX_ABSOLUTE_RISK = 1500.0  # Absolute rupee limit for this wild card ticket (capped for safety).
+    FIXED_STOP_LOSS_PCT = 0.35  # Tightened stop loss at 35% loss (protects 65% of capital).
 
     def __init__(self, api, token_loader, dry_run=False):
         self.api = api
@@ -256,16 +256,16 @@ class ZeroToHeroStrategy:
                 time.sleep(60)
                 continue
             
-            # 4. Size fixed at risk limit
-            # Dynamic risk sizing: 5% of total capital (with a minimum ₹3,000 floor to maintain viable sizing)
+            # 4. Size capped at strict risk limit (Max 2 lots / ₹1,500 capital per wildcard ticket)
             current_capital = self.gatekeeper.get_current_capital()
-            dynamic_risk_limit = max(3000.0, current_capital * 0.05)
+            dynamic_risk_limit = min(self.MAX_ABSOLUTE_RISK, max(1000.0, current_capital * 0.03))
             max_allowed_qty = (dynamic_risk_limit / prem)
-            lots = int(max_allowed_qty // Config.NIFTY_LOT_SIZE)
-            qty = int(max(1, lots) * Config.NIFTY_LOT_SIZE)
+            raw_lots = int(max_allowed_qty // Config.NIFTY_LOT_SIZE)
+            lots = min(2, max(1, raw_lots))  # Hard cap at max 2 lots for Zero-To-Hero
+            qty = int(lots * Config.NIFTY_LOT_SIZE)
             
             total_deployed = qty * prem
-            logger.info(f"🛸 Deploying Wild Card: Buying {qty} {symbol} @ ₹{prem}. Est Cost: ₹{total_deployed:.2f} (Risk Limit: ₹{dynamic_risk_limit:.2f} based on ₹{current_capital:.2f} capital)")
+            logger.info(f"🛸 Deploying Wild Card: Buying {qty} ({lots} lots) {symbol} @ ₹{prem}. Est Cost: ₹{total_deployed:.2f} (Risk Limit: ₹{dynamic_risk_limit:.2f})")
             
             # Execution
             mode = "PAPER" if self.dry_run else "LIVE"
@@ -306,6 +306,8 @@ class ZeroToHeroStrategy:
         logger.info(f"🛸 WILDCARD MONITORING ACTIVE for {sym} @ ₹{entry}")
         
         half_booked = self.active_position.get('partially_booked', False)
+        
+        entry_time = time.time()
         
         while self.running:
             # --- Safety: abort immediately if the contract has expired ---
@@ -352,6 +354,23 @@ class ZeroToHeroStrategy:
                  if self.active_position.get('sl_oid'):
                      self.order_manager.cancel_order(self.active_position['sl_oid'], variety="STOPLOSS")
                      self.active_position['sl_oid'] = None
+
+            # 1.5 15-Minute Stagnant Decay Exit (Theta Protection)
+            elapsed_mins = (time.time() - entry_time) / 60.0
+            if elapsed_mins >= 15.0 and roi <= 5.0 and not half_booked:
+                 logger.warning(
+                     f"⏳ [Z2H] STAGNANT DECAY EXIT: Position open for {elapsed_mins:.1f}m with ROI {roi:.1f}%. "
+                     f"Exiting to prevent theta decay wipeout on Expiry afternoon."
+                 )
+                 sl_oid = self.active_position.get('sl_oid')
+                 if sl_oid and not self.dry_run:
+                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                 
+                 self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 pnl_val = (ltp - entry) * qty
+                 trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="STAGNANT_THETA_EXIT")
+                 notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "STAGNANT_THETA_EXIT")
+                 break
                      
             # 2. Disaster Stop Hit Check
             sl_price = round(round(entry * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)

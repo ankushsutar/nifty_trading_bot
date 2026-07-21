@@ -174,8 +174,9 @@ class LadderedTrailingManager:
             now = time.time()
             if now - self._last_ema_check > 10: 
                 self._last_ema_check = now
-                # Use 1m 21-EMA as the anchor
-                ema_val = self._get_1m_ema(token, period=21)
+                # Use 1m 9-EMA for Stage 4 (Moonshot), 21-EMA for Stage 3/3.5
+                period = 9 if current_stage >= 4 else 21
+                ema_val = self._get_1m_ema(token, period=period)
                 if ema_val > 0:
                     vix_val = self._get_current_vix()
                     if vix_val < 12.0:

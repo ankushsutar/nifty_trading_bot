@@ -85,9 +85,9 @@ class DecisionEngine:
         # 0b. Consecutive Loss Circuit Breaker — halts after tier-defined consecutive losses
         MAX_CONSECUTIVE_LOSSES = tier.max_consecutive_losses
         try:
-            closed_today = [t for t in today_trades if t.get('status') == 'CLOSED']
+            closed_today = sorted([t for t in today_trades if t.get('status') == 'CLOSED'], key=lambda x: x.get('id', 0), reverse=True)
             if len(closed_today) >= MAX_CONSECUTIVE_LOSSES:
-                recent = closed_today[-MAX_CONSECUTIVE_LOSSES:]
+                recent = closed_today[:MAX_CONSECUTIVE_LOSSES]
                 all_losses = all(t.get('pnl', 0) < 0 for t in recent)
                 if all_losses:
                     total_loss = sum(t.get('pnl', 0) for t in recent)
@@ -106,8 +106,8 @@ class DecisionEngine:
         # This prevents over-trading on choppy days where early signals were wrong.
         adx_boost = 0
         try:
-            _closed = [t for t in today_trades if t.get('status') == 'CLOSED']
-            if len(_closed) >= 2 and all(t.get('pnl', 0) < 0 for t in _closed[-2:]):
+            _closed = sorted([t for t in today_trades if t.get('status') == 'CLOSED'], key=lambda x: x.get('id', 0), reverse=True)
+            if len(_closed) >= 2 and all(t.get('pnl', 0) < 0 for t in _closed[:2]):
                 adx_boost = 5
                 logger.warning(
                     f">>> [Brain] ⚠️ Session Stress: Last 2 trades both lost. "

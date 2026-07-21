@@ -473,18 +473,31 @@ class MomentumStrategy:
                                 rsi_ok = rsi > 30
                                 checks.append(("RSI Limit", rsi_ok, f"{rsi:.1f} > 30" if rsi_ok else f"{rsi:.1f} < 30"))
                             
-                            # 7. PRO-TRADER: Volume Confirmation
-                            # Fetch fresh 5m candles for volume analysis
+                            # 8. Overextension Guard (Pullback / Retest Filter)
                             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
-                            _df_vol = self.data_fetcher.fetch_latest_candles(spot_tok, interval="FIVE_MINUTE", days=1)
-                            if _df_vol is not None and not _df_vol.empty:
-                                avg_vol = _df_vol['volume'].tail(6).iloc[:-1].mean()
-                                curr_vol = _df_vol['volume'].iloc[-1]
-                                vol_ok = curr_vol > (avg_vol * 1.1)
+                            nifty_spot = self.data_fetcher.get_ltp(spot_tok)
+                            if nifty_spot and ema9 > 0:
+                                dist_pct = abs(nifty_spot - ema9) / ema9
+                                overextension_ok = dist_pct <= 0.0015
+                                checks.append(("Overextension Guard", overextension_ok, f"Dist={dist_pct*100:.2f}% <= 0.15%" if overextension_ok else f"Extended: {dist_pct*100:.2f}% > 0.15%"))
                             else:
-                                vol_ok = False # Fail-safe: No data = No volume confirmation
-                                
-                            checks.append(("Volume Confirmation", vol_ok, f"Confirmed" if vol_ok else "Low Volume/No Data"))
+                                overextension_ok = True
+                                checks.append(("Overextension Guard", True, "No spot data"))
+
+                            # 9. Institutional Level / Resistance Blocker
+                            levels = levels_provider.get_levels()
+                            level_ok = True
+                            level_label = "Clear"
+                            if levels and nifty_spot:
+                                pdh = levels.get('pdh', 0)
+                                pdl = levels.get('pdl', 0)
+                                if trend == "BULLISH" and pdh > 0 and 0 <= (pdh - nifty_spot) <= 15:
+                                    level_ok = False
+                                    level_label = f"CE Blocked: Spot {nifty_spot:.1f} is within 15pts of PDH ({pdh:.1f})"
+                                elif trend == "BEARISH" and pdl > 0 and 0 <= (nifty_spot - pdl) <= 15:
+                                    level_ok = False
+                                    level_label = f"PE Blocked: Spot {nifty_spot:.1f} is within 15pts of PDL ({pdl:.1f})"
+                            checks.append(("Level Barrier Blocker", level_ok, level_label))
 
                         # Calculate Confluence Score
                         passed_names = [c[0] for c in checks if c[1]]
@@ -494,15 +507,17 @@ class MomentumStrategy:
                         # --- MANDATORY CHECKS ---
                         mtf_aligned = "MTF Alignment" in passed_names
                         signal_valid = "Signal Presence" in passed_names
+                        not_overextended = "Overextension Guard" in passed_names
+                        level_clear = "Level Barrier Blocker" in passed_names
                         
                         failed = [c for c in checks if not c[1]]
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic: 6/7 score AND Mandatory Alignment
-                        if score >= 6 and mtf_aligned and signal_valid:
+                        # Execution Logic: High score AND Mandatory Alignment + Pullback + Level Clearance
+                        if score >= 7 and mtf_aligned and signal_valid and not_overextended and level_clear:
                             if not self.active_position:
-                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Volume. Firing Entry.")
+                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF, Retest & Level Clearance. Firing Entry.")
                                 if trend == "BULLISH":
                                     self.enter_position(expiry, "CE")
                                 elif trend == "BEARISH":
@@ -1076,6 +1091,13 @@ class MomentumStrategy:
 
         # 1.5 Cost Viability Check (Small Account Protection)
         if not self.gatekeeper.check_trade_viability(quote_ltp, qty):
+             return
+             
+        # Worst-Case Loss Projection Check before Order Placement
+        est_sl_points = max(5.0, atr * 0.5)
+        worst_case_loss = qty * est_sl_points
+        if not self.gatekeeper.check_max_daily_loss(0.0, worst_case_new_loss=worst_case_loss):
+             logger.critical(f"Momentum: 🛑 ENTRY BLOCKED — Projected trade risk (₹{worst_case_loss:.2f}) threatens max daily loss limit.")
              return
             
         estimated_cost = quote_ltp * qty

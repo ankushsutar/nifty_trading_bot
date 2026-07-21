@@ -119,5 +119,67 @@ class TestSelection(unittest.TestCase):
         strat, risk = self.engine.analyze_and_select()
         self.assertEqual(strat, "ZERO_TO_HERO")
 
+    @patch('backend.market_service.market_service.get_market_data')
+    @patch('bot.core.decision_engine.datetime.datetime')
+    def test_consecutive_losses_and_adx_boost(self, mock_dt, mock_market):
+        # Setup market mock
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
+        mock_market.return_value = {
+            'nifty': 22000,
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'levels': {}
+        }
+        
+        # Configure starting capital to 150,000 (MEDIUM tier)
+        # MEDIUM tier max_consecutive_losses = 3, max_trades_per_day = 8, min_adx_to_trade = 32
+        self.engine.gatekeeper.get_starting_capital = MagicMock(return_value=150000.0)
+        self.engine.gatekeeper.get_current_capital = MagicMock(return_value=150000.0)
+
+        # 1. Verify consecutive loss circuit breaker triggers on RECENT losses
+        # Case A: Oldest trades (lower IDs) are losses, recent trades (higher IDs) are wins.
+        # This should NOT trigger the consecutive loss circuit breaker.
+        trades_recent_wins = [
+            {"id": 3, "status": "CLOSED", "pnl": 500.0},   # Recent win
+            {"id": 2, "status": "CLOSED", "pnl": -200.0},  # Old loss
+            {"id": 1, "status": "CLOSED", "pnl": -100.0},  # Old loss
+        ]
+        
+        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_wins):
+            # Should NOT trigger consecutive loss breaker, and should return a strategy
+            strat, risk = self.engine.analyze_and_select()
+            self.assertEqual(strat, "MOMENTUM")
+
+        # Case B: Recent trades (higher IDs) are losses, oldest trades (lower IDs) are wins/not losses.
+        # This SHOULD trigger the consecutive loss circuit breaker (3 losses in a row) and halt.
+        trades_recent_losses = [
+            {"id": 3, "status": "CLOSED", "pnl": -500.0},  # Recent loss
+            {"id": 2, "status": "CLOSED", "pnl": -200.0},  # Recent loss
+            {"id": 1, "status": "CLOSED", "pnl": -100.0},  # Recent loss
+        ]
+        
+        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_losses):
+            with patch('bot.core.kill_switch.activate_kill_switch') as mock_kill:
+                strat, risk = self.engine.analyze_and_select()
+                self.assertIsNone(strat)
+                mock_kill.assert_called_once()
+
+        # 2. Verify Session Stress ADX Boost
+        # In MEDIUM tier (capital 150,000, max_consecutive_losses = 3), 2 recent losses triggers ADX boost (+5).
+        # Normal min_adx_to_trade for MEDIUM is 32.0. With boost, it needs 37.0.
+        # If we have ADX = 35.0, it should select MOMENTUM normally, but fail if boost is active.
+        
+        # Scenario A: 2 recent losses, oldest are wins. Boost is active.
+        # ADX = 35.0 (which is < 32 + 5 = 37). Should block trade entry (return None).
+        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_losses):
+            strat, risk = self.engine.analyze_and_select()
+            self.assertIsNone(strat) # blocked by raised ADX threshold (37)
+            
+        # Scenario B: 2 oldest losses, recent are wins. Boost is NOT active.
+        # ADX = 35.0 (which is >= 32). Should select MOMENTUM.
+        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_wins):
+            strat, risk = self.engine.analyze_and_select()
+            self.assertEqual(strat, "MOMENTUM")
+
 if __name__ == '__main__':
     unittest.main()
