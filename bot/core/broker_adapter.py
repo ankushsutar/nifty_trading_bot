@@ -175,6 +175,26 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
         self._access_token = access_token
         self.refresh_token = "kite_refresh_token"
 
+    def _handle_exception(self, method_name, exception):
+        err_msg = str(exception)
+        logger.error(f"Kite {method_name} error: {err_msg}")
+        if "api_key" in err_msg.lower() or "token" in err_msg.lower() or "incorrect" in err_msg.lower():
+            try:
+                import os
+                session_file = os.path.join(os.getcwd(), "data", "session_kite.json")
+                if os.path.exists(session_file):
+                    os.remove(session_file)
+                    logger.warning(">>> [System] Stale session_kite.json file cleared.")
+                
+                # Flag session refresh immediately
+                flag_file = os.path.join(os.getcwd(), "data", "session_refresh.flag")
+                with open(flag_file, "w") as f:
+                    f.write("REFRESH_REQUIRED")
+                logger.warning(f">>> [System] Token error detected in {method_name}. Flagged session refresh 🔄")
+            except Exception as fe:
+                logger.error(f"Failed to flag session refresh: {fe}")
+        return {"status": False, "message": err_msg}
+
     def __getattr__(self, name):
         if name == 'refreshToken' or name == 'refresh_token':
             return self.refresh_token
@@ -237,8 +257,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 "data": {"orderid": order_id}
             }
         except Exception as e:
-            logger.error(f"Kite placeOrder error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("placeOrder", e)
 
     def modifyOrder(self, orderparams):
         try:
@@ -272,8 +291,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             )
             return {"status": True, "data": resp}
         except Exception as e:
-            logger.error(f"Kite modifyOrder error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("modifyOrder", e)
 
     def cancelOrder(self, order_id, variety="NORMAL"):
         try:
@@ -284,8 +302,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             )
             return {"status": True, "data": resp}
         except Exception as e:
-            logger.error(f"Kite cancelOrder error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("cancelOrder", e)
 
     def orderBook(self):
         try:
@@ -316,8 +333,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 })
             return {"status": True, "data": mapped}
         except Exception as e:
-            logger.error(f"Kite orderBook error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("orderBook", e)
 
     def position(self):
         try:
@@ -371,8 +387,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 })
             return {"status": True, "data": mapped}
         except Exception as e:
-            logger.error(f"Kite position error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("position", e)
 
     def rmsLimit(self):
         try:
@@ -389,8 +404,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"Kite rmsLimit error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("rmsLimit", e)
 
     def ltpData(self, exchange, symbol, token):
         try:
@@ -418,8 +432,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 }
             return {"status": False, "message": f"Symbol {inst_str} not found in Kite ltp response"}
         except Exception as e:
-            logger.error(f"Kite ltpData error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("ltpData", e)
 
     def getCandleData(self, historicParam):
         try:
@@ -463,8 +476,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 ])
             return {"status": True, "data": formatted}
         except Exception as e:
-            logger.error(f"Kite getCandleData error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("getCandleData", e)
 
     def getProfile(self, refresh_token=None):
         try:
@@ -478,8 +490,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 }
             }
         except Exception as e:
-            logger.error(f"Kite getProfile error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("getProfile", e)
 
     def tradeBook(self):
         try:
@@ -490,12 +501,12 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                     'tradingsymbol': t['tradingsymbol'],
                     'transactiontype': t['transaction_type'],
                     'quantity': t['quantity'],
-                    'averageprice': t['average_price']
+                    'averageprice': t['average_price'],
+                    'orderid': t.get('order_id')
                 })
             return {"status": True, "data": mapped}
         except Exception as e:
-            logger.error(f"Kite tradeBook error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("tradeBook", e)
 
     def getMarketData(self, mode, params):
         try:
@@ -535,8 +546,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 "data": {"fetched": fetched}
             }
         except Exception as e:
-            logger.error(f"Kite getMarketData error: {e}")
-            return {"status": False, "message": str(e)}
+            return self._handle_exception("getMarketData", e)
 
     def get_market_ticker(self):
         return KiteTickerMarketWrapper(Config.KITE_API_KEY, self.access_token)
@@ -569,7 +579,7 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
                 
                 return {"bid": bid, "ask": ask, "ltp": ltp}
         except Exception as e:
-            logger.error(f"Kite get_order_book_l1 error: {e}")
+            self._handle_exception("get_order_book_l1", e)
         return {"bid": 0.0, "ask": 0.0, "ltp": 0.0}
 
 

@@ -499,6 +499,12 @@ class MomentumStrategy:
                                     level_label = f"PE Blocked: Spot {nifty_spot:.1f} is within 15pts of PDL ({pdl:.1f})"
                             checks.append(("Level Barrier Blocker", level_ok, level_label))
 
+                            # 10. Layer 9: Heavyweight Sector Confluence Check
+                            from bot.core.heavyweight_tracker import heavyweight_tracker
+                            heavyweight_tracker.data_fetcher = self.data_fetcher
+                            hw_ok, hw_summary = heavyweight_tracker.check_confluence(trend)
+                            checks.append(("Heavyweight Confluence", hw_ok, hw_summary))
+
                         # Calculate Confluence Score
                         passed_names = [c[0] for c in checks if c[1]]
                         score = len(passed_names)
@@ -509,13 +515,14 @@ class MomentumStrategy:
                         signal_valid = "Signal Presence" in passed_names
                         not_overextended = "Overextension Guard" in passed_names
                         level_clear = "Level Barrier Blocker" in passed_names
+                        heavyweight_aligned = "Heavyweight Confluence" in passed_names
                         
                         failed = [c for c in checks if not c[1]]
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic: High score AND Mandatory Alignment + Pullback + Level Clearance
-                        if score >= 7 and mtf_aligned and signal_valid and not_overextended and level_clear:
+                        # Execution Logic: High score AND Mandatory Alignment + Pullback + Level Clearance + Heavyweight Support
+                        if score >= 7 and mtf_aligned and signal_valid and not_overextended and level_clear and heavyweight_aligned:
                             if not self.active_position:
                                 logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF, Retest & Level Clearance. Firing Entry.")
                                 if trend == "BULLISH":

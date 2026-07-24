@@ -222,6 +222,8 @@ class TradeRepository:
                     "entry_price": entry_price,
                     "sl_price": sl_price,
                     "sl_order_id": None,
+                    "entry_order_id": None,
+                    "exit_order_id": None,
                     "monitoring_stage": 0,
                     "exit_price": None,
                     "pnl": 0.0,
@@ -270,6 +272,30 @@ class TradeRepository:
             logger.info(f"TradeRepository: Updated Trade #{trade_id} SL Order ID to {sl_oid}")
         except Exception as e:
             logger.error(f"TradeRepository Update SL OID Error: {e}")
+
+    def update_entry_order_id(self, trade_id, entry_oid):
+        """Persists the entry order ID for precise fill tracking."""
+        if not self.client or not entry_oid: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": {"entry_order_id": str(entry_oid), "updated_at": datetime.datetime.now()}}
+            )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} Entry Order ID to {entry_oid}")
+        except Exception as e:
+            logger.error(f"TradeRepository Update Entry OID Error: {e}")
+
+    def update_exit_order_id(self, trade_id, exit_oid):
+        """Persists the exit order ID for precise fill tracking."""
+        if not self.client or not exit_oid: return
+        try:
+            self.collection.update_one(
+                {"id": trade_id},
+                {"$set": {"exit_order_id": str(exit_oid), "updated_at": datetime.datetime.now()}}
+            )
+            logger.info(f"TradeRepository: Updated Trade #{trade_id} Exit Order ID to {exit_oid}")
+        except Exception as e:
+            logger.error(f"TradeRepository Update Exit OID Error: {e}")
 
     def update_trade_context(self, trade_id, context):
         """Persists the strategy indicator context for the trade."""
@@ -860,7 +886,22 @@ class TradeRepository:
             # 1. Handle PLACED trades
             if status == "PLACED":
                 entry_fill_side = side
-                entry_price = avg_prices.get(symbol, {}).get(entry_fill_side)
+                entry_order_id = trade.get('entry_order_id')
+                entry_price = None
+                
+                if entry_order_id:
+                    for t in broker_trades:
+                        if str(t.get('orderid')) == str(entry_order_id) and t.get('transactiontype', '').upper() == entry_fill_side:
+                            try:
+                                entry_price = float(t.get('averageprice', 0))
+                                break
+                            except (TypeError, ValueError):
+                                pass
+                
+                # Fallback to general symbol-based match if entry_order_id is not specified (e.g., legacy or mock)
+                if not entry_price and not entry_order_id:
+                    entry_price = avg_prices.get(symbol, {}).get(entry_fill_side)
+                
                 if entry_price:
                     self.update_entry_price(trade_id, entry_price)
                     logger.info(f"[Reconcile] ♻️ Trade #{trade_id} ({symbol}): PLACED -> OPEN (Fill: ₹{entry_price})")
@@ -880,7 +921,24 @@ class TradeRepository:
                 qty         = int(trade.get('qty', 0))
                 
                 exit_fill_side = "SELL" if side == "BUY" else "BUY"
-                exit_price = avg_prices.get(symbol, {}).get(exit_fill_side)
+                sl_order_id = trade.get('sl_order_id')
+                exit_order_id = trade.get('exit_order_id')
+                
+                exit_price = None
+                if sl_order_id or exit_order_id:
+                    for t in broker_trades:
+                        ord_id = t.get('orderid')
+                        if ord_id and (str(ord_id) == str(sl_order_id) or str(ord_id) == str(exit_order_id)):
+                            if t.get('transactiontype', '').upper() == exit_fill_side:
+                                try:
+                                    exit_price = float(t.get('averageprice', 0))
+                                    break
+                                except (TypeError, ValueError):
+                                    pass
+                
+                # Fallback to general symbol-based match if neither order ID is specified (legacy or mock)
+                if not exit_price and not sl_order_id and not exit_order_id:
+                    exit_price = avg_prices.get(symbol, {}).get(exit_fill_side)
                 
                 if exit_price:
                     if side == "BUY":

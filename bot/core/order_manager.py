@@ -213,6 +213,8 @@ class OrderManager:
                     mode=mode if mode else ("PAPER" if self.dry_run else "LIVE"),
                     strategy=strategy_name
                 )
+                if oid and early_trade_id:
+                    trade_repo.update_entry_order_id(early_trade_id, oid)
 
             from bot.core.order_feed import order_feed
             

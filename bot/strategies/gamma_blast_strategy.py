@@ -445,6 +445,19 @@ class GammaBlastStrategy:
             except Exception as _ce:
                 logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
 
+            # --- HEAVYWEIGHT SECTOR CONFLUENCE FILTER ---
+            try:
+                from bot.core.heavyweight_tracker import heavyweight_tracker
+                heavyweight_tracker.data_fetcher = self.data_fetcher
+                _hw_trend = "BULLISH" if leg == "CE" else "BEARISH"
+                _hw_ok, _hw_summary = heavyweight_tracker.check_confluence(_hw_trend)
+                if not _hw_ok:
+                    logger.warning(f"Gamma Blast: 🛑 Heavyweight Filter Blocked — {_hw_summary}")
+                    time.sleep(30)
+                    continue
+            except Exception as _hwe:
+                logger.warning(f"Gamma Blast: Heavyweight filter error: {_hwe}")
+
             # --- VWAP POSITION FILTER ---
             # On parabolic days institutions drive the move — VWAP confirms which side
             # they're on. CE when below VWAP or PE when above VWAP = fighting the flow.

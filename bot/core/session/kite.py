@@ -33,8 +33,26 @@ class KiteSessionProvider(BaseSessionProvider):
                 if sess_time.date() == datetime.date.today():
                     access_token = sess_data['access_token']
                     kite.set_access_token(access_token)
-                    print(">>> [System] Reusing Zerodha Session ✅")
-                    return KiteBrokerAdapter(kite, access_token)
+                    
+                    try:
+                        # Validate if the restored session token is actually valid
+                        kite.profile()
+                        print(">>> [System] Reusing Zerodha Session ✅")
+                        return KiteBrokerAdapter(kite, access_token)
+                    except Exception as val_err:
+                        val_err_str = str(val_err)
+                        if "api_key" in val_err_str.lower() or "token" in val_err_str.lower() or "incorrect" in val_err_str.lower():
+                            logger.warning(f"Kite session validation failed (stale/invalid token): {val_err}. Clearing session cache.")
+                            if os.path.exists(SESSION_FILE_KITE):
+                                try:
+                                    os.remove(SESSION_FILE_KITE)
+                                except Exception as rm_err:
+                                    logger.warning(f"Failed to remove stale session file: {rm_err}")
+                        else:
+                            # If it's a network/timeout/broker-side downtime error, we keep the session file 
+                            # and try using it anyway, since automated login would also fail.
+                            logger.warning(f"Kite session validation failed (network error?): {val_err}. Reusing token anyway.")
+                            return KiteBrokerAdapter(kite, access_token)
             except Exception as e:
                 logger.warning(f"Kite session restoration failed: {e}")
                 

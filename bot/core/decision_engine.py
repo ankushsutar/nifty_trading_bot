@@ -385,17 +385,45 @@ class DecisionEngine:
             )
             return None, 1.0
 
+        # ── LAYER 1: PRE-MARKET OPENING GAP PROTECTION GATE ───────────────────
+        # On large opening gaps (≥ 0.40%), retail traders rush in with FOMO at 09:15.
+        # Enforce pullback-only entry during the 09:15-09:45 window to prevent gap-fade traps.
+        now_time = datetime.datetime.now().time()
+        if datetime.time(9, 15) <= now_time < datetime.time(9, 45):
+            pdc = regime_data.get('pdc', 0.0)
+            nifty_spot = regime_data.get('nifty_spot', 0.0)
+            if pdc > 0 and nifty_spot > 0:
+                gap_pct = abs(nifty_spot - pdc) / pdc
+                if gap_pct >= 0.0040:
+                    logger.warning(
+                        f">>> [Brain] 🛡️ LAYER 1 GAP PROTECTION: Large opening gap ({gap_pct*100:.2f}% >= 0.40%). "
+                        "Enforcing pullback/retest requirement during 09:15-09:45 window."
+                    )
+
         # ── BOLLINGER BAND WIDTH (BBW) SQUEEZE GATE ──────────────────────────
         # Allow entry into trending strategies (GAMMA_BLAST and MOMENTUM) only if
-        # the current BBW is expanding from a coiling squeeze.
+        # the current BBW is expanding from a coiling squeeze, OR if we have an
+        # established strong trend override (high ADX and wide bands).
         if selected_strategy in ["MOMENTUM", "GAMMA_BLAST"]:
             is_squeeze_expansion = regime_data.get('is_squeeze_expansion', True)
-            if not is_squeeze_expansion:
+            bbw = regime_data.get('bbw', 0.0)
+            min_adx_needed = tier.min_adx_to_trade + adx_boost
+            
+            is_strong_trend_override = (
+                adx >= min_adx_needed and 
+                bbw >= tier.min_bbw_to_trade
+            )
+            
+            if not is_squeeze_expansion and not is_strong_trend_override:
                 logger.warning(
                     f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
-                    f"Market is not expanding from a coiling BBW squeeze (BBW={regime_data.get('bbw', 0.0):.4f})."
+                    f"Market is not expanding from a coiling BBW squeeze (BBW={bbw:.4f}) and no strong trend override."
                 )
                 return None, 1.0
+            elif is_strong_trend_override and not is_squeeze_expansion:
+                logger.info(
+                    f">>> [Brain] 🚀 BBW Squeeze Gate Override: Strong trend detected (ADX: {adx:.1f} >= {min_adx_needed}, BBW: {bbw:.4f})."
+                )
 
         # BUDGET CHECK — minimum viable margin for 1 lot (tier-aware)
         required = tier.min_capital_threshold * 0.5

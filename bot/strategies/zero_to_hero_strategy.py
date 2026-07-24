@@ -181,6 +181,29 @@ class ZeroToHeroStrategy:
                 
         return None, None, None, None
 
+    def _get_expiry_date_from_symbol(self, symbol: str):
+        """Extracts expiry date from Zerodha symbol format."""
+        import re
+        m = re.match(r'[A-Z]+?(\d{2})([A-Z]{3})\d+(CE|PE)', symbol.upper())
+        if not m:
+            return None
+        try:
+            day = int(m.group(1))
+            mon_str = m.group(2)
+            _MONTHS = {
+                'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4,
+                'MAY': 5, 'JUN': 6, 'JUL': 7, 'AUG': 8,
+                'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+            }
+            mon = _MONTHS.get(mon_str)
+            if not mon: return None
+            today = datetime.date.today()
+            expiry = datetime.date(today.year, mon, day)
+            if (today - expiry).days > 180:
+                expiry = datetime.date(today.year + 1, mon, day)
+            return expiry
+        except:
+            return None
 
     def execute(self, expiry, action="BUY"):
         logger.info(f"⚡ --- ZERO-TO-HERO WILDCARD INITIATED ({expiry}) --- 🚀")
@@ -267,9 +290,21 @@ class ZeroToHeroStrategy:
             total_deployed = qty * prem
             logger.info(f"🛸 Deploying Wild Card: Buying {qty} ({lots} lots) {symbol} @ ₹{prem}. Est Cost: ₹{total_deployed:.2f} (Risk Limit: ₹{dynamic_risk_limit:.2f})")
             
+            # Dynamic Stop Loss based on VIX regime
+            from backend.market_service import market_service
+            vix = market_service.get_market_data().get('vix', 15.0)
+            if vix < 12.0:
+                sl_pct = 0.30  # Tight SL for quiet markets
+            elif vix > 17.0:
+                sl_pct = 0.45  # Extra room for high-volatility noise
+            else:
+                sl_pct = 0.35  # Standard SL
+                
+            logger.info(f"Z2H Dynamic Stop Loss: Selected {sl_pct*100:.1f}% based on VIX={vix:.2f}")
+
             # Execution
             mode = "PAPER" if self.dry_run else "LIVE"
-            sl_init = round(round(prem * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)
+            sl_init = round(round(prem * (1 - sl_pct) / 0.05) * 0.05, 2)
             
             trade_id = trade_repo.save_trade(
                 symbol=symbol, token=token, leg=leg, qty=qty, 
@@ -355,33 +390,92 @@ class ZeroToHeroStrategy:
                      self.order_manager.cancel_order(self.active_position['sl_oid'], variety="STOPLOSS")
                      self.active_position['sl_oid'] = None
 
-            # 1.5 15-Minute Stagnant Decay Exit (Theta Protection)
+            # 1.5 Dynamic Stagnant Decay Exit (Theta Protection)
+            from backend.market_service import market_service
+            md = market_service.get_market_data()
+            nifty_ltp = md.get('nifty', 0)
+            analysis = md.get('analysis', {})
+            ema9 = analysis.get('ema9')
+            ema21 = analysis.get('ema21')
+            vix_val = md.get('vix', 15.0)
+
+            expiry_date = self._get_expiry_date_from_symbol(sym)
+            is_expiry_day = (expiry_date == datetime.date.today())
+
+            if is_expiry_day:
+                stagnant_timeout = 25.0 if vix_val < 13.0 else 15.0
+            else:
+                stagnant_timeout = 45.0
+
+            # Trend Cloud Check: extend timeout if trend is still in our favor
+            is_trend_aligned = False
+            if nifty_ltp > 0 and ema21 and ema21 > 0:
+                leg = self.active_position.get('leg')
+                if not leg:
+                    leg = "CE" if sym.upper().endswith("CE") else ("PE" if sym.upper().endswith("PE") else None)
+                
+                if leg == "CE" and nifty_ltp >= ema21:
+                    is_trend_aligned = True
+                elif leg == "PE" and nifty_ltp <= ema21:
+                    is_trend_aligned = True
+
+            if is_trend_aligned:
+                stagnant_timeout += 15.0
+
             elapsed_mins = (time.time() - entry_time) / 60.0
-            if elapsed_mins >= 15.0 and roi <= 5.0 and not half_booked:
+            if elapsed_mins >= stagnant_timeout and roi <= 5.0 and not half_booked:
                  logger.warning(
-                     f"⏳ [Z2H] STAGNANT DECAY EXIT: Position open for {elapsed_mins:.1f}m with ROI {roi:.1f}%. "
+                     f"⏳ [Z2H] STAGNANT DECAY EXIT: Position open for {elapsed_mins:.1f}m (timeout: {stagnant_timeout}m) with ROI {roi:.1f}%. "
                      f"Exiting to prevent theta decay wipeout on Expiry afternoon."
                  )
                  sl_oid = self.active_position.get('sl_oid')
                  if sl_oid and not self.dry_run:
-                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     if not cancel_success:
+                         sl_status = self.order_manager.get_order_status(sl_oid)
+                         if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                             logger.warning(f"🛡️ [Double-Exit Protection] Z2H SL Order {sl_oid} was already FILLED. Skipping market exit order.")
+                             exit_price = sl_status.get('price', ltp)
+                             pnl_val = (exit_price - entry) * qty
+                             trade_repo.close_trade(trade_id=tid, exit_price=exit_price, pnl=pnl_val, exit_reason="SL_HIT")
+                             notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "SL_HIT")
+                             break
                  
-                 self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 exit_oid = self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 if exit_oid:
+                     trade_repo.update_exit_order_id(tid, exit_oid)
                  pnl_val = (ltp - entry) * qty
                  trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="STAGNANT_THETA_EXIT")
                  notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "STAGNANT_THETA_EXIT")
                  break
                      
             # 2. Disaster Stop Hit Check
-            sl_price = round(round(entry * (1 - self.FIXED_STOP_LOSS_PCT) / 0.05) * 0.05, 2)
+            if vix_val < 12.0:
+                sl_pct_now = 0.30
+            elif vix_val > 17.0:
+                sl_pct_now = 0.45
+            else:
+                sl_pct_now = 0.35
+            sl_price = round(round(entry * (1 - sl_pct_now) / 0.05) * 0.05, 2)
             if ltp <= sl_price and not half_booked:
-                 logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
+                 logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp} (SL Price: ₹{sl_price}). Cutting remaining.")
                  sl_oid = self.active_position.get('sl_oid')
                  if sl_oid and not self.dry_run:
                      logger.info(f"Cancelling pending stop-loss order {sl_oid} before hard floor liquidation")
-                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     if not cancel_success:
+                         sl_status = self.order_manager.get_order_status(sl_oid)
+                         if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                             logger.warning(f"🛡️ [Double-Exit Protection] Z2H SL Order {sl_oid} was already FILLED. Skipping market exit order.")
+                             exit_price = sl_status.get('price', ltp)
+                             pnl_val = (exit_price - entry) * qty
+                             trade_repo.close_trade(trade_id=tid, exit_price=exit_price, pnl=pnl_val, exit_reason="SL_HIT")
+                             notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "SL_HIT")
+                             break
                  
-                 self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 exit_oid = self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 if exit_oid:
+                     trade_repo.update_exit_order_id(tid, exit_oid)
                  
                  pnl_val = (ltp - entry) * qty
                  trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="HARD_FLOOR")
@@ -396,9 +490,20 @@ class ZeroToHeroStrategy:
                  sl_oid = self.active_position.get('sl_oid')
                  if sl_oid and not self.dry_run:
                      logger.info(f"Cancelling pending stop-loss order {sl_oid} before EOD liquidation")
-                     self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     cancel_success = self.order_manager.cancel_order(sl_oid, variety="STOPLOSS")
+                     if not cancel_success:
+                         sl_status = self.order_manager.get_order_status(sl_oid)
+                         if sl_status and sl_status.get('status') in ['FILLED', 'COMPLETE']:
+                             logger.warning(f"🛡️ [Double-Exit Protection] Z2H SL Order {sl_oid} was already FILLED. Skipping market exit order.")
+                             exit_price = sl_status.get('price', ltp)
+                             pnl_val = (exit_price - entry) * qty
+                             trade_repo.close_trade(trade_id=tid, exit_price=exit_price, pnl=pnl_val, exit_reason="SL_HIT")
+                             notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "SL_HIT")
+                             break
                  
-                 self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 exit_oid = self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
+                 if exit_oid:
+                     trade_repo.update_exit_order_id(tid, exit_oid)
                  
                  pnl_val = (ltp - entry) * qty
                  trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="EOD_LIQUIDATION")

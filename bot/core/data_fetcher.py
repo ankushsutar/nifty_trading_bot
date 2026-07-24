@@ -169,8 +169,31 @@ class DataFetcher:
         try:
             # --- ARCHITECTURAL ENFORCEMENT: Master Fetcher Only ---
             process_type = os.getenv("PROCESS_TYPE", "BOT")
-            if process_type != "BACKEND":
-                # CHILD/BOT PROCESS: STRICTLY PROHIBITED from calling getCandleData.
+            
+            # Identify if this token is the active spot index/commodity token fetched by the BACKEND
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            
+            active_instr = get_instrument(Config.ACTIVE_SYMBOL)
+            active_tok = str(active_instr.analysis_token)
+            
+            # Spot tokens mapping (Angel One to Kite equivalents)
+            spot_map = {
+                "99926000": "256265",
+                "99926009": "260105",
+                "99926037": "257801",
+                "99926017": "264969"
+            }
+            kite_tok = spot_map.get(active_tok)
+            
+            target_tokens = {active_tok}
+            if kite_tok:
+                target_tokens.add(str(kite_tok))
+                
+            is_active_spot = str(symbol_token) in target_tokens
+            
+            if process_type != "BACKEND" and is_active_spot:
+                # CHILD/BOT PROCESS: STRICTLY PROHIBITED from calling getCandleData for the active Spot index.
                 # It must poll the disk cache for up to 30s, assuming the BACKEND is fetching it.
                 logger.warning(f"DataFetcher [CHILD]: Blocked REST fetch for {cache_key}. Polling shared disk cache for up to 30s...")
                 start_poll = time.time()
