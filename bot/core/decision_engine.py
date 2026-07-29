@@ -355,6 +355,23 @@ class DecisionEngine:
             logger.info(">>> [Brain] ⏸️ No viable strategy active for the current market regime. Staying in CASH.")
             return None, 1.0
 
+        # ── PRE-FLIGHT: Verify selected strategy won't self-reject ────────────
+        # Prevents the infinite retry loop where DecisionEngine selects a strategy
+        # but the strategy's internal ADX gate rejects it every 30 seconds forever.
+        if selected_strategy == "GAMMA_BLAST" and adx < tier.min_adx_to_trade:
+            if "MOMENTUM" in tier.allowed_strategies:
+                logger.warning(
+                    f">>> [Brain] ⚠️ Pre-flight: GAMMA_BLAST would self-reject "
+                    f"(ADX {adx:.1f} < {tier.min_adx_to_trade} [{tier.name}]). "
+                    f"Downgrading to MOMENTUM."
+                )
+                selected_strategy = "MOMENTUM"
+            else:
+                logger.warning(
+                    f">>> [Brain] ⚠️ Pre-flight: GAMMA_BLAST would self-reject "
+                    f"and no fallback available. Staying in CASH."
+                )
+                return None, 1.0
 
         
         # ── VOLATILITY DEADZONE OVERRIDE ─────────────────────────────────────
@@ -414,12 +431,31 @@ class DecisionEngine:
                 bbw >= tier.min_bbw_to_trade
             )
             
-            if not is_squeeze_expansion and not is_strong_trend_override:
-                logger.warning(
-                    f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
-                    f"Market is not expanding from a coiling BBW squeeze (BBW={bbw:.4f}) and no strong trend override."
-                )
-                return None, 1.0
+            # PARABOLIC ADX OVERRIDE: When ADX is at "parabolic" level (≥ tier.adx_gamma_blast),
+            # the trend IS the confirmation of expansion. BBW is naturally narrow right after
+            # a breakout — requiring squeeze expansion here blocks genuine parabolic moves.
+            is_parabolic_override = (adx >= tier.adx_gamma_blast)
+            
+            if not is_squeeze_expansion and not is_strong_trend_override and not is_parabolic_override:
+                # FALLBACK: If GAMMA_BLAST is blocked, try MOMENTUM before giving up
+                if selected_strategy == "GAMMA_BLAST" and "MOMENTUM" in tier.allowed_strategies:
+                    logger.warning(
+                        f">>> [Brain] ⏸️ BBW SQUEEZE GATE: GAMMA_BLAST blocked (BBW={bbw:.4f}). "
+                        f"Falling back to MOMENTUM."
+                    )
+                    selected_strategy = "MOMENTUM"
+                    # Re-check BBW for MOMENTUM too
+                    if not is_squeeze_expansion and not is_strong_trend_override:
+                        logger.warning(
+                            f">>> [Brain] ⏸️ BBW SQUEEZE GATE: MOMENTUM also blocked. Staying in CASH."
+                        )
+                        return None, 1.0
+                else:
+                    logger.warning(
+                        f">>> [Brain] ⏸️ BBW SQUEEZE GATE: {selected_strategy} entry blocked. "
+                        f"Market is not expanding from a coiling BBW squeeze (BBW={bbw:.4f}) and no strong trend override."
+                    )
+                    return None, 1.0
             elif is_strong_trend_override and not is_squeeze_expansion:
                 logger.info(
                     f">>> [Brain] 🚀 BBW Squeeze Gate Override: Strong trend detected (ADX: {adx:.1f} >= {min_adx_needed}, BBW: {bbw:.4f})."

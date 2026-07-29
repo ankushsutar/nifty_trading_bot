@@ -13,8 +13,8 @@ class TestStrategyExecutionFixes(unittest.TestCase):
         self.z2h = ZeroToHeroStrategy(self.mock_api, self.mock_token_loader, dry_run=True)
 
     def test_z2h_lot_capping_and_risk_limit(self):
-        """Verify that Zero-To-Hero lot count is strictly capped at max 2 lots and max risk budget of ₹1500."""
-        self.assertEqual(ZeroToHeroStrategy.MAX_ABSOLUTE_RISK, 1500.0)
+        """Verify that Zero-To-Hero lot count is strictly capped at max 2 lots and max risk budget of ₹1000."""
+        self.assertEqual(ZeroToHeroStrategy.MAX_ABSOLUTE_RISK, 1000.0)
         self.assertEqual(ZeroToHeroStrategy.FIXED_STOP_LOSS_PCT, 0.35)
 
         # Mock gatekeeper capital to ₹50,000
@@ -23,13 +23,15 @@ class TestStrategyExecutionFixes(unittest.TestCase):
         # Test sizing formula for cheap option (₹6.00)
         prem = 6.0
         current_capital = 50000.0
-        dynamic_risk_limit = min(ZeroToHeroStrategy.MAX_ABSOLUTE_RISK, max(1000.0, current_capital * 0.03))
+        tier = Config.get_tier(current_capital)
+        risk_from_tier = current_capital * tier.risk_per_trade_pct
+        dynamic_risk_limit = min(ZeroToHeroStrategy.MAX_ABSOLUTE_RISK, risk_from_tier)
         max_allowed_qty = (dynamic_risk_limit / prem)
         raw_lots = int(max_allowed_qty // Config.NIFTY_LOT_SIZE)
         lots = min(2, max(1, raw_lots))
         qty = int(lots * Config.NIFTY_LOT_SIZE)
 
-        self.assertEqual(dynamic_risk_limit, 1500.0)
+        self.assertEqual(dynamic_risk_limit, 1000.0)
         self.assertEqual(lots, 2)  # Must be capped at 2 lots, NOT 3+ or 10
         self.assertEqual(qty, 130)  # 2 lots * 65
 

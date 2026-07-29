@@ -21,7 +21,7 @@ class ZeroToHeroStrategy:
     STRATEGY_NAME = "ZERO_TO_HERO"
     MIN_TARGET_PREMIUM = 5.0
     MAX_TARGET_PREMIUM = 15.0
-    MAX_ABSOLUTE_RISK = 1500.0  # Absolute rupee limit for this wild card ticket (capped for safety).
+    MAX_ABSOLUTE_RISK = 1000.0  # Tightened from 1500 — Z2H is a lottery ticket, not a core trade.
     FIXED_STOP_LOSS_PCT = 0.35  # Tightened stop loss at 35% loss (protects 65% of capital).
 
     def __init__(self, api, token_loader, dry_run=False):
@@ -281,7 +281,9 @@ class ZeroToHeroStrategy:
             
             # 4. Size capped at strict risk limit (Max 2 lots / ₹1,500 capital per wildcard ticket)
             current_capital = self.gatekeeper.get_current_capital()
-            dynamic_risk_limit = min(self.MAX_ABSOLUTE_RISK, max(1000.0, current_capital * 0.03))
+            tier = Config.get_tier(current_capital)
+            risk_from_tier = current_capital * tier.risk_per_trade_pct
+            dynamic_risk_limit = min(self.MAX_ABSOLUTE_RISK, risk_from_tier)
             max_allowed_qty = (dynamic_risk_limit / prem)
             raw_lots = int(max_allowed_qty // Config.NIFTY_LOT_SIZE)
             lots = min(2, max(1, raw_lots))  # Hard cap at max 2 lots for Zero-To-Hero
@@ -403,9 +405,9 @@ class ZeroToHeroStrategy:
             is_expiry_day = (expiry_date == datetime.date.today())
 
             if is_expiry_day:
-                stagnant_timeout = 25.0 if vix_val < 13.0 else 15.0
+                stagnant_timeout = 20.0 if vix_val < 13.0 else 15.0
             else:
-                stagnant_timeout = 45.0
+                stagnant_timeout = 30.0  # Tightened from 45 — deep OTM bleeds 50%+ in 45 min via theta
 
             # Trend Cloud Check: extend timeout if trend is still in our favor
             is_trend_aligned = False

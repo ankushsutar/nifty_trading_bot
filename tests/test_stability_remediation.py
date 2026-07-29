@@ -129,3 +129,51 @@ def test_reconcile_with_broker_sync():
          assert call_symbols['NIFTY26JUN1822000CE'] == 'SC'
          assert call_symbols['NIFTY26JUN1822100CE'] == 'LC'
 
+
+def test_data_fetcher_child_process_separation():
+    from bot.core.data_fetcher import DataFetcher
+    import os
+    
+    mock_api = MagicMock()
+    # Reset singleton instance of DataFetcher
+    DataFetcher._instance = None
+    fetcher = DataFetcher(mock_api)
+    
+    with patch.object(fetcher, '_read_disk_cache') as mock_read_cache, \
+         patch.object(fetcher, '_write_disk_cache') as mock_write_cache, \
+         patch.object(fetcher, '_merge_live_candle') as mock_merge_live, \
+         patch('os.getenv') as mock_getenv:
+         
+        # Setup child process environment
+        def getenv_side_effect(key, default=None):
+            if key == "PROCESS_TYPE":
+                return "BOT"
+            return default
+        mock_getenv.side_effect = getenv_side_effect
+        
+        # When querying spot token, it should be BLOCKED and poll cache
+        mock_df = pd.DataFrame([{"close": 100}])
+        mock_read_cache.return_value = mock_df
+        mock_merge_live.return_value = mock_df
+        
+        res = fetcher.fetch_latest_candles("99926000", interval="FIVE_MINUTE", days=1)
+        assert res is not None
+        mock_read_cache.assert_called()
+        mock_api.getCandleData.assert_not_called()
+        
+        # Reset mocks
+        mock_read_cache.reset_mock()
+        mock_read_cache.return_value = None
+        mock_api.getCandleData.reset_mock()
+        
+        # Query non-spot token (e.g. HDFCBANK option token "128046084")
+        # It should bypass the block and request from the REST API directly
+        mock_api.getCandleData.return_value = {
+            "status": True,
+            "data": [["2026-07-24T13:45:00+05:30", 10.0, 11.0, 9.0, 10.5, 1000]]
+        }
+        res = fetcher.fetch_latest_candles("128046084", interval="FIVE_MINUTE", days=1)
+        assert res is not None
+        mock_api.getCandleData.assert_called_once()
+
+

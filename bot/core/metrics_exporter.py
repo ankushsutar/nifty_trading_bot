@@ -119,10 +119,20 @@ class MetricsExporter:
 
     def _write_snapshot(self) -> None:
         snapshot = self._build_snapshot()
-        tmp_path = METRICS_FILE + ".tmp"
-        with open(tmp_path, "w") as f:
-            json.dump(snapshot, f, default=str, indent=2)
-        os.replace(tmp_path, METRICS_FILE)   # Atomic write
+        os.makedirs(os.path.dirname(METRICS_FILE), exist_ok=True)
+        tmp_path = f"{METRICS_FILE}.{os.getpid()}.tmp"
+        try:
+            with open(tmp_path, "w") as f:
+                json.dump(snapshot, f, default=str, indent=2)
+            os.replace(tmp_path, METRICS_FILE)   # Atomic write
+        except Exception as e:
+            # Clean up the temp file if it was created but not replaced
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
+            raise e
 
     # ------------------------------------------------------------------ #
     #  Snapshot Builder                                                    #

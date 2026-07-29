@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from bot.core.trade_repo import trade_repo
 
 import pandas as pd
+# pyrefly: ignore [missing-import]
 import numpy as np
 import datetime
 from datetime import datetime as real_datetime
@@ -88,7 +89,7 @@ class TestBBWSqueezeAndVixScaling(unittest.TestCase):
         
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         
-        # CASE 1: Trending conditions, but no BBW Squeeze expansion -> Should block entry
+        # CASE 1: Trending conditions, no BBW Squeeze expansion, and BBW too low for override -> Should block entry
         mock_market.return_value = {
             'nifty': 22000,
             'vix': 15.0,
@@ -97,7 +98,7 @@ class TestBBWSqueezeAndVixScaling(unittest.TestCase):
                 'trend': 'BULLISH', 
                 'adx': 35,
                 'is_squeeze_expansion': False, # blocked
-                'bbw': 0.015
+                'bbw': 0.003  # Below min_bbw_to_trade (0.005) -> no override
             },
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
@@ -115,6 +116,23 @@ class TestBBWSqueezeAndVixScaling(unittest.TestCase):
                 'adx': 35,
                 'is_squeeze_expansion': True, # allowed
                 'bbw': 0.025
+            },
+            'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
+            'levels': {}
+        }
+        strat, risk = engine.analyze_and_select()
+        self.assertEqual(strat, "MOMENTUM")
+
+        # CASE 3: Trending conditions, no BBW Squeeze expansion, but strong trend override -> Should allow entry
+        mock_market.return_value = {
+            'nifty': 22000,
+            'vix': 15.0,
+            'analysis': {
+                'regime': 'TRENDING', 
+                'trend': 'BULLISH', 
+                'adx': 35,
+                'is_squeeze_expansion': False, 
+                'bbw': 0.015  # >= 0.005 -> triggers override
             },
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}

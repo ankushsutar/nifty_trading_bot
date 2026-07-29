@@ -108,9 +108,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         risk_per_trade_pct=0.12,
         max_daily_loss_pct=0.15,
         max_capital_usage_pct=0.90,
-        min_adx_to_trade=25.0,            # Lowered to align with MOMENTUM strategy router
+        min_adx_to_trade=20.0,            # Lowered from 25.0 — ADX 20-25 = valid trends, prevents zero-trade days
         adx_gamma_blast=40.0,             # Optimized for high-confidence setup escalation
-        adx_trend_fade_exit=25.0,
+        adx_trend_fade_exit=20.0,         # Lowered from 25.0 — prevents premature exits in developing trends
         max_lots=1,
         margin_buffer_pct=0.10,
         gamma_blast_lot_pct=1.00,          # Reallocated margin
@@ -137,9 +137,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         risk_per_trade_pct=0.08,           # Reduced from 0.12 for better safety
         max_daily_loss_pct=0.08,           # Reduced from 0.12 (Max ₹2,800 loss)
         max_capital_usage_pct=0.85,
-        min_adx_to_trade=25.0,            # Lowered to align with MOMENTUM strategy router
+        min_adx_to_trade=20.0,            # Lowered from 25.0 — ADX 20-25 = valid trends, prevents zero-trade days
         adx_gamma_blast=40.0,             # Optimized for high-confidence setup escalation
-        adx_trend_fade_exit=22.0,
+        adx_trend_fade_exit=18.0,         # Lowered from 22.0 — prevents premature exits in developing trends
         max_lots=4,                        # Capped at 4 lots for safety
         margin_buffer_pct=0.12,
         gamma_blast_lot_pct=1.00,          # Reallocated margin
@@ -166,9 +166,9 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         risk_per_trade_pct=0.04,           # Optimized from 0.05 for 'Goldilocks'
         max_daily_loss_pct=0.06,           # Tightened ceiling for safety
         max_capital_usage_pct=0.80,
-        min_adx_to_trade=25.0,            # Lowered to align with MOMENTUM strategy router
+        min_adx_to_trade=20.0,            # Lowered from 25.0 — ADX 20-25 = valid trends, consistent across all tiers
         adx_gamma_blast=40.0,             # Optimized for high-confidence setup escalation
-        adx_trend_fade_exit=20.0,
+        adx_trend_fade_exit=18.0,         # Lowered from 20.0 — aligned with SMALL tier
         max_lots=15,                       # Expanded for the 2 Lakh Expansion! 🚀
         margin_buffer_pct=0.15,
         gamma_blast_lot_pct=1.00,          # Reallocated margin

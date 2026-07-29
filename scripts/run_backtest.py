@@ -37,6 +37,13 @@ def run_ranked_backtest(initial_capital=None):
     logger.info(f"Initializing BacktestEngine with ₹{initial_capital:,.2f} capital...")
     engine = BacktestEngine.from_capital(initial_capital=initial_capital)
     
+    # Check if strict mode is requested (forces exact live lot limits)
+    is_strict = any(arg.lower() == "strict" for arg in sys.argv)
+    if is_strict:
+        tier = Config.get_tier(initial_capital)
+        engine.max_lots = tier.max_lots
+        logger.info(f"🔒 STRICT MODE ENABLED: Capping backtest max_lots to exact live limit of {engine.max_lots} lots.")
+    
     # 3. Load & Run
     engine.load_data(df)
     results = engine.run_all_strategies()

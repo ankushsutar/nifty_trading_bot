@@ -211,6 +211,32 @@ class TestKiteBrokerAdapter(unittest.TestCase):
         self.assertEqual(t["quantity"], 65)
         self.assertEqual(t["averageprice"], 100.5)
 
+    @patch("os.path.exists")
+    @patch("os.remove")
+    @patch("builtins.open", new_callable=unittest.mock.mock_open)
+    def test_handle_token_exception(self, mock_file_open, mock_remove, mock_exists):
+        # Setup mock_exists to return True for session files
+        mock_exists.side_effect = lambda path: "session_kite.json" in path or "session_refresh.flag" in path
+        
+        # Mock kite client method to raise a token exception
+        self.mock_kite.orders.side_effect = Exception("Incorrect api_key or access_token")
+        
+        # Call orderBook, which should catch the exception and handle it
+        resp = self.adapter.orderBook()
+        
+        # Assertions
+        self.assertFalse(resp["status"])
+        self.assertIn("Incorrect api_key or access_token", resp["message"])
+        
+        # Ensure it attempted to remove the stale session file
+        mock_remove.assert_called_once()
+        self.assertTrue(any("session_kite.json" in str(arg) for arg in mock_remove.call_args[0]))
+        
+        # Ensure it wrote the session refresh flag
+        mock_file_open.assert_called_once()
+        self.assertTrue(any("session_refresh.flag" in str(arg) for arg in mock_file_open.call_args[0]))
+        mock_file_open().write.assert_called_once_with("REFRESH_REQUIRED")
+
 
 @patch("kiteconnect.KiteTicker")
 class TestKiteTickerWrappers(unittest.TestCase):

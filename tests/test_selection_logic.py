@@ -122,17 +122,17 @@ class TestSelection(unittest.TestCase):
     @patch('backend.market_service.market_service.get_market_data')
     @patch('bot.core.decision_engine.datetime.datetime')
     def test_consecutive_losses_and_adx_boost(self, mock_dt, mock_market):
-        # Setup market mock
-        mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
+        # Setup market mock with ADX = 28.0 at 12:00 PM (outside chop hours)
+        mock_dt.now.return_value = real_datetime(2026, 2, 27, 12, 0)
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 28},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }
         
         # Configure starting capital to 150,000 (MEDIUM tier)
-        # MEDIUM tier max_consecutive_losses = 3, max_trades_per_day = 8, min_adx_to_trade = 32
+        # MEDIUM tier max_consecutive_losses = 3, max_trades_per_day = 8, min_adx_to_trade = 25
         self.engine.gatekeeper.get_starting_capital = MagicMock(return_value=150000.0)
         self.engine.gatekeeper.get_current_capital = MagicMock(return_value=150000.0)
 
@@ -166,17 +166,17 @@ class TestSelection(unittest.TestCase):
 
         # 2. Verify Session Stress ADX Boost
         # In MEDIUM tier (capital 150,000, max_consecutive_losses = 3), 2 recent losses triggers ADX boost (+5).
-        # Normal min_adx_to_trade for MEDIUM is 32.0. With boost, it needs 37.0.
-        # If we have ADX = 35.0, it should select MOMENTUM normally, but fail if boost is active.
+        # Normal min_adx_to_trade for MEDIUM is 25.0. With boost, it needs 30.0.
+        # If we have ADX = 28.0, it should select MOMENTUM normally, but fail if boost is active.
         
         # Scenario A: 2 recent losses, oldest are wins. Boost is active.
-        # ADX = 35.0 (which is < 32 + 5 = 37). Should block trade entry (return None).
+        # ADX = 28.0 (which is < 25 + 5 = 30). Should block trade entry (return None).
         with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_losses):
             strat, risk = self.engine.analyze_and_select()
-            self.assertIsNone(strat) # blocked by raised ADX threshold (37)
+            self.assertIsNone(strat) # blocked by raised ADX threshold (30)
             
         # Scenario B: 2 oldest losses, recent are wins. Boost is NOT active.
-        # ADX = 35.0 (which is >= 32). Should select MOMENTUM.
+        # ADX = 28.0 (which is >= 25). Should select MOMENTUM.
         with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_wins):
             strat, risk = self.engine.analyze_and_select()
             self.assertEqual(strat, "MOMENTUM")

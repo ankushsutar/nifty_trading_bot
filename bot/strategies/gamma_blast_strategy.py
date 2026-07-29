@@ -332,14 +332,29 @@ class GammaBlastStrategy:
             # ── REGIME DRIFT YIELD ──────────────────────────────────────────────────
             # If conditions leave Gamma Blast territory, yield control back to the Brain.
             # Uses a 5-point buffer (e.g., 42.0 -> 37.0) to prevent jitter/thrashing.
+            # Requires 2 consecutive drift confirmations to avoid yielding on noise.
             _regime_now = analysis.get('regime', 'UNKNOWN')
             _drift_threshold = _tier.adx_gamma_blast - 5.0
+            if not hasattr(self, '_drift_count'):
+                self._drift_count = 0
+
             if adx < _drift_threshold or _regime_now in ["CHOP", "SIDEWAYS"]:
-                logger.warning(
-                    f"🔄 [Gamma Blast] Regime Drift detected (ADX: {adx:.1f} | Regime: {_regime_now}). "
-                    f"Yielding control back to Decision Engine for re-evaluation."
-                )
-                break # Terminate execution loop, allowing Lifecycle Manager to restart and switch strategies
+                self._drift_count += 1
+                if self._drift_count >= 2:
+                    logger.warning(
+                        f"🔄 [Gamma Blast] Confirmed Regime Drift (ADX: {adx:.1f} | Regime: {_regime_now}). "
+                        f"Yielding control back to Decision Engine for re-evaluation."
+                    )
+                    break  # Terminate execution loop
+                else:
+                    logger.info(
+                        f"🔄 [Gamma Blast] Possible drift ({self._drift_count}/2, ADX: {adx:.1f}). "
+                        f"Waiting for confirmation before yielding."
+                    )
+                    time.sleep(30)
+                    continue
+            else:
+                self._drift_count = 0
 
             # 3. Determine Leg (Trend Direction)
             leg = "CE" if ema9 > ema21 else "PE"

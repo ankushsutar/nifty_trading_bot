@@ -478,8 +478,8 @@ class MomentumStrategy:
                             nifty_spot = self.data_fetcher.get_ltp(spot_tok)
                             if nifty_spot and ema9 > 0:
                                 dist_pct = abs(nifty_spot - ema9) / ema9
-                                overextension_ok = dist_pct <= 0.0015
-                                checks.append(("Overextension Guard", overextension_ok, f"Dist={dist_pct*100:.2f}% <= 0.15%" if overextension_ok else f"Extended: {dist_pct*100:.2f}% > 0.15%"))
+                                overextension_ok = dist_pct <= 0.0025
+                                checks.append(("Overextension Guard", overextension_ok, f"Dist={dist_pct*100:.2f}% <= 0.25%" if overextension_ok else f"Extended: {dist_pct*100:.2f}% > 0.25%"))
                             else:
                                 overextension_ok = True
                                 checks.append(("Overextension Guard", True, "No spot data"))
@@ -522,7 +522,7 @@ class MomentumStrategy:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
                         # Execution Logic: High score AND Mandatory Alignment + Pullback + Level Clearance + Heavyweight Support
-                        if score >= 7 and mtf_aligned and signal_valid and not_overextended and level_clear and heavyweight_aligned:
+                        if score >= 6 and mtf_aligned and signal_valid and not_overextended and level_clear and heavyweight_aligned:
                             if not self.active_position:
                                 logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF, Retest & Level Clearance. Firing Entry.")
                                 if trend == "BULLISH":
@@ -1158,18 +1158,21 @@ class MomentumStrategy:
 
         actual_sl_points = sl_option_pts
         
-        # --- HARD SL FLOOR (Tier-based safety cap) ---
+        # --- HARD SL FLOOR (Tier-based safety cap + ATR-aware floor) ---
         # We cap the SL to protect capital, but we also ensure a MINIMUM floor
-        # so the trade has room to breathe on low premiums.
+        # so the trade has room to breathe on low premiums and volatile ATR.
         max_allowed_sl_pts = quote_ltp * tier.sl_pct
-        sl_floor = min(tier.min_sl_points, quote_ltp * 0.5) # Never floor > 50% of premium
+        # ATR-aware floor: never tighter than 1.2x option ATR for breathing room
+        atr_based_floor = option_sl_points * 1.2
+        sl_floor = max(tier.min_sl_points, atr_based_floor)
+        sl_floor = min(sl_floor, quote_ltp * 0.50)  # Never exceed 50% of premium
         
         if actual_sl_points > max_allowed_sl_pts:
-            # Truncate to the cap, but never below the floor
+            # Truncate to the cap, but never below the ATR-aware floor
             new_sl = max(max_allowed_sl_pts, sl_floor)
             logger.warning(
                 f"🛡️ Hard SL Triggered: Truncating {actual_sl_points:.1f}pts "
-                f"to {new_sl:.1f}pts (Cap: {tier.sl_pct*100}% | Floor: {sl_floor}pts)"
+                f"to {new_sl:.1f}pts (Cap: {tier.sl_pct*100}% | ATR Floor: {atr_based_floor:.1f}pts)"
             )
             actual_sl_points = new_sl
 
