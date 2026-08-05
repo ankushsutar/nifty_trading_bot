@@ -521,10 +521,10 @@ class MomentumStrategy:
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic: High score AND Mandatory Alignment + Pullback + Level Clearance + Heavyweight Support
-                        if score >= 6 and mtf_aligned and signal_valid and not_overextended and level_clear and heavyweight_aligned:
+                        # Execution Logic: Streamlined High-Probability Setup (Signal + Retest/Pullback + Level Clearance)
+                        if score >= 4 and signal_valid and not_overextended and level_clear:
                             if not self.active_position:
-                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF, Retest & Level Clearance. Firing Entry.")
+                                logger.info(f"🔥 HIGH PROBABILITY SETUP DETECTED: Confluence {score}/{total} with Retest & Level Clearance. Firing Entry.")
                                 if trend == "BULLISH":
                                     self.enter_position(expiry, "CE")
                                 elif trend == "BEARISH":
@@ -536,8 +536,9 @@ class MomentumStrategy:
                                     logger.info(f"🚀 SCALE-IN SIGNAL: High Confluence in a Stage {current_stage} winner. Adding 1 lot.")
                                     self.enter_position(expiry, self.active_position['leg'], is_scale_in=True)
                         elif trend != "NEUTRAL":
-                            reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
-                            logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
+                            reason = "Overextended Entry" if not not_overextended else f"Low Confluence ({score}/{total})"
+                            logger.info(f"⏸️ Skipping — {reason}. Waiting for pullback to 9-EMA.")
+
                     
                         # --- INSTITUTIONAL LEVEL AWARENESS & EXIT LOGIC ---
                         if self.active_position:
@@ -878,47 +879,16 @@ class MomentumStrategy:
                 )
                 return
 
-        # ── CANDLE MOMENTUM FILTER ──────────────────────────────────────────────
-        # Require at least 2 of the last 3 completed 5-min candles to close in
-        # the trade direction. Prevents entering on a single spike/bounce candle
-        # that flips the EMAs without real sustained momentum behind it.
+        # Fetch candles for VWAP computation
         _df_entry = None
         try:
             spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
             _df_entry = self.data_fetcher.fetch_latest_candles(spot_tok)
-            if _df_entry is not None and len(_df_entry) >= 3:
-                _last3 = _df_entry.tail(3)
-                _bull_count = (_last3['close'] > _last3['open']).sum()
-                _bear_count = (_last3['close'] < _last3['open']).sum()
-                
-                # In strong TRENDING regimes with HTF (15m) alignment, we relax confirmation.
-                _htf_trend = self.calculate_htf_trend()
-                _htf_aligned = (_htf_trend == ("BULLISH" if leg == "CE" else "BEARISH"))
-                
-                # SQUEEZE/EXTREME TREND BYPASS: Removed to guarantee candle confirmation under all overrides
-                _min_candles = 1 if (_regime == "TRENDING" and _htf_aligned) else 2
-
-                if leg == "CE" and _bull_count < _min_candles:
-                    logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bull_count}/{_min_candles} bullish candles — "
-                        "weak confirmation for CE entry. Skipping."
-                    )
-                    return
-                if leg == "PE" and _bear_count < _min_candles:
-                    logger.warning(
-                        f"🛑 Candle Momentum Filter: {_bear_count}/{_min_candles} bearish candles — "
-                        "weak confirmation for PE entry. Skipping."
-                    )
-                    return
-                self._last_df = _df_entry  # Update cache for ADX slope check below
         except Exception as _e:
-            logger.warning(f"Candle momentum filter error: {_e}")
+            logger.warning(f"Failed to fetch candles for VWAP: {_e}")
 
         # ── VWAP POSITION FILTER ───────────────────────────────────────────────
         # VWAP is the primary intraday reference for institutions and HFTs.
-        # CE entry when NIFTY is below VWAP = buying into institutional sell pressure.
-        # PE entry when NIFTY is above VWAP = shorting into institutional buy flow.
-        # We use the already-fetched 5-min candles to compute session VWAP — no extra API call.
         try:
             _df_vwap = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
             if _df_vwap is not None and len(_df_vwap) >= 1 and 'volume' in _df_vwap.columns:
@@ -927,7 +897,6 @@ class MomentumStrategy:
                     _typical = (_df_vwap['high'] + _df_vwap['low'] + _df_vwap['close']) / 3
                     _vwap = (_typical * _vol).sum() / _vol.sum()
                     logger.info(f"📏 VWAP={_vwap:.1f} | NIFTY={nifty_ltp:.1f} | Leg={leg}")
-                    # SQUEEZE BYPASS: Squeezes often happen when price is on the "wrong" side of VWAP before flipping it.
                     if _is_squeeze:
                         logger.info("🔥 Squeeze detected: Bypassing VWAP Filter.")
                     elif leg == "CE" and nifty_ltp < _vwap:
@@ -945,43 +914,6 @@ class MomentumStrategy:
         except Exception as _e:
             logger.warning(f"VWAP filter error: {_e}")
 
-        # ── ADX SLOPE FILTER ────────────────────────────────────────────────────
-        # ADX must be rising (trend is strengthening, not exhausting).
-        # ADX above the gate threshold but declining = bad entry timing.
-        try:
-            _df_adx = _df_entry if _df_entry is not None else getattr(self, '_last_df', None)
-            if _df_adx is not None and len(_df_adx) >= 20:
-                _adx_s = self.regime_classifier._calculate_adx(_df_adx)
-                if len(_adx_s) >= 3:
-                    curr_adx_m = _adx_s.iloc[-1]
-                    prev_adx_m = _adx_s.iloc[-2]
-
-                    # NOISE TOLERANCE: On parabolic days, minor ADX dips are expected noise.
-                    _is_declining_m = False
-                    
-                    if _is_squeeze:
-                         logger.info("🔥 Squeeze detected: Bypassing ADX Slope Filter.")
-                    elif curr_adx_m > 45:
-                        # Extreme trend: Allow significant cooling off (-3.0)
-                        _is_declining_m = (curr_adx_m - prev_adx_m) < -3.0
-                    elif curr_adx_m > 35:
-                        # Strong trend: Allow moderate cooling off (-1.5)
-                        _is_declining_m = (curr_adx_m - prev_adx_m) < -1.5
-                    elif curr_adx_m > 25:
-                        # Moderate trend: Allow small cooling off (-0.5)
-                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.5
-                    else:
-                        # Developing trend: Require rising momentum (positive slope)
-                        _is_declining_m = (curr_adx_m - prev_adx_m) < -0.05
-
-                    if _is_declining_m:
-                        logger.warning(
-                            f"🛑 ADX Slope Filter: ADX declining "
-                            f"({prev_adx_m:.2f} → {curr_adx_m:.2f}). "
-                            "Trend is losing momentum — skipping entry."
-                        )
-                        return
-        except Exception as _e:
             logger.warning(f"ADX slope filter error: {_e}")
 
         sl_points = 2 * atr

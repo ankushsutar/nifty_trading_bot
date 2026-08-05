@@ -58,17 +58,18 @@ class TestSelection(unittest.TestCase):
         print(f"11:00 AM, ADX 50 -> Expected: GAMMA_BLAST, Got: {strat}")
         self.assertEqual(strat, "GAMMA_BLAST")
 
-        # Case 4: 11:00 AM, Friday, ADX 20 (Should be None/CASH because STRADDLE_SCALP is removed)
+        # Case 4: 11:00 AM, Friday, ADX 15 (Should be None/CASH because ADX < 18)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
         mock_market.return_value = {
             'nifty': 22000,
-            'analysis': {'regime': 'SIDEWAYS', 'trend': 'BULLISH', 'adx': 20},
+            'analysis': {'regime': 'SIDEWAYS', 'trend': 'BULLISH', 'adx': 15},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}
         }
         strat, risk = self.engine.analyze_and_select()
-        print(f"11:00 AM, ADX 20 -> Expected: None, Got: {strat}")
+        print(f"11:00 AM, ADX 15 -> Expected: None, Got: {strat}")
         self.assertIsNone(strat)
+
 
     @patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=[])
     @patch('backend.market_service.market_service.get_market_data')
@@ -169,17 +170,18 @@ class TestSelection(unittest.TestCase):
         # Normal min_adx_to_trade for MEDIUM is 25.0. With boost, it needs 30.0.
         # If we have ADX = 28.0, it should select MOMENTUM normally, but fail if boost is active.
         
-        # Scenario A: 2 recent losses, oldest are wins. Boost is active.
-        # ADX = 28.0 (which is < 25 + 5 = 30). Should block trade entry (return None).
-        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_losses):
+        # Scenario A: 2 recent losses. Consecutive loss circuit breaker threshold is 3 for MEDIUM tier.
+        # With session ADX boost removed to prevent delayed entries, ADX = 28.0 selects MOMENTUM.
+        with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_losses[:2]):
             strat, risk = self.engine.analyze_and_select()
-            self.assertIsNone(strat) # blocked by raised ADX threshold (30)
+            self.assertEqual(strat, "MOMENTUM")
             
         # Scenario B: 2 oldest losses, recent are wins. Boost is NOT active.
-        # ADX = 28.0 (which is >= 25). Should select MOMENTUM.
+        # ADX = 28.0 (which is >= 20). Should select MOMENTUM.
         with patch('bot.core.trade_repo.trade_repo.get_today_trades', return_value=trades_recent_wins):
             strat, risk = self.engine.analyze_and_select()
             self.assertEqual(strat, "MOMENTUM")
 
 if __name__ == '__main__':
     unittest.main()
+

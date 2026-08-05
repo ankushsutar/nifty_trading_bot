@@ -430,35 +430,13 @@ class GammaBlastStrategy:
                 )
                 time.sleep(30)
                 continue
-            # --- CANDLE MOMENTUM FILTER ---
-            # At least 2 of the last 3 completed 5-min candles must close in the
-            # trade direction. Prevents entering on an EMA crossover from a single
-            # spike or post-SL bounce candle.
-            # Enforced at all times to prevent buying/selling at trend climax/exhaustion points.
+            # Fetch candles for VWAP computation
             _df_gb = None
             try:
                 spot_tok = get_instrument(Config.ACTIVE_SYMBOL).analysis_token
                 _df_gb = self.data_fetcher.fetch_latest_candles(spot_tok)
-                if _df_gb is not None and len(_df_gb) >= 3:
-                    _l3 = _df_gb.tail(3)
-                    _bull = (_l3['close'] > _l3['open']).sum()
-                    _bear = (_l3['close'] < _l3['open']).sum()
-                    if leg == "CE" and _bull < 2:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bull}/3 bullish candles. "
-                            "Waiting for stronger confirmation."
-                        )
-                        time.sleep(30)
-                        continue
-                    if leg == "PE" and _bear < 2:
-                        logger.warning(
-                            f"Gamma Blast: 🛑 Candle Momentum Filter: {_bear}/3 bearish candles. "
-                            "Waiting for stronger confirmation."
-                        )
-                        time.sleep(30)
-                        continue
             except Exception as _ce:
-                logger.warning(f"Gamma Blast: Candle momentum filter error: {_ce}")
+                logger.warning(f"Gamma Blast: Candle fetch error: {_ce}")
 
             # --- HEAVYWEIGHT SECTOR CONFLUENCE FILTER ---
             try:
@@ -474,8 +452,6 @@ class GammaBlastStrategy:
                 logger.warning(f"Gamma Blast: Heavyweight filter error: {_hwe}")
 
             # --- VWAP POSITION FILTER ---
-            # On parabolic days institutions drive the move — VWAP confirms which side
-            # they're on. CE when below VWAP or PE when above VWAP = fighting the flow.
             try:
                 if _df_gb is not None and len(_df_gb) >= 1 and 'volume' in _df_gb.columns:
                     _vol_gb = _df_gb['volume']
@@ -502,40 +478,6 @@ class GammaBlastStrategy:
             except Exception as _ve:
                 logger.warning(f"Gamma Blast: VWAP filter error: {_ve}")
 
-            # --- ADX SLOPE FILTER ---
-            # ADX must be rising — a declining ADX on a "parabolic day" means the
-            # parabola has already peaked. No entry into an exhausting trend.
-            try:
-                if _df_gb is not None and len(_df_gb) >= 20:
-                    _adx_s_gb = self.regime_classifier._calculate_adx(_df_gb)
-                    if len(_adx_s_gb) >= 3:
-                        curr_adx_s = _adx_s_gb.iloc[-1]
-                        prev_adx_s = _adx_s_gb.iloc[-2]
-                        
-                        # NOISE TOLERANCE: Parabolic days have minor ADX fluctuations.
-                        # 1. If ADX > 50, ignore slope (trend is extreme).
-                        # 2. If ADX > 35, allow small decline up to 0.2pts (noise).
-                        # 3. Otherwise, require at least flat (diff > -0.05).
-                        _is_declining = False
-                        if self._is_squeeze:
-                            logger.info("🔥 Squeeze detected: Bypassing ADX Slope Filter.")
-                        elif curr_adx_s > 50:
-                            _is_declining = (curr_adx_s - prev_adx_s) < -3.0
-                        elif curr_adx_s > 35:
-                            _is_declining = (curr_adx_s - prev_adx_s) < -1.5
-                        else:
-                            _is_declining = (curr_adx_s - prev_adx_s) < -0.05
-
-                        if _is_declining:
-                            logger.warning(
-                                f"Gamma Blast: 🛑 ADX Slope Filter: ADX declining "
-                                f"({prev_adx_s:.2f} → {curr_adx_s:.2f}). "
-                                "Trend losing strength — skipping entry."
-                            )
-                            time.sleep(30)
-                            continue
-            except Exception as _ae:
-                logger.warning(f"Gamma Blast: ADX slope filter error: {_ae}")
 
             # 4. Strike Selection — Dynamic Volatility Adjustment
             atm_strike = round(ltp / 50) * 50

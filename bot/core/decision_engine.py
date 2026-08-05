@@ -101,21 +101,9 @@ class DecisionEngine:
         except Exception:
             pass  # Fail open — don't block on DB error
 
-        # --- SESSION-ADAPTIVE ADX BOOST ---
-        # After 2+ consecutive losses, demand a stronger trend before entering again.
-        # This prevents over-trading on choppy days where early signals were wrong.
+        # --- SESSION RISK MANAGEMENT ---
         adx_boost = 0
-        try:
-            _closed = sorted([t for t in today_trades if t.get('status') == 'CLOSED'], key=lambda x: x.get('id', 0), reverse=True)
-            if len(_closed) >= 2 and all(t.get('pnl', 0) < 0 for t in _closed[:2]):
-                adx_boost = 5
-                logger.warning(
-                    f">>> [Brain] ⚠️ Session Stress: Last 2 trades both lost. "
-                    f"ADX threshold raised by +{adx_boost} (need ADX ≥ {tier.min_adx_to_trade + adx_boost}) "
-                    "for remaining entries today."
-                )
-        except Exception:
-            pass
+
 
         # 1. Check Capital & Mode  (tier already resolved above, reuse available_cash_early)
         available_cash = available_cash_early
@@ -328,14 +316,10 @@ class DecisionEngine:
             logger.info(f"🚀 PARABOLIC MOVE (ADX: {adx:.1f} >= {tier.adx_gamma_blast}). Selected: GAMMA_BLAST")
             selected_strategy = "GAMMA_BLAST"
 
-        # Check chop hours (10:30-11:30 and 13:00-13:30) and boost required ADX to 30.0 for MOMENTUM
-        elif adx >= (30.0 if ((datetime.time(10, 30) <= now < datetime.time(11, 30)) or (datetime.time(13, 0) <= now < datetime.time(13, 30))) else 25.0):
-            # NORMAL TRENDING
-            is_chop_hours = (datetime.time(10, 30) <= now < datetime.time(11, 30)) or \
-                            (datetime.time(13, 0) <= now < datetime.time(13, 30))
-            if is_chop_hours:
-                logger.info(f"⚡ Trend confirmed during chop hours (ADX: {adx:.1f} >= 30.0). Selected: MOMENTUM")
+        elif adx >= tier.min_adx_to_trade or regime == "TRENDING":
+            # EARLY TRENDING (ADX 18+)
             selected_strategy = "MOMENTUM"
+
         
 
         

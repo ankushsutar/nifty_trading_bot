@@ -56,22 +56,15 @@ class LadderedTrailingManager:
         threshold_3_0 = round(3.5 * atr, 1) # Stage 3 at 3.5 ATR move
         threshold_4_0 = round(5.0 * atr, 1) # Stage 4 at 5.0 ATR move 🚀
 
-        # Stage 0.5: Breakeven Shield (No-Loss Mode)
-        if current_stage < 0.5 and points_up >= threshold_0_5:
-            new_sl = entry_price + 2.0 # Minimum lock to cover charges
-            if new_sl > current_sl:
-                logger.info(f"🛡️ Stage 0.5: Breakeven Shield Active (+{points_up:.1f}pts) | SL: {new_sl}")
-                self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
-                current_stage = 0.5
-
-        # Stage 1: The Base Floor (More generous)
+        # Stage 1: The Base Floor (Triggered at 1.5 ATR move)
         if current_stage < 1 and points_up >= threshold_1_0:
-            # Move SL to Entry + 0.3 ATR (Just enough to cover costs and minor profit)
+            # Move SL to Entry + 0.3 ATR (Cover costs and lock small profit)
             new_sl = entry_price + round(0.3 * atr, 1)
             if new_sl > current_sl:
                 logger.info(f"🛡️ Stage 1: Floor Locked at 0.3 ATR (+{points_up:.1f}pts) | SL: {new_sl}")
                 self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
                 current_stage = 1
+
 
         # Stage 2: The Buffer & PARTIAL BOOKING
         if current_stage < 2 and points_up >= threshold_2_0:
