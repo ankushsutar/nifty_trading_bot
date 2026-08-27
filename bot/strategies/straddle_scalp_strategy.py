@@ -285,8 +285,8 @@ class StraddleScalpStrategy:
         # STEP 1: Place Long protection legs first (to secure margin)
         # -----------------------------------------------------------------
         logger.info("🛡️ Step 1/2: Placing Long Hedges (LC and LP) to unlock margin...")
-        lc_oid = self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_ltp, "BUY", self.STRATEGY_NAME, mode)
-        lp_oid = self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_ltp, "BUY", self.STRATEGY_NAME, mode)
+        lc_oid = self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_ltp, "BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
+        lp_oid = self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_ltp, "BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
 
         if not lc_oid or not lp_oid:
             logger.error("Straddle Scalp: Long leg placement failed. Cancelling.")
@@ -302,9 +302,9 @@ class StraddleScalpStrategy:
             self.order_manager.cancel_order(lc_oid)
             self.order_manager.cancel_order(lp_oid)
             if lc_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+                self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
             if lp_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+                self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
             return
 
         logger.info("🛡️ Step 1/2 Complete: Both Long hedges filled successfully.")
@@ -313,16 +313,16 @@ class StraddleScalpStrategy:
         # STEP 2: Place Short premium legs second
         # -----------------------------------------------------------------
         logger.info("💰 Step 2/2: Placing Short Premium legs (SC and SP)...")
-        sc_oid = self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_ltp, "SELL", self.STRATEGY_NAME, mode)
-        sp_oid = self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_ltp, "SELL", self.STRATEGY_NAME, mode)
+        sc_oid = self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_ltp, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+        sp_oid = self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_ltp, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
 
         if not sc_oid or not sp_oid:
             logger.critical("Straddle Scalp: Short leg placement failed. Triggering immediate emergency cleanup.")
             if sc_oid: self.order_manager.cancel_order(sc_oid)
             if sp_oid: self.order_manager.cancel_order(sp_oid)
             # Exit Long legs
-            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
-            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
             return
 
         sc_fill = self._wait_fill(sc_oid, fallback=sc_ltp)
@@ -334,12 +334,12 @@ class StraddleScalpStrategy:
             self.order_manager.cancel_order(sp_oid)
             # Buy back any filled shorts
             if sc_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_fill['price']*1.1, "BUY", self.STRATEGY_NAME, mode)
+                self.order_manager.place_smart_limit(sc_symbol, sc_token, qty_units, sc_fill['price']*1.1, "BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
             if sp_fill['status'] == 'FILLED':
-                self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_fill['price']*1.1, "BUY", self.STRATEGY_NAME, mode)
+                self.order_manager.place_smart_limit(sp_symbol, sp_token, qty_units, sp_fill['price']*1.1, "BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
             # Sell Long hedges
-            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
-            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", self.STRATEGY_NAME, mode)
+            self.order_manager.place_smart_limit(lc_symbol, lc_token, qty_units, lc_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
+            self.order_manager.place_smart_limit(lp_symbol, lp_token, qty_units, lp_fill['price']*0.9, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
             return
 
         # -----------------------------------------------------------------
@@ -482,7 +482,7 @@ class StraddleScalpStrategy:
         for pos, name in [(self.sc_position, "SC"), (self.sp_position, "SP")]:
             if not pos: continue
             ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
-            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "BUY", self.STRATEGY_NAME, mode)
+            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "BUY", strategy_name=self.STRATEGY_NAME, mode=mode)
             fill = self._wait_fill(oid, fallback=ltp)
             exit_price = fill.get('price', ltp)
             
@@ -498,7 +498,7 @@ class StraddleScalpStrategy:
         for pos, name in [(self.lc_position, "LC"), (self.lp_position, "LP")]:
             if not pos: continue
             ltp = self.data_fetcher.get_ltp(pos['token'], exchange="NFO") or pos['entry_price']
-            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "SELL", self.STRATEGY_NAME, mode)
+            oid = self.order_manager.place_smart_limit(pos['symbol'], pos['token'], pos['qty'], ltp, "SELL", strategy_name=self.STRATEGY_NAME, mode=mode)
             fill = self._wait_fill(oid, fallback=ltp)
             exit_price = fill.get('price', ltp)
             
