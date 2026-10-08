@@ -48,15 +48,30 @@ class ZeroToHeroStrategy:
             open_trades = trade_repo.get_open_trades(mode=mode, strategy=self.STRATEGY_NAME)
             if open_trades:
                 t = open_trades[0]
+                sl_oid = t.get('sl_order_id')
+                entry_price = float(t.get('entry_price', 0))
+                qty = int(t.get('qty', 0))
+                symbol = t.get('symbol')
+                token = t.get('token')
+
+                # If broker SL was never placed (e.g. crash right after fill), place it now
+                if not sl_oid and not t.get('partially_booked') and entry_price > 0 and qty > 0:
+                    sl_price = round(entry_price * (1 - self.FIXED_STOP_LOSS_PCT), 2)
+                    logger.warning(f"🛡️ [Z2H] Recovered trade #{t['id']} has no broker SL. Placing emergency SL @ ₹{sl_price}...")
+                    sl_oid = self.order_manager.place_stoploss(symbol, token, qty, sl_price, self.STRATEGY_NAME)
+                    if sl_oid:
+                        trade_repo.update_sl_order_id(t['id'], sl_oid)
+                        trade_repo.update_sl(t['id'], sl_price)
+
                 self.active_position = {
                     'id': t['id'],
-                    'symbol': t['symbol'],
-                    'token': t['token'],
-                    'qty': t['qty'],
-                    'entry_price': t['entry_price'],
-                    'sl_oid': t.get('sl_order_id')
+                    'symbol': symbol,
+                    'token': token,
+                    'qty': qty,
+                    'entry_price': entry_price,
+                    'sl_oid': sl_oid
                 }
-                logger.info(f"♻️ [Z2H] Recovery active for {t['symbol']}")
+                logger.info(f"♻️ [Z2H] Recovery active for {symbol} (SL OID: {sl_oid})")
         except Exception as e:
             logger.error(f"Z2H recovery fail: {e}")
 
@@ -197,6 +212,7 @@ class ZeroToHeroStrategy:
                 trade_repo.update_sl_order_id(trade_id, sl_id)
             else:
                 logger.error("Z2H failed entry execution.")
+                trade_repo.collection.delete_one({"id": trade_id})
                 time.sleep(60)
                 
     def _monitor_wildcard(self):
@@ -246,6 +262,8 @@ class ZeroToHeroStrategy:
             sl_price = entry * (1 - self.FIXED_STOP_LOSS_PCT)
             if ltp <= sl_price and not half_booked:
                  logger.warning(f"💀 Wildcard Hard Floor hit at ₹{ltp}. Cutting remaining.")
+                 if self.active_position.get('sl_oid'):
+                     self.order_manager.cancel_order(self.active_position['sl_oid'])
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
                  
                  pnl_val = (ltp - entry) * qty
@@ -258,6 +276,8 @@ class ZeroToHeroStrategy:
             now = datetime.datetime.now().time()
             if now >= datetime.time(15, 10):
                  logger.info(f"⏰ End of Day. Liquidating Wildcard final runner at ₹{ltp}")
+                 if self.active_position.get('sl_oid'):
+                     self.order_manager.cancel_order(self.active_position['sl_oid'])
                  self.order_manager.place_market(sym, token, qty, "SELL", self.STRATEGY_NAME)
                  
                  pnl_val = (ltp - entry) * qty

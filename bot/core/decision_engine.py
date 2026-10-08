@@ -23,6 +23,10 @@ class DecisionEngine:
         # --- THE X-FACTOR: AlphaEngine ---
         from bot.core.alpha_engine import AlphaEngine
         self.alpha_engine = AlphaEngine(self.api, self.loader)
+        
+        # --- MARKET REGIME FILTER: VIX & 15m Supertrend / Debit Spread Engine ---
+        from bot.core.market_regime_filter import MarketRegimeFilter
+        self.regime_filter = MarketRegimeFilter(self.api, self.loader)
         # MAX_TRADES_PER_DAY is now tier-driven — fetched live in analyze_and_select()
         # NOTE: No in-memory counter — we read from DB so the cap survives process restarts
 
@@ -339,6 +343,22 @@ class DecisionEngine:
                 f"Insufficient volatility fuel for Gamma Blast. Downgrading to MOMENTUM."
             )
             selected_strategy = "MOMENTUM"
+
+        # ── MARKET REGIME & VIX FILTER ───────────────────────────────────────
+        # In low-VIX environments (VIX < 15), option selling premiums are thin and
+        # any trending breakout causes steep losses. Disable all net-short premium
+        # strategies (Short Straddles/Strangles) and switch to directional Vertical Debit Spreads.
+        regime_filter_res = self.regime_filter.filter_regime()
+        current_vix = regime_filter_res.get("vix", 15.0)
+        is_low_vix = regime_filter_res.get("is_low_vix", False)
+
+        if is_low_vix and selected_strategy in ["STRADDLE_SCALP", "SELLING", "STRADDLE"]:
+            logger.info(
+                f">>> [Brain] 🛡️ LOW-VIX REGIME ACTIVE (India VIX {current_vix:.2f} < 15.0). "
+                f"Net-short premium strategy '{selected_strategy}' DISABLED. "
+                f"Switching execution to Directional Vertical Debit Spreads."
+            )
+            selected_strategy = "VERTICAL_DEBIT_SPREAD"
 
         # Whitelist guard — strategy must be enabled for this tier
         if selected_strategy not in tier.allowed_strategies:

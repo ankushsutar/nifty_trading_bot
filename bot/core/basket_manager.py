@@ -115,3 +115,110 @@ class BasketManager:
             )
 
         return True
+
+    def execute_spread_simultaneous(self, strategy_name, buy_leg, sell_leg, qty, mode="LIVE"):
+        """
+        Routes multi-leg debit spread orders SIMULTANEOUSLY to avoid execution slippage.
+        Uses ThreadPoolExecutor to fire both legs in parallel.
+        buy_leg: {'symbol': str, 'token': str, 'price': float}
+        sell_leg: {'symbol': str, 'token': str, 'price': float}
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(
+            f">>> [Basket] Routing SIMULTANEOUS Spread Orders for {strategy_name}: "
+            f"BUY {buy_leg['symbol']} @ ~{buy_leg.get('price', 0.0)} & "
+            f"SELL {sell_leg['symbol']} @ ~{sell_leg.get('price', 0.0)} (Qty: {qty})..."
+        )
+
+        results = {
+            "strategy": strategy_name,
+            "status": "FAILED",
+            "buy_order_id": None,
+            "sell_order_id": None,
+            "buy_fill_price": 0.0,
+            "sell_fill_price": 0.0,
+            "net_debit": 0.0,
+        }
+
+        def _place_leg(leg_info, txn_type):
+            symbol = leg_info["symbol"]
+            token = leg_info["token"]
+            price = leg_info.get("price", 100.0)
+            oid = self.order_manager.place_smart_limit(
+                symbol=symbol,
+                token=token,
+                qty=qty,
+                initial_price=price,
+                transaction_type=txn_type,
+                strategy_name=strategy_name,
+                mode=mode
+            )
+            return txn_type, oid
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(_place_leg, buy_leg, "BUY"),
+                    executor.submit(_place_leg, sell_leg, "SELL")
+                ]
+
+                for fut in as_completed(futures):
+                    txn_type, oid = fut.result()
+                    if txn_type == "BUY":
+                        results["buy_order_id"] = oid
+                    elif txn_type == "SELL":
+                        results["sell_order_id"] = oid
+
+            if results["buy_order_id"] and results["sell_order_id"]:
+                results["status"] = "SUCCESS"
+                logger.info(
+                    f"✨ [Basket] Simultaneous Spread Fill: BUY {results['buy_order_id']} | "
+                    f"SELL {results['sell_order_id']}"
+                )
+            else:
+                logger.error(
+                    f"❌ [Basket] Spread leg execution incomplete: "
+                    f"BUY={results['buy_order_id']}, SELL={results['sell_order_id']}"
+                )
+
+            return results
+        except Exception as e:
+            logger.error(f">>> [Basket] Simultaneous Spread Error: {e}")
+            return results
+
+    def close_spread_simultaneous(self, strategy_name, buy_leg, sell_leg, qty, mode="LIVE"):
+        """
+        Closes both legs of a vertical debit spread SIMULTANEOUSLY in parallel.
+        buy_leg was originally bought -> SELL to exit.
+        sell_leg was originally sold -> BUY to exit.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        logger.info(
+            f">>> [Basket] Closing SIMULTANEOUS Spread for {strategy_name}: "
+            f"EXIT BUY {buy_leg['symbol']} & EXIT SELL {sell_leg['symbol']} (Qty: {qty})..."
+        )
+
+        def _close_leg(symbol, token, price, txn_type):
+            return txn_type, self.order_manager.place_smart_limit(
+                symbol=symbol,
+                token=token,
+                qty=qty,
+                initial_price=price,
+                transaction_type=txn_type,
+                strategy_name=strategy_name,
+                mode=mode
+            )
+
+        try:
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(_close_leg, buy_leg["symbol"], buy_leg["token"], buy_leg.get("current_price", 1.0), "SELL"),
+                    executor.submit(_close_leg, sell_leg["symbol"], sell_leg["token"], sell_leg.get("current_price", 1.0), "BUY")
+                ]
+                for fut in as_completed(futures):
+                    fut.result()
+            return True
+        except Exception as e:
+            logger.error(f">>> [Basket] Simultaneous Close Error: {e}")
+            return False
+

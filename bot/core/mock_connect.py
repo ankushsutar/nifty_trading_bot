@@ -88,6 +88,17 @@ class MockSmartConnect:
             }
         }
 
+    def getCandleData(self, historicParam):
+        """Simulates OHLCV candle data for mock tests."""
+        import datetime
+        now = datetime.datetime.now()
+        data = []
+        for i in range(50):
+            t = (now - datetime.timedelta(minutes=15 * (50 - i))).strftime("%Y-%m-%d %H:%M")
+            close = 22000.0 + (i * 10)
+            data.append([t, close - 5.0, close + 8.0, close - 8.0, close, 1500])
+        return {"status": True, "data": data}
+
 class MockTokenLookup:
     def load_scrip_master(self):
         print(">>> [Mock] Skipping Scrip Master download.")

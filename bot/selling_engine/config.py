@@ -12,7 +12,7 @@ SELLING_CONFIG = {
     "lot_size": int(os.getenv("SELLING_LOT_SIZE", Config.NIFTY_LOT_SIZE)),
 
     # VIX Gates (Check before ANY trade) - Institutional Filter
-    "vix_min": float(os.getenv("SELLING_VIX_MIN", 12.0)),
+    "vix_min": float(os.getenv("SELLING_VIX_MIN", 15.0)),
     "vix_max": float(os.getenv("SELLING_VIX_MAX", 25.0)),
     "vix_high_threshold": float(os.getenv("SELLING_VIX_HIGH_THRESHOLD", 20.0)),
 

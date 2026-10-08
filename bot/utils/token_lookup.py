@@ -61,7 +61,6 @@ class TokenLookup:
             try:
                 # Public Zerodha instruments list CSV
                 url = "https://api.kite.trade/instruments"
-                import requests
                 import io
                 response = requests.get(url, timeout=30)
                 response.raise_for_status()

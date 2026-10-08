@@ -292,3 +292,90 @@ def compute_all(df, ema_fast: int = 9, ema_slow: int = 21, adx_period: int = 14)
         "minus_di":  minus_di,
         "numba":     _NUMBA,
     }
+
+
+# ==========================================================================
+#  Supertrend — (period=10, multiplier=3.0)
+# ==========================================================================
+
+@njit(cache=True)
+def _supertrend_numba(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> tuple:
+    n = len(closes)
+    st = np.zeros(n, dtype=np.float64)
+    direction = np.zeros(n, dtype=np.int64)  # +1 = Bullish, -1 = Bearish
+
+    if n < period + 1:
+        return st, direction
+
+    atr_vals = _atr_numba(highs, lows, closes, period)
+
+    upper_band = np.zeros(n, dtype=np.float64)
+    lower_band = np.zeros(n, dtype=np.float64)
+
+    for i in range(period, n):
+        hl2 = (highs[i] + lows[i]) / 2.0
+        basic_upper = hl2 + (multiplier * atr_vals[i])
+        basic_lower = hl2 - (multiplier * atr_vals[i])
+
+        # Upper band adjustment
+        if i == period or basic_upper < upper_band[i - 1] or closes[i - 1] > upper_band[i - 1]:
+            upper_band[i] = basic_upper
+        else:
+            upper_band[i] = upper_band[i - 1]
+
+        # Lower band adjustment
+        if i == period or basic_lower > lower_band[i - 1] or closes[i - 1] < lower_band[i - 1]:
+            lower_band[i] = basic_lower
+        else:
+            lower_band[i] = lower_band[i - 1]
+
+        # Direction & Supertrend value
+        if i == period:
+            if closes[i] > upper_band[i]:
+                direction[i] = 1
+                st[i] = lower_band[i]
+            else:
+                direction[i] = -1
+                st[i] = upper_band[i]
+        else:
+            prev_dir = direction[i - 1]
+            if prev_dir == 1:  # Was Bullish
+                if closes[i] < lower_band[i]:
+                    direction[i] = -1
+                    st[i] = upper_band[i]
+                else:
+                    direction[i] = 1
+                    st[i] = lower_band[i]
+            else:  # Was Bearish
+                if closes[i] > upper_band[i]:
+                    direction[i] = 1
+                    st[i] = lower_band[i]
+                else:
+                    direction[i] = -1
+                    st[i] = upper_band[i]
+
+    return st, direction
+
+
+def supertrend(
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    period: int = 10,
+    multiplier: float = 3.0,
+) -> tuple:
+    """
+    Computes Supertrend indicator (10, 3).
+    Returns (supertrend_array, direction_array) where direction is +1 (BULLISH) or -1 (BEARISH).
+    """
+    highs = np.asarray(highs, dtype=np.float64)
+    lows = np.asarray(lows, dtype=np.float64)
+    closes = np.asarray(closes, dtype=np.float64)
+    return _supertrend_numba(highs, lows, closes, period, multiplier)
+

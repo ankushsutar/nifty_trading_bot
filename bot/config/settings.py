@@ -91,7 +91,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         min_sl_points=6.0,                 # Ensure at least 6 points SL for micro accounts
         max_trades_per_day=2,
         max_consecutive_losses=2,
-        allowed_strategies=["MOMENTUM", "GAMMA_BLAST"],
+        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "VERTICAL_DEBIT_SPREAD"],
         min_capital_threshold=3_000.0,
         min_risk_floor=500.0,
         entry_slippage_pct=0.01,
@@ -120,7 +120,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         min_sl_points=7.0,                 # Ensure at least 7 points SL
         max_trades_per_day=3,
         max_consecutive_losses=4,
-        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO"],
+        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO", "VERTICAL_DEBIT_SPREAD"],
         min_capital_threshold=8_000.0,
         min_risk_floor=500.0,
         entry_slippage_pct=0.01,
@@ -149,7 +149,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         min_sl_points=8.0,                 # 8 points for medium accounts
         max_trades_per_day=8,              # UNLOCKED: Expanded from 4 to capture multi-stage runners 🚀
         max_consecutive_losses=3,
-        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO"],
+        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO", "VERTICAL_DEBIT_SPREAD"],
         min_capital_threshold=25_000.0,
         min_risk_floor=800.0,
         entry_slippage_pct=0.008,
@@ -178,7 +178,7 @@ CAPITAL_TIERS: dict[str, CapitalTier] = {
         min_sl_points=10.0,                # 10 points for large accounts
         max_trades_per_day=5,
         max_consecutive_losses=3,
-        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO"],
+        allowed_strategies=["MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "ZERO_TO_HERO", "VERTICAL_DEBIT_SPREAD"],
         min_capital_threshold=75_000.0,
         min_risk_floor=1_500.0,
         entry_slippage_pct=0.005,
@@ -268,6 +268,7 @@ class Config(metaclass=ConfigMeta):
     STRATEGY_EXIT_TIME       = (15, 10)
 
     # ── NIFTY constants ────────────────────────────────────────────────────
+    NIFTY_SPOT_TOKEN = "99926000"
     SCRIP_MASTER_URL = (
         "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
     )

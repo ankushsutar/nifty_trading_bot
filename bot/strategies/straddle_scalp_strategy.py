@@ -138,6 +138,16 @@ class StraddleScalpStrategy:
                     logger.critical("Straddle Scalp: 🛑 Max Daily Loss hit. Halting.")
                 break
 
+            # 1b. VIX Filter Check: Disable net-short premium selling when India VIX < 15.0
+            from bot.core.market_regime_filter import MarketRegimeFilter
+            regime_filter = MarketRegimeFilter(self.api, self.token_loader, self.data_fetcher)
+            if regime_filter.is_vix_low(15.0):
+                logger.warning(
+                    f"Straddle Scalp: 🛑 VIX FILTER ACTIVE. India VIX is < 15.0. "
+                    f"Net-short premium strategies disabled in low-VIX environments. Exiting."
+                )
+                break
+
             # 2. Check if positions are established
             has_positions = (self.lc_position and self.sc_position and self.sp_position and self.lp_position)
             if has_positions:

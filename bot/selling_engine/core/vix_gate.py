@@ -8,7 +8,7 @@ class VIXGate:
     def __init__(self, config: dict):
         self.config = config
 
-    def check(self, current_vix: float) -> dict:
+    def check(self, current_vix: float, adx: float = 0.0) -> dict:
         """
         Returns:
             {

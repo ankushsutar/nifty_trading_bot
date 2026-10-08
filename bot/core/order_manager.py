@@ -47,12 +47,12 @@ class OrderManager:
                     order_feed.register_order(oid)
 
                     # --- Persistence Integration ---
-                    if strategy_name:
+                    if strategy_name and order_params.get('variety') != "STOPLOSS":
                         try:
                             trade_repo.save_trade(
                                 symbol=order_params.get('tradingsymbol'),
                                 token=order_params.get('symboltoken'),
-                                leg="CE" if "CE" in order_params.get('tradingsymbol', '') else "PE",
+                                leg="CE" if "CE" in (order_params.get('tradingsymbol') or '') else "PE",
                                 qty=order_params.get('quantity'),
                                 entry_price=0.0, # PLACED status
                                 status="PLACED",
@@ -108,6 +108,36 @@ class OrderManager:
             logger.error(f"Limit Order Error: {e}")
             return None
 
+    def place_market(self, symbol, token, qty, transaction_type="SELL", strategy_name=None):
+        """Places a MARKET order."""
+        if is_kill_switch_active():
+            logger.critical("🛑 KILL SWITCH ACTIVE. Market Order Rejected.")
+            return None
+
+        try:
+            orderparams = {
+                "variety": "NORMAL",
+                "tradingsymbol": symbol,
+                "symboltoken": token,
+                "transactiontype": transaction_type,
+                "exchange": "NFO",
+                "ordertype": "MARKET",
+                "producttype": "INTRADAY",
+                "duration": "DAY",
+                "quantity": qty,
+                "price": 0,
+                "disclosedquantity": 0
+            }
+            logger.info(f"⚡ Placing MARKET Order for {symbol} ({transaction_type} {qty})")
+            return self.place_order(orderparams)
+        except Exception as e:
+            logger.error(f"Market Order Error: {e}")
+            return None
+
+    def place_market_order(self, symbol, token, qty, transaction_type="SELL", strategy_name=None):
+        """Alias for place_market."""
+        return self.place_market(symbol, token, qty, transaction_type=transaction_type, strategy_name=strategy_name)
+
     def place_smart_limit(self, symbol, token, qty, initial_price, transaction_type="BUY", max_walk_ticks=5, strategy_name=None, mode=None):
         """
         Next-Level Execution: Places a limit order and 'walks' the price until filled.
@@ -123,16 +153,18 @@ class OrderManager:
 
             # --- Persistence Integration (Early Record) ---
             if strategy_name:
-                trade_repo.save_trade(
-                    symbol=symbol,
-                    token=token,
-                    leg="CE" if "CE" in symbol else "PE",
-                    qty=qty,
-                    entry_price=0.0,
-                    status="PLACED",
-                    mode=mode if mode else ("PAPER" if self.dry_run else "LIVE"),
-                    strategy=strategy_name
-                )
+                existing = trade_repo.get_active_trade(strategy=strategy_name, symbol=symbol)
+                if not existing:
+                    trade_repo.save_trade(
+                        symbol=symbol,
+                        token=token,
+                        leg="CE" if "CE" in symbol else "PE",
+                        qty=qty,
+                        entry_price=0.0,
+                        status="PLACED",
+                        mode=mode if mode else ("PAPER" if self.dry_run else "LIVE"),
+                        strategy=strategy_name
+                    )
 
             from bot.core.order_feed import order_feed
             
@@ -240,7 +272,7 @@ class OrderManager:
             return response and response.get('status') == True
         except: return False
 
-    def place_sl_order(self, symbol, token, qty, sl_price, leg, transaction_type="SELL"):
+    def place_sl_order(self, symbol, token, qty, sl_price, leg=None, transaction_type="SELL"):
         """
         Places a STOPLOSS_MARKET order.
         transaction_type: "SELL" (for Long Exit) or "BUY" (for Short Exit)
@@ -282,6 +314,14 @@ class OrderManager:
         except Exception as e:
             logger.error(f"SL Order Error: {e}")
             return None
+
+    def place_stoploss(self, symbol, token, qty, sl_price, strategy_or_leg=None, transaction_type="SELL"):
+        """
+        Places a broker-side stoploss order.
+        Compatible with strategies passing either strategy_name or leg as 5th argument.
+        """
+        leg = strategy_or_leg if strategy_or_leg in ["CE", "PE"] else ("CE" if "CE" in symbol else "PE")
+        return self.place_sl_order(symbol, token, qty, sl_price, leg=leg, transaction_type=transaction_type)
 
     def cancel_order(self, order_id, variety="NORMAL"):
         """Cancels an existing order with up to 3 retry attempts."""
