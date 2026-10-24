@@ -60,8 +60,10 @@ class TestSelection(unittest.TestCase):
 
         # Case 4: 11:00 AM, ADX 20 (Should be STRADDLE_SCALP via Sideways exception)
         mock_dt.now.return_value = real_datetime(2026, 2, 27, 11, 0)
+        self.engine.regime_filter.filter_regime = MagicMock(return_value={"vix": 16.0, "is_low_vix": False})
         mock_market.return_value = {
             'nifty': 22000,
+            'vix': 16.0,
             'analysis': {'regime': 'SIDEWAYS', 'trend': 'BULLISH', 'adx': 20},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2},
             'levels': {}

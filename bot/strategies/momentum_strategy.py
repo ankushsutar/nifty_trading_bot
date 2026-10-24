@@ -21,6 +21,8 @@ from bot.core.order_manager import OrderManager
 from bot.core.market_feed import market_feed
 from bot.utils.notifier import notifier
 from bot.core.position_manager import LadderedTrailingManager
+from bot.core.constituent_tracker import ConstituentTracker
+from bot.core.fii_dii_analyzer import FIIDIIAnalyzer
 
 class MomentumStrategy:
     def __init__(self, api, token_loader, dry_run=False):
@@ -33,6 +35,8 @@ class MomentumStrategy:
         self.oi_analyzer = OIAnalyzer(self.api, self.token_loader)
         self.order_manager = OrderManager(self.api, dry_run=self.dry_run)
         self.trailing_manager = LadderedTrailingManager(self.order_manager, self.data_fetcher)
+        self.constituent_tracker = ConstituentTracker(self.api)
+        self.fii_dii_analyzer = FIIDIIAnalyzer()
         
         self.data_failure_count = 0
         self.active_position = None
@@ -470,6 +474,14 @@ class MomentumStrategy:
                                 
                             checks.append(("Volume Confirmation", vol_ok, f"Confirmed" if vol_ok else "Low Volume/No Data"))
 
+                            # 8. PRO-TRADER: Heavyweight Constituent Alignment (HDFC Bank + Reliance)
+                            const_ok, const_reason, _ = self.constituent_tracker.is_aligned_for_entry(trend)
+                            checks.append(("Constituent Alignment", const_ok, const_reason))
+
+                            # 9. Institutional Macro Bias: FII/DII Derivatives Sentiment
+                            fii_ok, fii_reason, _ = self.fii_dii_analyzer.evaluate_alignment(trend)
+                            checks.append(("FII/DII Sentiment", fii_ok, fii_reason))
+
                         # Calculate Confluence Score
                         passed_names = [c[0] for c in checks if c[1]]
                         score = len(passed_names)
@@ -478,15 +490,16 @@ class MomentumStrategy:
                         # --- MANDATORY CHECKS ---
                         mtf_aligned = "MTF Alignment" in passed_names
                         signal_valid = "Signal Presence" in passed_names
+                        constituent_safe = "Constituent Alignment" in passed_names
                         
                         failed = [c for c in checks if not c[1]]
                         if failed:
                             logger.info(f"🔍 Confluence: {score}/{total} | Missing: {', '.join([f'{c[0]} [{c[2]}]' for c in failed])}")
                         
-                        # Execution Logic: 6/7 score AND Mandatory Alignment
-                        if score >= 6 and mtf_aligned and signal_valid:
+                        # Execution Logic: 7/9 score AND Mandatory Alignment
+                        if score >= 7 and mtf_aligned and signal_valid and constituent_safe:
                             if not self.active_position:
-                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Volume. Firing Entry.")
+                                logger.info(f"🔥 A+ SETUP DETECTED: Confluence {score}/{total} with MTF & Institutional Alignment. Firing Entry.")
                                 if trend == "BULLISH":
                                     self.enter_position(expiry, "CE")
                                 elif trend == "BEARISH":
@@ -498,7 +511,12 @@ class MomentumStrategy:
                                     logger.info(f"🚀 SCALE-IN SIGNAL: High Confluence in a Stage {current_stage} winner. Adding 1 lot.")
                                     self.enter_position(expiry, self.active_position['leg'], is_scale_in=True)
                         elif trend != "NEUTRAL":
-                            reason = "MTF Misalignment" if not mtf_aligned else f"Low Confluence ({score}/7)"
+                            if not constituent_safe:
+                                reason = "Heavyweight Trap Veto"
+                            elif not mtf_aligned:
+                                reason = "MTF Misalignment"
+                            else:
+                                reason = f"Low Confluence ({score}/{total})"
                             logger.info(f"⏸️ Skipping — {reason}. Waiting for A+ setup.")
                     
                         # --- INSTITUTIONAL LEVEL AWARENESS & EXIT LOGIC ---

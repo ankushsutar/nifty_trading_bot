@@ -25,7 +25,7 @@ class TestDecisionEngine(unittest.TestCase):
         mock_datetime.now.return_value = mock_now
         
         mock_market_data.return_value = {
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 30},
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 35},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2}
         }
         
@@ -42,7 +42,7 @@ class TestDecisionEngine(unittest.TestCase):
         mock_datetime.now.return_value = mock_now
         
         mock_market_data.return_value = {
-            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 25},
+            'analysis': {'regime': 'TRENDING', 'trend': 'BULLISH', 'adx': 34},
             'oi_data': {'bias': 'BULLISH', 'pcr': 1.2}
         }
         
@@ -75,8 +75,10 @@ class TestDecisionEngine(unittest.TestCase):
         mock_now = MagicMock()
         mock_now.time.return_value = datetime.time(11, 0)
         mock_datetime.now.return_value = mock_now
+        self.engine.regime_filter.filter_regime = MagicMock(return_value={"vix": 16.0, "is_low_vix": False})
         
         mock_market_data.return_value = {
+            'vix': 16.0,
             'analysis': {'regime': 'SIDEWAYS', 'trend': 'NEUTRAL', 'adx': 15},
             'oi_data': {'bias': 'NEUTRAL', 'pcr': 1.0}
         }

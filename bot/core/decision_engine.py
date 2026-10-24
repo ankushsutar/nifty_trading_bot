@@ -161,47 +161,88 @@ class DecisionEngine:
         vix_multiplier = self.gatekeeper.get_vix_adjustment()
         volume_spike = regime_data.get('volume_spike', False)
         
-        # --- CONFLUENCE SCORING (0–7 points → proportional position sizing) ---
+        # --- INSTITUTIONAL CONTEXT (Heavyweights & FII/DII) ---
+        constituents = market_data.get('constituents', {})
+        constituent_bias = constituents.get('bias', 'NEUTRAL')
+        fii_dii = market_data.get('fii_dii', {})
+        fii_bias = fii_dii.get('bias', 'NEUTRAL')
+        fii_regime = fii_dii.get('regime', 'NEUTRAL_BALANCED')
+        fii_ratio = fii_dii.get('fii_long_ratio', 50.0)
+
+        # 5a. Institutional Heavyweight Trap Veto (Hard Protection)
+        # Prevents buying CE when HDFC Bank & Reliance are both dumping, and vice-versa
+        is_veto = False
+        veto_reason = ""
+        if trend == "BULLISH" and constituents.get('is_veto_ce', False):
+            is_veto = True
+            veto_reason = constituents.get('veto_reason', "Heavyweights Dragging Index")
+        elif trend == "BEARISH" and constituents.get('is_veto_pe', False):
+            is_veto = True
+            veto_reason = constituents.get('veto_reason', "Heavyweights Resisting Selloff")
+
+        if is_veto:
+            logger.warning(f">>> [Brain] 🛡️ INSTITUTIONAL TRAP SHIELD: {veto_reason}. Vetoing entry.")
+            return None, 1.0
+        
+        # --- CONFLUENCE SCORING (0–9 points → proportional position sizing) ---
         # Each factor that confirms the trade idea adds points.
         # Final score drives sizing: more confluence = larger position.
         _adx_now = regime_data.get('adx', 0)
         _rsi_now = regime_data.get('rsi', 50.0)
         confluence_score = 0
 
-        # Trend + OI Bias alignment — the single strongest confirmation (+2)
+        # 1. Trend + OI Bias alignment — the single strongest confirmation (+2)
         if (trend == "BULLISH" and bias == "BULLISH") or (trend == "BEARISH" and bias == "BEARISH"):
             confluence_score += 2
 
-        # Market regime confirms a trending environment (+2)
+        # 2. Market regime confirms a trending environment (+2)
         if regime == "TRENDING":
             confluence_score += 2
 
-        # Institutional volume spike — smart money participating (+1)
+        # 3. Institutional volume spike — smart money participating (+1)
         if volume_spike:
             confluence_score += 1
 
-        # RSI is in the "sweet spot" — momentum confirmed, not yet overextended (+1)
+        # 4. Heavyweight Constituent Alignment (+1)
+        if (trend == "BULLISH" and constituent_bias == "BULLISH") or (trend == "BEARISH" and constituent_bias == "BEARISH"):
+            confluence_score += 1
+            logger.info(f">>> [Brain] 🏛️ Heavyweights Confirmed: {constituent_bias} (Basket {constituents.get('weighted_change', 0):+.2f}%)")
+
+        # 5. FII Derivatives Positioning Alignment (+1)
+        if (trend == "BULLISH" and fii_bias == "BULLISH") or (trend == "BEARISH" and fii_bias == "BEARISH"):
+            confluence_score += 1
+            logger.info(f">>> [Brain] 🏛️ FII Futures Bias Confirmed: {fii_bias} ({fii_ratio:.1f}% Long)")
+
+        # 6. RSI is in the "sweet spot" — momentum confirmed, not yet overextended (+1)
         # Bullish: RSI between 45–70 | Bearish: RSI between 30–55
         if (trend == "BULLISH" and 45 < _rsi_now < 70) or (trend == "BEARISH" and 30 < _rsi_now < 55):
             confluence_score += 1
 
-        # ADX strength is parabolic — extremely strong directional move (+1)
+        # 7. ADX strength is parabolic — extremely strong directional move (+1)
         if _adx_now > tier.adx_gamma_blast:
             confluence_score += 1
 
-        confidence_high = (confluence_score >= 5)
+        confidence_high = (confluence_score >= 6)
 
         # Map score to scaling factor (4 discrete tiers for clean lot arithmetic)
-        if confluence_score >= 6:
+        if confluence_score >= 7:
             scaling_factor = 1.0    # A+ setup — full size (4-5 lots)
         elif confluence_score >= 5:
             scaling_factor = 0.5    # Good setup — half size (2-3 lots)
         else:
             scaling_factor = 0.2    # Low Confidence — Minimum size (1 lot)
 
+        # FII Adverse Regime Dampener: If FIIs are heavily positioned against this trend, cap size
+        if trend == "BULLISH" and fii_regime == "HEAVILY_SHORT":
+            logger.warning(f">>> [Brain] ⚠️ Institutional Headwind: FIIs Heavily Short ({fii_ratio:.1f}%). Capping risk scale to 50%.")
+            scaling_factor = min(scaling_factor, 0.5)
+        elif trend == "BEARISH" and fii_regime == "HEAVILY_LONG":
+            logger.warning(f">>> [Brain] ⚠️ Institutional Headwind: FIIs Heavily Long ({fii_ratio:.1f}%). Capping risk scale to 50%.")
+            scaling_factor = min(scaling_factor, 0.5)
+
         logger.info(
-            f">>> [Brain] 🎯 Confluence: {confluence_score}/7 | "
-            f"Scale={scaling_factor}x | Confidence={'HIGH' if confidence_high else 'NORMAL' if confluence_score >= 3 else 'LOW'}"
+            f">>> [Brain] 🎯 Confluence: {confluence_score}/9 | "
+            f"Scale={scaling_factor}x | Confidence={'HIGH' if confidence_high else 'NORMAL' if confluence_score >= 4 else 'LOW'}"
         )
         risk_multiplier = scaling_factor * vix_multiplier
 
@@ -219,7 +260,7 @@ class DecisionEngine:
                     if is_misaligned:
                         reasons.append(f"Trend-OI Misalignment ({trend} trend vs {bias} OI)")
                     else:
-                        reasons.append(f"Low Confluence ({confluence_score}/7)")
+                        reasons.append(f"Low Confluence ({confluence_score}/9)")
                     
                     reasons.append(f"Weak ADX ({adx:.1f} < {tier.min_adx_to_trade + adx_boost} [{tier.name}])")
                     logger.warning(f">>> [Brain] ⏸️ Skipping — {' + '.join(reasons)}. Waiting for A+ Setup.")
@@ -291,8 +332,8 @@ class DecisionEngine:
         # ── STRATEGY SELECTION MATRIX ────────────────────────────────────────
         
         # --- SUPERNOVA DETECTED: Upgrade to ZERO_TO_HERO Wildcard ---
-        if confluence_score >= 6 and adx >= 50.0:
-            logger.info(f"🛸 [SUPERNOVA] Confluence {confluence_score}/7 & ADX {adx:.1f} detected. Launching Zero-To-Hero Wildcard mode! 🚀")
+        if confluence_score >= 8 and adx >= 50.0:
+            logger.info(f"🛸 [SUPERNOVA] Confluence {confluence_score}/9 & ADX {adx:.1f} detected. Launching Zero-To-Hero Wildcard mode! 🚀")
             selected_strategy = "ZERO_TO_HERO"
         
         elif panic_data.get('panic_score', 50) >= 80:

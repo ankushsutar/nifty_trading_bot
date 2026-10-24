@@ -10,6 +10,8 @@ from bot.core.alpha_engine import AlphaEngine
 from bot.core.data_fetcher import DataFetcher
 from bot.utils.token_lookup import TokenLookup
 from bot.core.levels_provider import levels_provider
+from bot.core.constituent_tracker import ConstituentTracker
+from bot.core.fii_dii_analyzer import FIIDIIAnalyzer
 from bot.utils.logger import logger
 import json
 import os
@@ -39,6 +41,10 @@ class MarketService:
             cls._instance.oi_data = {}
             cls._instance.levels_data = {}
             cls._instance.panic_data = {"panic_score": 50, "confidence": "NEUTRAL"}
+            cls._instance.constituent_data = {}
+            cls._instance.fii_dii_data = {}
+            cls._instance.constituent_tracker = None
+            cls._instance.fii_dii_analyzer = FIIDIIAnalyzer()
             cls._instance.last_analysis_time = 0
             
             # --- STARTUP WARM-UP: Load Last Known Intelligence ---
@@ -52,6 +58,8 @@ class MarketService:
                         cls._instance.oi_data = shared_state.get('oi_data', {})
                         cls._instance.levels_data = shared_state.get('levels', {})
                         cls._instance.panic_data = shared_state.get('panic_data', {"panic_score": 50, "confidence": "NEUTRAL"})
+                        cls._instance.constituent_data = shared_state.get('constituents', {})
+                        cls._instance.fii_dii_data = shared_state.get('fii_dii', {})
                         logger.info("MarketService: Startup Intelligence Loaded from disk 💾")
             except Exception as e:
                 logger.warning(f"MarketService: Startup Warm-up Failed: {e}")
@@ -162,6 +170,10 @@ class MarketService:
                                     self.panic_data = shared_state['panic_data']
                                 if 'levels' in shared_state:
                                     self.levels_data = shared_state['levels']
+                                if 'constituents' in shared_state:
+                                    self.constituent_data = shared_state['constituents']
+                                if 'fii_dii' in shared_state:
+                                    self.fii_dii_data = shared_state['fii_dii']
                                 else:
                                     # Legacy format compatibility
                                     self.oi_data = {
@@ -182,7 +194,9 @@ class MarketService:
                 "analysis": self.analysis_data,
                 "oi_data": self.oi_data,
                 "levels": self.levels_data,
-                "panic_data": self.panic_data
+                "panic_data": self.panic_data,
+                "constituents": self.constituent_data,
+                "fii_dii": self.fii_dii_data
             }
 
         try:
@@ -203,7 +217,9 @@ class MarketService:
                 "analysis": self.analysis_data,
                 "oi_data": self.oi_data,
                 "levels": self.levels_data,
-                "panic_data": self.panic_data
+                "panic_data": self.panic_data,
+                "constituents": self.constituent_data,
+                "fii_dii": self.fii_dii_data
             }
             
             # Update Cache
@@ -282,6 +298,10 @@ class MarketService:
                     if not self.oi_engine: self.oi_engine = OIAnalyzer(self.api, self.token_lookup)
                     if not hasattr(self, 'alpha_engine') or self.alpha_engine is None:
                         self.alpha_engine = AlphaEngine(self.api, self.token_lookup)
+                    if not hasattr(self, 'constituent_tracker') or self.constituent_tracker is None:
+                        self.constituent_tracker = ConstituentTracker(self.api)
+                    if not hasattr(self, 'fii_dii_analyzer') or self.fii_dii_analyzer is None:
+                        self.fii_dii_analyzer = FIIDIIAnalyzer()
                     levels_provider.data_fetcher.api = self.api # Keep sync
 
                     # --- OPTIMIZATION: Check if another process already refreshed intelligence recently ---
@@ -376,6 +396,13 @@ class MarketService:
                             except Exception as alpha_err:
                                 logger.warning(f"Centralized Panic Analysis Failed: {alpha_err}")
 
+                            # 2b. Heavyweight & FII/DII Institutional Analysis
+                            try:
+                                self.constituent_data = self.constituent_tracker.analyze()
+                                self.fii_dii_data = self.fii_dii_analyzer.get_sentiment()
+                            except Exception as inst_err:
+                                logger.warning(f"Institutional Tracking Refresh Error: {inst_err}")
+
                             # 3. Save Shared Intelligence for Child Processes
                             state = {
                                 "timestamp": datetime.datetime.now().isoformat(),
@@ -392,6 +419,8 @@ class MarketService:
                                 },
                                 "panic_data": panic_analysis,
                                 "levels": self.levels_data,
+                                "constituents": self.constituent_data,
+                                "fii_dii": self.fii_dii_data,
                                 # Keep legacy flat keys for compatibility
                                 "sentiment": analysis.get("bias", "NEUTRAL"),
                                 "pcr": analysis.get("pcr", 1.0),
