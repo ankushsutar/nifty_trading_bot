@@ -220,17 +220,24 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             price = round(float(raw_price), 2) if raw_price is not None else None
             trigger_price = round(float(raw_trigger), 2) if raw_trigger is not None else None
 
-            order_id = self.kite.place_order(
-                variety=variety,
-                exchange=exchange,
-                tradingsymbol=tradingsymbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                product=product,
-                order_type=order_type,
-                price=price,
-                trigger_price=trigger_price
-            )
+            place_kwargs = {
+                "variety": variety,
+                "exchange": exchange,
+                "tradingsymbol": tradingsymbol,
+                "transaction_type": transaction_type,
+                "quantity": quantity,
+                "product": product,
+                "order_type": order_type,
+                "price": price,
+                "trigger_price": trigger_price
+            }
+            if order_type in [self.kite.ORDER_TYPE_MARKET, self.kite.ORDER_TYPE_SLM]:
+                raw_mp = orderparams.get('market_protection')
+                place_kwargs['market_protection'] = int(raw_mp) if raw_mp is not None else 5
+            elif orderparams.get('market_protection') is not None:
+                place_kwargs['market_protection'] = int(orderparams['market_protection'])
+
+            order_id = self.kite.place_order(**place_kwargs)
             return {
                 "status": True,
                 "message": "SUCCESS",
@@ -262,14 +269,21 @@ class KiteBrokerAdapter(BaseBrokerAdapter):
             price = float(orderparams.get('price')) if orderparams.get('price') is not None else None
             trigger_price = float(orderparams.get('triggerprice')) if orderparams.get('triggerprice') is not None else None
 
-            resp = self.kite.modify_order(
-                variety=variety,
-                order_id=order_id,
-                quantity=quantity,
-                price=price,
-                order_type=order_type,
-                trigger_price=trigger_price
-            )
+            modify_kwargs = {
+                "variety": variety,
+                "order_id": order_id,
+                "quantity": quantity,
+                "price": price,
+                "order_type": order_type,
+                "trigger_price": trigger_price
+            }
+            if order_type in [self.kite.ORDER_TYPE_MARKET, self.kite.ORDER_TYPE_SLM]:
+                raw_mp = orderparams.get('market_protection')
+                modify_kwargs['market_protection'] = int(raw_mp) if raw_mp is not None else 5
+            elif orderparams.get('market_protection') is not None:
+                modify_kwargs['market_protection'] = int(orderparams['market_protection'])
+
+            resp = self.kite.modify_order(**modify_kwargs)
             return {"status": True, "data": resp}
         except Exception as e:
             logger.error(f"Kite modifyOrder error: {e}")

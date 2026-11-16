@@ -75,6 +75,9 @@ class InMemoryCollection:
         if doc and "$set" in update:
             for k, v in update["$set"].items():
                 doc[k] = v
+        if doc and "$inc" in update:
+            for k, v in update["$inc"].items():
+                doc[k] = doc.get(k, 0) + v
         from unittest.mock import MagicMock
         res = MagicMock()
         res.modified_count = 1 if doc else 0
@@ -87,6 +90,10 @@ class InMemoryCollection:
             for doc in matches:
                 for k, v in update["$set"].items():
                     doc[k] = v
+        if "$inc" in update:
+            for doc in matches:
+                for k, v in update["$inc"].items():
+                    doc[k] = doc.get(k, 0) + v
         from unittest.mock import MagicMock
         res = MagicMock()
         res.modified_count = len(matches)
@@ -431,16 +438,27 @@ class TradeRepository:
                     # Auto-calculate the final-close segment and accumulate
                     entry_price = float(trade.get('entry_price') or 0)
                     qty = int(trade.get('qty') or 0)
+
+                    # Safeguard against missing/zero exit_price
+                    resolved_exit_price = float(exit_price or 0.0)
+                    if resolved_exit_price <= 0.0 and exit_reason not in ["EXPIRY", "EXPIRED_WORTHLESS"]:
+                        fallback_price = trade.get('last_ltp') or trade.get('target_price') or trade.get('sl_price') or entry_price
+                        resolved_exit_price = float(fallback_price or 0.0)
+                        logger.warning(
+                            f"TradeRepository: close_trade called with exit_price={exit_price} for Trade #{tid} ({trade.get('symbol')}). "
+                            f"Using fallback price ₹{resolved_exit_price} (Reason: {exit_reason}) to avoid false -100% loss."
+                        )
+
                     if side == "BUY":
-                        pnl_segment = round((exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
+                        pnl_segment = round((resolved_exit_price - entry_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
                     else:
-                        pnl_segment = round((entry_price - exit_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
+                        pnl_segment = round((entry_price - resolved_exit_price) * qty, 2) if entry_price > 0 and qty > 0 else 0.0
                     self.collection.update_one(
                         {"id": tid},
                         {
                             "$set": {
                                 "status": "CLOSED",
-                                "exit_price": exit_price,
+                                "exit_price": resolved_exit_price,
                                 "exit_reason": exit_reason,
                                 "closed_at": datetime.datetime.now(),
                                 "updated_at": datetime.datetime.now()
@@ -451,12 +469,18 @@ class TradeRepository:
                     final_pnl = round((trade.get('pnl') or 0) + pnl_segment, 2)
                 else:
                     # Explicit PnL path
+                    resolved_exit_price = float(exit_price or 0.0)
+                    if resolved_exit_price <= 0.0 and pnl != 0.0 and exit_reason not in ["EXPIRY", "EXPIRED_WORTHLESS"]:
+                        entry_price = float(trade.get('entry_price') or 0)
+                        qty = int(trade.get('qty') or 0)
+                        if qty > 0 and entry_price > 0:
+                            resolved_exit_price = round(entry_price + (pnl / qty) if side == "BUY" else entry_price - (pnl / qty), 2)
                     self.collection.update_one(
                         {"id": tid},
                         {
                             "$set": {
                                 "status": "CLOSED",
-                                "exit_price": exit_price,
+                                "exit_price": resolved_exit_price,
                                 "pnl": pnl,
                                 "exit_reason": exit_reason,
                                 "closed_at": datetime.datetime.now(),
@@ -767,13 +791,54 @@ class TradeRepository:
             logger.info("[Reconcile] All DB trades match broker state.")
 
 
+    def _get_trades_from_csv(self, mode=None, strategy=None, since=None):
+        """Fallback to read closed trades directly from trade_journal.csv."""
+        try:
+            import csv
+            from bot.utils.trade_journal import TradeJournal
+            if not os.path.exists(TradeJournal.FILE_PATH):
+                return []
+            trades = []
+            with open(TradeJournal.FILE_PATH, mode='r', newline='') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if not row.get('timestamp'):
+                        continue
+                    try:
+                        row_ts = datetime.datetime.strptime(row['timestamp'], '%Y-%m-%d %H:%M:%S')
+                    except Exception:
+                        continue
+                    if since and row_ts < since:
+                        continue
+                    if strategy and row.get('strategy') != strategy:
+                        continue
+                    doc = {
+                        'symbol': row.get('symbol'),
+                        'strategy': row.get('strategy'),
+                        'status': 'CLOSED',
+                        'entry_price': float(row.get('entry_price') or 0.0),
+                        'exit_price': float(row.get('exit_price') or 0.0),
+                        'qty': int(row.get('qty') or 0),
+                        'pnl': float(row.get('pnl') or 0.0),
+                        'closed_at': row_ts,
+                        'exit_reason': row.get('exit_reason'),
+                        'result': row.get('result')
+                    }
+                    trades.append(doc)
+            trades.sort(key=lambda x: x['closed_at'], reverse=True)
+            return trades
+        except Exception as e:
+            logger.debug(f"Failed to load fallback trades from CSV: {e}")
+            return []
+
     def get_recent_closed_trades(self, mode=None, strategy=None, since=None):
         """
         Returns CLOSED trades optionally filtered by mode, strategy, and start date.
         Used by DecisionEngine confidence scoring to evaluate recent performance.
+        Falls back to CSV journal if DB is empty or disconnected.
         """
         if not self.client:
-            return []
+            return self._get_trades_from_csv(mode=mode, strategy=strategy, since=since)
         try:
             query = {"status": "CLOSED"}
             if mode:
@@ -783,10 +848,13 @@ class TradeRepository:
             if since:
                 query["closed_at"] = {"$gte": since}
             cursor = self.collection.find(query).sort("closed_at", -1)
-            return list(cursor)
+            results = list(cursor)
+            if not results:
+                return self._get_trades_from_csv(mode=mode, strategy=strategy, since=since)
+            return results
         except Exception as e:
             logger.error(f"TradeRepository get_recent_closed_trades Error: {e}")
-            return []
+            return self._get_trades_from_csv(mode=mode, strategy=strategy, since=since)
 
     def get_slippage_stats(self, mode=None, strategy=None, days=5):
         """

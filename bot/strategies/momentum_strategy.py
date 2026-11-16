@@ -179,8 +179,31 @@ class MomentumStrategy:
                         self.active_position = None
                         return
 
-                logger.warning("⚠️ SYNC: Active Position closed externally! Resetting State.")
-                trade_repo.close_trade(symbol=self.active_position['symbol'], exit_reason="EXTERNAL_SYNC_RESET")
+                # Attempt to retrieve real fill price from tradeBook
+                exit_fill_price = None
+                try:
+                    tb_resp = self.order_manager.api.tradeBook()
+                    if isinstance(tb_resp, dict) and tb_resp.get('status'):
+                        trades = tb_resp.get('data') or []
+                        sym = self.active_position['symbol']
+                        needed_side = "SELL" if self.active_position.get('side', 'BUY').upper() == "BUY" else "BUY"
+                        matches = [t for t in trades if t.get('tradingsymbol') == sym and t.get('transactiontype') == needed_side]
+                        if matches:
+                            exit_fill_price = float(matches[-1].get('averageprice', 0.0))
+                except Exception as tb_err:
+                    logger.debug(f"Sync tradeBook check error: {tb_err}")
+
+                if not exit_fill_price or exit_fill_price <= 0:
+                    exit_fill_price = self.active_position.get('last_ltp') or self.active_position.get('target_price') or self.active_position.get('entry_price', 0.0)
+
+                trade_id = self.active_position.get('id')
+                entry_p = float(self.active_position.get('entry_price', 0.0))
+                qty = int(self.active_position.get('qty', 0))
+                side = self.active_position.get('side', 'BUY').upper()
+                calc_pnl = round((exit_fill_price - entry_p) * qty if side == "BUY" else (entry_p - exit_fill_price) * qty, 2)
+
+                logger.warning(f"⚠️ SYNC: Active Position closed externally! Resetting State. (Exit: ₹{exit_fill_price}, PnL: ₹{calc_pnl:+.2f})")
+                trade_repo.close_trade(trade_id=trade_id, symbol=self.active_position['symbol'], exit_price=exit_fill_price, pnl=calc_pnl, exit_reason="EXTERNAL_SYNC_RESET")
                 self.active_position = None
             
             if self.active_position and 'id' not in self.active_position:
@@ -1448,6 +1471,8 @@ class MomentumStrategy:
         ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
         if not ltp or ltp == 0:
             return False
+
+        self.active_position['last_ltp'] = ltp
 
         # ── 30s status heartbeat ──────────────────────────────────────────────
         if time.time() - self._last_status_log > 30:
