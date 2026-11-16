@@ -28,32 +28,48 @@ class KiteSessionProvider(BaseSessionProvider):
                 with open(SESSION_FILE_KITE, "r") as f:
                     sess_data = json.load(f)
                 
-                # Check if same day (Kite access tokens are valid for one day)
+                # Check if same day (Kite access tokens are valid for one trading day, reset daily around 06:00 AM IST)
                 sess_time = datetime.datetime.fromisoformat(sess_data['timestamp'])
-                if sess_time.date() == datetime.date.today():
+                now = datetime.datetime.now()
+                # If session was generated before 6:00 AM and current time is >= 6:00 AM, it is invalidated by Zerodha
+                is_stale_by_time = (sess_time.date() < now.date()) or (sess_time.date() == now.date() and sess_time.hour < 6 <= now.hour)
+                
+                if not is_stale_by_time:
                     access_token = sess_data['access_token']
                     kite.set_access_token(access_token)
+                    # Actively validate the token with a lightweight profile call
+                    kite.profile()
                     print(">>> [System] Reusing Zerodha Session ✅")
                     return KiteBrokerAdapter(kite, access_token)
+                else:
+                    logger.info(">>> [System] Stored Zerodha session is stale (pre-6 AM reset). Generating fresh session...")
             except Exception as e:
-                logger.warning(f"Kite session restoration failed: {e}")
+                logger.warning(f">>> [System] Cached Zerodha session invalid/expired ({e}). Triggering fresh login...")
+                try:
+                    if os.path.exists(SESSION_FILE_KITE):
+                        os.remove(SESSION_FILE_KITE)
+                except Exception:
+                    pass
                 
         # 2. Check if KITE_ACCESS_TOKEN is hardcoded in .env (Developer/Manual fallback)
         if Config.KITE_ACCESS_TOKEN:
             print(">>> [System] Using configured KITE_ACCESS_TOKEN from .env...")
             access_token = Config.KITE_ACCESS_TOKEN
             kite.set_access_token(access_token)
-            
-            # Save session
-            sess_info = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "access_token": access_token
-            }
-            os.makedirs(os.path.dirname(SESSION_FILE_KITE), exist_ok=True)
-            with open(SESSION_FILE_KITE, "w") as f:
-                json.dump(sess_info, f)
-                
-            return KiteBrokerAdapter(kite, access_token)
+            try:
+                kite.profile()
+                # Save session
+                sess_info = {
+                    "timestamp": datetime.datetime.now().isoformat(),
+                    "access_token": access_token
+                }
+                os.makedirs(os.path.dirname(SESSION_FILE_KITE), exist_ok=True)
+                with open(SESSION_FILE_KITE, "w") as f:
+                    json.dump(sess_info, f)
+                    
+                return KiteBrokerAdapter(kite, access_token)
+            except Exception as e:
+                logger.warning(f"Configured KITE_ACCESS_TOKEN is invalid ({e}). Falling back to automated login...")
 
         # 3. Perform automated login via Kite UI credentials (auto-authenticate flow)
         if Config.KITE_USER_ID and Config.KITE_PASSWORD and Config.KITE_TOTP_SECRET:

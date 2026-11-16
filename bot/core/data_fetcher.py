@@ -272,6 +272,23 @@ class DataFetcher:
                         err_msg = str(response.get('message', ''))
                         err_code = str(response.get('errorcode', ''))
                         
+                        if any(term in err_msg for term in ["Incorrect `api_key` or `access_token`", "TokenException", "Invalid token", "Invalid session"]):
+                            logger.critical(f"🛑 [CRITICAL] Invalid/Expired Session Token detected: {err_msg}. Triggering immediate session refresh 🔄")
+                            flag_file = os.path.join(os.getcwd(), "data", "session_refresh.flag")
+                            os.makedirs(os.path.dirname(flag_file), exist_ok=True)
+                            try:
+                                with open(flag_file, "w") as f:
+                                    f.write("REFRESH_REQUIRED")
+                            except Exception:
+                                pass
+                            from bot.core.session import get_session
+                            new_api = get_session(force_refresh=True)
+                            if new_api:
+                                self.api = new_api
+                                self.last_session_check = time.time()
+                                logger.info(">>> [DataFetcher] API Instance Force Refreshed and Reconnected Successfully. 🟢")
+                                continue
+
                         if err_code == 'AB1004' or "TooManyRequests" in err_msg:
                             logger.critical(f"🛑 [CRITICAL] AB1004 Rate Limit Hit for {symbol_token}. Triggering 60s Circuit Breaker.")
                             self._ab1004_cooldowns[symbol_token] = time.time()
@@ -298,6 +315,16 @@ class DataFetcher:
                         from bot.utils.rate_limiter import rate_limiter
                         rate_limiter.trigger_circuit_breaker(60)
                         return None # Critical: Do not continue loop
+                    
+                    if any(term in err_str for term in ["Incorrect `api_key` or `access_token`", "TokenException", "Invalid token"]):
+                        logger.critical(f"🛑 [CRITICAL] Invalid Session Exception: {err_str}. Triggering immediate session refresh 🔄")
+                        from bot.core.session import get_session
+                        new_api = get_session(force_refresh=True)
+                        if new_api:
+                            self.api = new_api
+                            self.last_session_check = time.time()
+                            logger.info(">>> [DataFetcher] API Instance Force Refreshed after exception. 🟢")
+                            continue
                     
                     logger.error(f"Fetch Candles Error (Attempt {attempt+1}): {e}")
                     
