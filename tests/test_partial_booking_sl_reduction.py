@@ -11,6 +11,8 @@ from bot.config.settings import Config
 
 class TestPartialBookingSLReduction(unittest.TestCase):
     def setUp(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "NIFTY"
         self.mock_order_manager = MagicMock()
         self.mock_data_fetcher = MagicMock()
         self.manager = LadderedTrailingManager(self.mock_order_manager, self.mock_data_fetcher)

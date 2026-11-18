@@ -1027,9 +1027,10 @@ class MomentumStrategy:
         if not strike or not token:
             logger.warning("⚠️ Delta-based strike selection failed. Falling back to ATR-based calculation.")
             atm_strike = round(nifty_ltp / strike_diff) * strike_diff
-            if atr < 15:
+            step_atr_ratio = atr / max(strike_diff, 1)
+            if step_atr_ratio < 0.35:
                 otm_offset = 0
-            elif atr < 30:
+            elif step_atr_ratio < 0.70:
                 otm_offset = 1
             else:
                 otm_offset = 2
@@ -1074,9 +1075,10 @@ class MomentumStrategy:
         if risk_per_trade < tier.min_risk_floor:
             risk_per_trade = tier.min_risk_floor
 
-        # Standard proxy: Weekly Nifty option ATR is approximately 0.5x Index ATR
+        # Standard proxy: Weekly option ATR is approximately 0.5x Index ATR
         option_sl_points = atr * 0.5
-        if option_sl_points < 5: option_sl_points = 5
+        min_proxy_sl = 15.0 if Config.ACTIVE_SYMBOL == "BANKNIFTY" else 5.0
+        if option_sl_points < min_proxy_sl: option_sl_points = min_proxy_sl
 
         # Calculate actual margin per lot. Fallback to half the tier threshold if LTP unknown.
         margin_per_lot = (quote_ltp * Config.NIFTY_LOT_SIZE) if quote_ltp > 0 else (tier.min_capital_threshold * 0.5)
@@ -1136,15 +1138,16 @@ class MomentumStrategy:
         # TRENDING:   Tight breakeven (1:1) but let winner run to 5:1 target.
         # RANGEBOUND: Fixed 1.5:1 target; exit at first sign of reversal.
         current_regime = self.last_analysis.get("regime", "UNKNOWN")
+        atr_multiplier = 2.2 if Config.ACTIVE_SYMBOL == "BANKNIFTY" else 1.5
         if current_regime == "TRENDING":
-            # Professional: robust SL (1.5x ATR), big target (7x ATR in index → ~3.5x in option)
-            sl_option_pts  = option_sl_points * 1.5    # 1.5x ATR on option space for noise cushion
-            tgt_option_pts = option_sl_points * 3.5    # ~3.5x option leverage for massive trend riding
-            dynamic_rr     = "TRENDING_3.5:1.5"
+            # Robust SL (2.2x ATR for BankNifty to survive wicks, 1.5x for Nifty), big target
+            sl_option_pts  = option_sl_points * atr_multiplier
+            tgt_option_pts = option_sl_points * (atr_multiplier * 2.3)    # ~3.5x-5x option leverage for massive trend riding
+            dynamic_rr     = f"TRENDING_{tgt_option_pts/max(option_sl_points, 1):.1f}:{atr_multiplier:.1f}"
         else:
             # Conservative: 1.5:1 in option space
-            sl_option_pts  = option_sl_points
-            tgt_option_pts = option_sl_points * 1.5
+            sl_option_pts  = option_sl_points * (atr_multiplier * 0.7)
+            tgt_option_pts = option_sl_points * atr_multiplier
             dynamic_rr     = "RANGEBOUND_1.5:1"
 
         logger.info(

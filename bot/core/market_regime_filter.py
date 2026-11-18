@@ -27,7 +27,16 @@ class MarketRegimeFilter:
     """
     VIX_LOW_THRESHOLD = 15.0
     VIX_TOKEN = "99926017"        # India VIX token (Kite 264969)
-    NIFTY_SPOT_TOKEN = "99926000"  # Nifty 50 spot token (Kite 256265)
+    NIFTY_SPOT_TOKEN = "99926000"  # Fallback Nifty 50 spot token
+
+    @property
+    def spot_token(self) -> str:
+        try:
+            from bot.config.settings import Config
+            from bot.config.instruments import get_instrument
+            return get_instrument(Config.ACTIVE_SYMBOL).analysis_token
+        except Exception:
+            return self.NIFTY_SPOT_TOKEN
 
     def __init__(self, api, token_loader=None, data_fetcher=None):
         self.api = api
@@ -149,7 +158,7 @@ class MarketRegimeFilter:
 
         # Fetch 15-minute candles (last 5 trading days to ensure 50+ candles for 50-EMA)
         df = self.data_fetcher.fetch_latest_candles(
-            self.NIFTY_SPOT_TOKEN,
+            self.spot_token,
             interval="FIFTEEN_MINUTE",
             days=5,
             exchange="NSE"
@@ -233,7 +242,7 @@ class MarketRegimeFilter:
         Used for dynamic stop-loss sizing (1.5x 5-min ATR).
         """
         df = self.data_fetcher.fetch_latest_candles(
-            self.NIFTY_SPOT_TOKEN,
+            self.spot_token,
             interval="FIVE_MINUTE",
             days=2,
             exchange="NSE"

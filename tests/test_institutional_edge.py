@@ -22,6 +22,8 @@ from bot.core.fii_dii_analyzer import FIIDIIAnalyzer
 class TestConstituentTracker:
     @pytest.fixture
     def tracker(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "NIFTY"
         # Reset singleton instance
         ConstituentTracker._instance = None
         mock_api = MagicMock()
@@ -94,6 +96,19 @@ class TestConstituentTracker:
         pe_aligned, pe_reason, pe_pts = tracker.is_aligned_for_entry("PE")
         assert pe_aligned is False
         assert "Heavyweight Surge" in pe_reason
+
+    def test_banknifty_constituent_basket(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "BANKNIFTY"
+        ConstituentTracker._instance = None
+        mock_api = MagicMock()
+        t = ConstituentTracker(mock_api)
+        basket = t.CONSTITUENTS
+        assert "RELIANCE" not in basket
+        assert "HDFCBANK" in basket
+        assert "ICICIBANK" in basket
+        assert "SBIN" in basket
+        assert "AXISBANK" in basket
 
 
 class TestFIIDIIAnalyzer:

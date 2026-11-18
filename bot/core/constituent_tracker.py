@@ -24,12 +24,35 @@ from bot.config.settings import Config
 class ConstituentTracker:
     _instance = None
 
-    # Top heavyweights with relative weights within this basket
-    CONSTITUENTS = {
+    # Index-specific constituent baskets
+    NIFTY_CONSTITUENTS = {
         "HDFCBANK": {"name": "HDFCBANK", "weight": 0.40, "symbol_alt": "HDFCBANK-EQ"},
         "RELIANCE": {"name": "RELIANCE", "weight": 0.35, "symbol_alt": "RELIANCE-EQ"},
         "ICICIBANK": {"name": "ICICIBANK", "weight": 0.25, "symbol_alt": "ICICIBANK-EQ"},
     }
+
+    BANKNIFTY_CONSTITUENTS = {
+        "HDFCBANK": {"name": "HDFCBANK", "weight": 0.35, "symbol_alt": "HDFCBANK-EQ"},
+        "ICICIBANK": {"name": "ICICIBANK", "weight": 0.30, "symbol_alt": "ICICIBANK-EQ"},
+        "SBIN": {"name": "SBIN", "weight": 0.20, "symbol_alt": "SBIN-EQ"},
+        "AXISBANK": {"name": "AXISBANK", "weight": 0.15, "symbol_alt": "AXISBANK-EQ"},
+    }
+
+    FINNIFTY_CONSTITUENTS = {
+        "HDFCBANK": {"name": "HDFCBANK", "weight": 0.30, "symbol_alt": "HDFCBANK-EQ"},
+        "ICICIBANK": {"name": "ICICIBANK", "weight": 0.25, "symbol_alt": "ICICIBANK-EQ"},
+        "BAJFINANCE": {"name": "BAJFINANCE", "weight": 0.25, "symbol_alt": "BAJFINANCE-EQ"},
+        "SBIN": {"name": "SBIN", "weight": 0.20, "symbol_alt": "SBIN-EQ"},
+    }
+
+    @property
+    def CONSTITUENTS(self):
+        sym = getattr(Config, "ACTIVE_SYMBOL", "BANKNIFTY")
+        if sym == "BANKNIFTY":
+            return self.BANKNIFTY_CONSTITUENTS
+        elif sym == "FINNIFTY":
+            return self.FINNIFTY_CONSTITUENTS
+        return self.NIFTY_CONSTITUENTS
 
     def __new__(cls, api=None):
         if cls._instance is None:

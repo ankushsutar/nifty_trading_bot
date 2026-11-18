@@ -10,6 +10,8 @@ from bot.strategies.zero_to_hero_strategy import ZeroToHeroStrategy
 
 class TestZeroToHeroStrategy(unittest.TestCase):
     def setUp(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "NIFTY"
         self.mock_api = MagicMock()
         self.mock_loader = MagicMock()
         self.strategy = ZeroToHeroStrategy(self.mock_api, self.mock_loader, dry_run=True)

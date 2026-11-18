@@ -10,6 +10,8 @@ from bot.strategies.straddle_scalp_strategy import StraddleScalpStrategy
 class TestIronCondorStrategy(unittest.TestCase):
 
     def setUp(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "NIFTY"
         self.api = MagicMock()
         self.token_loader = MagicMock()
         
