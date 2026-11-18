@@ -19,24 +19,23 @@ from unittest.mock import patch, MagicMock
 # so we need to patch where they are used: backend.bot_manager
 
 def test_start_and_stop():
-    with patch('backend.bot_manager.get_angel_session') as mock_session, \
-         patch('backend.bot_manager.TokenLookup') as mock_loader:
-        
-        # Setup Mocks
-        mock_session.return_value = MagicMock() # Mock API object
-        mock_loader.return_value = MagicMock()
-        
+    with patch('backend.bot_manager.LifecycleManager') as mock_lifecycle:
+        instance = MagicMock()
+        instance.running = True
+        mock_lifecycle.return_value = instance
+
         # 1. Start
         response = client.post("/api/start", json={"strategy": "MOMENTUM", "dry_run": True})
         assert response.status_code == 200
         print(f"Start Output: {response.json()}")
-        
+
         # 2. Check Status
         response = client.get("/api/status")
         assert response.json()["status"] == "RUNNING"
         print(f"Status Running: {response.json()}")
 
         # 3. Stop
+        instance.running = False
         response = client.post("/api/stop")
         assert response.status_code == 200
         print(f"Stop Output: {response.json()}")

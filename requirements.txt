@@ -1,4 +1,5 @@
 smartapi-python
+kiteconnect>=5.0.0
 pyotp
 pandas
 numpy

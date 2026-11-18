@@ -49,7 +49,7 @@ class TestZeroToHeroStrategy(unittest.TestCase):
         
         # Verify order manager calls
         self.strategy.order_manager.place_smart_limit.assert_called_with(
-            "NIFTY26JUN23000CE", "mock_token", 260, 10.0, "BUY", "ZERO_TO_HERO"
+            "NIFTY26JUN23000CE", "mock_token", 260, 10.0, "BUY", strategy_name="ZERO_TO_HERO"
         )
         self.strategy.order_manager.place_stoploss.assert_called_with(
             "NIFTY26JUN23000CE", "mock_token", 260, 4.0, "ZERO_TO_HERO"

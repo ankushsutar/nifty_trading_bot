@@ -104,7 +104,7 @@ class TestIronCondorStrategy(unittest.TestCase):
 
         # Verify that we sold back the filled Long Call (LC)
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", "STRADDLE_SCALP", "PAPER"
+            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
         # Verify that we did not place any short premium trades (SC or SP)
@@ -145,15 +145,15 @@ class TestIronCondorStrategy(unittest.TestCase):
 
         # Verify that we bought back the filled short CE (at 1.1x fallback)
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623600CE", "token_23600_CE", 65, 38.5, "BUY", "STRADDLE_SCALP", "PAPER"
+            "NIFTY25JUN202623600CE", "token_23600_CE", 65, 38.5, "BUY", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         
         # Verify that we sold the Long protection hedges to return to flat cash
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", "STRADDLE_SCALP", "PAPER"
+            "NIFTY25JUN202623700CE", "token_23700_CE", 65, 13.5, "SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
         self.strategy.order_manager.place_smart_limit.assert_any_call(
-            "NIFTY25JUN202623300PE", "token_23300_PE", 65, 16.2, "SELL", "STRADDLE_SCALP", "PAPER"
+            "NIFTY25JUN202623300PE", "token_23300_PE", 65, 16.2, "SELL", strategy_name="STRADDLE_SCALP", mode="PAPER"
         )
 
     def test_monitor_condor_take_profit(self):

@@ -100,6 +100,7 @@ class TestDailyHaltAndIsolation(unittest.TestCase):
         self.assertIsNone(strat)
         self.assertTrue(is_kill_switch_active())
 
+    @patch('bot.config.settings.Config.PROFIT_PROTECTION_THRESHOLD', 2000.0)
     def test_profit_protection_activates_kill_switch(self):
         """Verify that triggering profit protection activates the global kill switch."""
         engine = DecisionEngine(self.mock_api, self.mock_loader, dry_run=True)
