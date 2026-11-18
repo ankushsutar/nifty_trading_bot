@@ -1027,9 +1027,10 @@ class MomentumStrategy:
         if not strike or not token:
             logger.warning("⚠️ Delta-based strike selection failed. Falling back to ATR-based calculation.")
             atm_strike = round(nifty_ltp / strike_diff) * strike_diff
-            if atr < 15:
+            step_atr_ratio = atr / max(strike_diff, 1)
+            if step_atr_ratio < 0.35:
                 otm_offset = 0
-            elif atr < 30:
+            elif step_atr_ratio < 0.70:
                 otm_offset = 1
             else:
                 otm_offset = 2
@@ -1136,15 +1137,16 @@ class MomentumStrategy:
         # TRENDING:   Tight breakeven (1:1) but let winner run to 5:1 target.
         # RANGEBOUND: Fixed 1.5:1 target; exit at first sign of reversal.
         current_regime = self.last_analysis.get("regime", "UNKNOWN")
+        atr_multiplier = 1.6 if Config.ACTIVE_SYMBOL == "FINNIFTY" else 1.5
         if current_regime == "TRENDING":
-            # Professional: robust SL (1.5x ATR), big target (7x ATR in index → ~3.5x in option)
-            sl_option_pts  = option_sl_points * 1.5    # 1.5x ATR on option space for noise cushion
-            tgt_option_pts = option_sl_points * 3.5    # ~3.5x option leverage for massive trend riding
-            dynamic_rr     = "TRENDING_3.5:1.5"
+            # Professional: robust SL (1.6x ATR for FinNifty, 1.5x for Nifty), big target
+            sl_option_pts  = option_sl_points * atr_multiplier
+            tgt_option_pts = option_sl_points * (atr_multiplier * 2.3)    # ~3.5x option leverage for massive trend riding
+            dynamic_rr     = f"TRENDING_{tgt_option_pts/max(option_sl_points, 1):.1f}:{atr_multiplier:.1f}"
         else:
             # Conservative: 1.5:1 in option space
-            sl_option_pts  = option_sl_points
-            tgt_option_pts = option_sl_points * 1.5
+            sl_option_pts  = option_sl_points * (atr_multiplier * 0.7)
+            tgt_option_pts = option_sl_points * atr_multiplier
             dynamic_rr     = "RANGEBOUND_1.5:1"
 
         logger.info(

@@ -60,7 +60,7 @@ def run_bot():
     parser = argparse.ArgumentParser(description="Nifty Options Trading Bot")
     parser.add_argument("--test", action="store_true", help="Run in Mock Mode for local testing")
     parser.add_argument("--dry-run", action="store_true", help="Run with Real Data but DO NOT place orders")
-    parser.add_argument("--symbol", type=str, default="NIFTY", choices=["NIFTY", "BANKNIFTY", "FINNIFTY"], help="Active Index Symbol")
+    parser.add_argument("--symbol", type=str, default="FINNIFTY", choices=["NIFTY", "BANKNIFTY", "FINNIFTY"], help="Active Index Symbol")
     parser.add_argument("--strategy", type=str, default="STRADDLE", choices=["STRADDLE", "MOMENTUM", "GAMMA_BLAST", "STRADDLE_SCALP", "SELLING", "ZERO_TO_HERO", "VERTICAL_DEBIT_SPREAD"], help="Choose Strategy")
     parser.add_argument("--auto", action="store_true", help="Enable Smart Auto-Mode (AI Selects Strategy)")
     args = parser.parse_args()

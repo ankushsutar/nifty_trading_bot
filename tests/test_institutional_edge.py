@@ -22,6 +22,8 @@ from bot.core.fii_dii_analyzer import FIIDIIAnalyzer
 class TestConstituentTracker:
     @pytest.fixture
     def tracker(self):
+        from bot.config.settings import Config
+        Config.ACTIVE_SYMBOL = "NIFTY"
         # Reset singleton instance
         ConstituentTracker._instance = None
         mock_api = MagicMock()
