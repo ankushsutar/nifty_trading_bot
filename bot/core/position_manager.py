@@ -61,7 +61,10 @@ class LadderedTrailingManager:
             new_sl = entry_price + 2.0 # Minimum lock to cover charges
             if new_sl > current_sl:
                 logger.info(f"🛡️ Stage 0.5: Breakeven Shield Active (+{points_up:.1f}pts) | SL: {new_sl}")
-                self._apply_sl_update(strategy_name, active_position, new_sl, stage=0.5)
+                self._apply_sl_update(
+                    strategy_name, active_position, new_sl, stage=0.5, ltp=ltp,
+                    stage_name="Breakeven Shield (Risk-Free)"
+                )
                 current_stage = 0.5
 
         # Stage 1: The Base Floor (More generous)
@@ -70,7 +73,10 @@ class LadderedTrailingManager:
             new_sl = entry_price + round(0.3 * atr, 1)
             if new_sl > current_sl:
                 logger.info(f"🛡️ Stage 1: Floor Locked at 0.3 ATR (+{points_up:.1f}pts) | SL: {new_sl}")
-                self._apply_sl_update(strategy_name, active_position, new_sl, stage=1)
+                self._apply_sl_update(
+                    strategy_name, active_position, new_sl, stage=1, ltp=ltp,
+                    stage_name="Profit Floor (+0.3 ATR Locked)"
+                )
                 current_stage = 1
 
         # Stage 2: The Buffer & PARTIAL BOOKING
@@ -82,13 +88,21 @@ class LadderedTrailingManager:
                 
                 # --- EARLY PARTIAL BOOKING ---
                 total_qty = active_position.get('qty', 0)
-                if total_qty > Config.NIFTY_LOT_SIZE:
-                    lots_to_sell = max(1, (total_qty // Config.NIFTY_LOT_SIZE) // 2)
-                    qty_to_sell = lots_to_sell * Config.NIFTY_LOT_SIZE
+                lot_size = getattr(Config, "NIFTY_LOT_SIZE", 65)
+                if total_qty > lot_size:
+                    lots_to_sell = max(1, (total_qty // lot_size) // 2)
+                    qty_to_sell = lots_to_sell * lot_size
                     remaining_sl_qty = total_qty - qty_to_sell
                     
                     logger.info(f"⏳ Updating Broker SL Order and reducing quantity from {total_qty} to {remaining_sl_qty} to free up margin for partial booking...")
-                    sl_updated_ok = self._apply_sl_update(strategy_name, active_position, new_sl, stage=2, override_qty=remaining_sl_qty)
+                    pnl_booked_est = (ltp - entry_price) * qty_to_sell
+                    note = f"Secured {lots_to_sell} lot{'s' if lots_to_sell > 1 else ''} (+₹{pnl_booked_est:,.2f})! Remaining {remaining_sl_qty} units trailing."
+                    sl_updated_ok = self._apply_sl_update(
+                        strategy_name, active_position, new_sl, stage=2,
+                        override_qty=remaining_sl_qty, ltp=ltp,
+                        stage_name="Adaptive Buffer & Partial Booking",
+                        extra_note=note
+                    )
                     
                     if not sl_updated_ok:
                         logger.error(f"❌ Failed to update Stop-Loss price/quantity on broker. Aborting partial booking.")
@@ -108,7 +122,10 @@ class LadderedTrailingManager:
                                     sl_oid, active_position['sl_price'], symbol, token, total_qty
                                 )
                 else:
-                    self._apply_sl_update(strategy_name, active_position, new_sl, stage=2)
+                    self._apply_sl_update(
+                        strategy_name, active_position, new_sl, stage=2, ltp=ltp,
+                        stage_name="Adaptive Buffer (1.5 ATR Room)"
+                    )
                 
                 current_stage = 2
 
@@ -117,6 +134,18 @@ class LadderedTrailingManager:
             logger.info(f"🏃 Stage 3: Runner Mode Active. Transitioning to 1m 21-EMA Trail.")
             active_position['ladder_stage'] = 3
             current_stage = 3
+            self._notify_sl_update_if_needed(
+                strategy_name=strategy_name,
+                active_position=active_position,
+                old_sl=current_sl,
+                new_sl=current_sl,
+                ltp=ltp,
+                stage=3,
+                stage_name="Runner Mode Active",
+                entry_price=entry_price,
+                qty=active_position.get('qty', qty),
+                extra_note="🏃 Switched to 1m 21-EMA trailing for maximum trend riding!"
+            )
 
         if current_stage >= 3:
             now = time.time()
@@ -131,13 +160,29 @@ class LadderedTrailingManager:
                     new_sl = max(ema_sl, hard_room_sl)
                     
                     if new_sl > current_sl and new_sl < ltp - (0.5 * atr):
-                        self._apply_sl_update(strategy_name, active_position, new_sl)
+                        trail_name = "1m 9-EMA Moonshot Trail" if current_stage >= 4 else "1m 21-EMA Runner Trail"
+                        self._apply_sl_update(
+                            strategy_name, active_position, new_sl, stage=None, ltp=ltp,
+                            stage_name=trail_name
+                        )
             
             # --- STAGE 4: MOONSHOT MODE ---
             if current_stage < 4 and points_up >= threshold_4_0:
                 logger.info(f"🚀 STAGE 4: MOONSHOT MODE! Activating Tighter 1m 9-EMA Trail.")
                 active_position['ladder_stage'] = 4
                 current_stage = 4
+                self._notify_sl_update_if_needed(
+                    strategy_name=strategy_name,
+                    active_position=active_position,
+                    old_sl=current_sl,
+                    new_sl=current_sl,
+                    ltp=ltp,
+                    stage=4,
+                    stage_name="MOONSHOT MODE 🚀",
+                    entry_price=entry_price,
+                    qty=active_position.get('qty', qty),
+                    extra_note="🔥 Parabolic momentum detected! Accelerated 1m 9-EMA trail locked."
+                )
 
         # Target Price Exit Check (Absolute Take-Profit)
         target_price = active_position.get('target_price', 0.0)
@@ -163,7 +208,8 @@ class LadderedTrailingManager:
             logger.error(f"Error fetching 1m EMA{period}: {e}")
         return 0
 
-    def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None, override_qty=None):
+    def _apply_sl_update(self, strategy_name, active_position, new_sl, stage=None, override_qty=None, ltp=0.0, stage_name="Trailing SL", extra_note=None):
+        old_sl = active_position.get('sl_price', 0.0)
         active_position['sl_price'] = new_sl
         if stage is not None:
             active_position['ladder_stage'] = stage
@@ -174,6 +220,23 @@ class LadderedTrailingManager:
             if stage is not None:
                  trade_repo.collection.update_one({"id": active_position['id']}, {"$set": {"ladder_stage": stage}})
 
+        qty = override_qty if override_qty is not None else active_position.get('qty', 0)
+        entry_price = active_position.get('entry_price', 0.0)
+
+        # Trigger Telegram Trailing SL Notification
+        self._notify_sl_update_if_needed(
+            strategy_name=strategy_name,
+            active_position=active_position,
+            old_sl=old_sl,
+            new_sl=new_sl,
+            ltp=ltp,
+            stage=stage,
+            stage_name=stage_name,
+            entry_price=entry_price,
+            qty=qty,
+            extra_note=extra_note
+        )
+
         # Update Broker SL
         sl_oid = active_position.get('sl_order_id')
         if sl_oid and not self.order_manager.dry_run: # Modification permitted in Live mode
@@ -181,16 +244,48 @@ class LadderedTrailingManager:
              # We'll use Config.LIVE_TRADE_ENABLED as a proxy or just rely on order_manager
              symbol = active_position['symbol']
              token = active_position['token']
-             qty = override_qty if override_qty is not None else active_position['qty']
              
              # Fetch current LTP to see if we are already at the new SL
              current_ltp = self.data_fetcher.get_ltp(token, exchange="NFO")
-             if current_ltp and current_ltp <= new_sl:
+             if isinstance(current_ltp, (int, float)) and current_ltp <= new_sl:
                  logger.warning(f"⚠️ DANGER: Modifying SL to {new_sl} while LTP is {current_ltp}! This will trigger immediate exit.")
              
              return self.order_manager.modify_sl_order(sl_oid, new_sl, symbol, token, qty)
         
         return True
+
+    def _notify_sl_update_if_needed(self, strategy_name, active_position, old_sl, new_sl, ltp, stage, stage_name, entry_price, qty, extra_note=None):
+        now = time.time()
+        last_notified_sl = active_position.get('_last_notified_sl', old_sl)
+        last_notify_time = active_position.get('_last_notify_time', 0.0)
+        
+        # Milestone stage change -> ALWAYS notify
+        is_milestone = (stage is not None)
+        # Continuous EMA trailing in Stage 3/4 -> notify if moved >= 3 pts or >= 60s
+        sl_jump = new_sl - last_notified_sl
+        time_elapsed = now - last_notify_time
+        is_meaningful_trail = (sl_jump >= 3.0) or (time_elapsed >= 60.0 and sl_jump > 0.5)
+
+        if is_milestone or is_meaningful_trail:
+            active_position['_last_notified_sl'] = new_sl
+            active_position['_last_notify_time'] = now
+            symbol = active_position.get('symbol', '')
+            try:
+                from bot.utils.notifier import notifier
+                notifier.notify_trailing_sl_modify(
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    old_sl=old_sl,
+                    new_sl=new_sl,
+                    ltp=ltp,
+                    stage_name=stage_name,
+                    stage=stage if stage is not None else active_position.get('ladder_stage'),
+                    entry_price=entry_price,
+                    qty=qty,
+                    extra_note=extra_note
+                )
+            except Exception as e:
+                logger.error(f"Failed to send trailing SL Telegram notification: {e}")
 
 
 

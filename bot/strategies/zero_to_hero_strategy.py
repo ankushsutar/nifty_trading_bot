@@ -204,7 +204,10 @@ class ZeroToHeroStrategy:
                 self.active_position = {
                     'id': trade_id, 'symbol': symbol, 'token': token, 'qty': qty, 'entry_price': prem
                 }
-                notifier.notify_trade_entry("ZERO_TO_HERO", symbol, "BUY", qty, prem, sl=sl_init, target="3x Jackpot (Scale 50% at +200%)")
+                notifier.notify_zero_to_hero_entry(
+                    symbol=symbol, leg=leg, qty=qty, prem=prem,
+                    sl_init=sl_init, target_strike=strike, expiry=expiry
+                )
                 
                 # Drop Emergency Broker-Side SL
                 sl_id = self.order_manager.place_stoploss(symbol, token, qty, sl_init, self.STRATEGY_NAME)
@@ -234,6 +237,17 @@ class ZeroToHeroStrategy:
                 continue
                 
             roi = ((ltp - entry) / entry) * 100
+
+            # 0. Milestone Alert: 100% gain (2x value reached)
+            if not self.active_position.get('doubler_notified') and roi >= 100.0:
+                 self.active_position['doubler_notified'] = True
+                 logger.info(f"🚀 WILDCARD 2X DOUBLER: {sym} doubled to ₹{ltp:.2f} (+{roi:.1f}%)")
+                 notifier.notify_zero_to_hero_milestone(
+                     symbol=sym,
+                     ltp=ltp,
+                     entry_price=entry,
+                     milestone_desc="2X DOUBLER REACHED (+100% GAIN)"
+                 )
             
             # 1. Scale Out Half at 200% gain (3x value)
             if not half_booked and roi >= 200.0 and qty > Config.NIFTY_LOT_SIZE:
@@ -244,12 +258,14 @@ class ZeroToHeroStrategy:
                  segment_pnl = (ltp - entry) * sell_qty
                  trade_repo.reduce_position(tid, sell_qty, ltp, segment_pnl, "JACKPOT_SCALE")
                  
-                 scale_msg = (
-                     f"🔥 <b>SCALE OUT: ZERO_TO_HERO</b>\n"
-                     f"Symbol: <code>{sym}</code> | Qty: {sell_qty}\n"
-                     f"Exit Price: <b>₹{ltp:.2f}</b> | P&L: <b>₹{segment_pnl:.2f}</b> 💰"
+                 notifier.notify_zero_to_hero_scale_out(
+                     symbol=sym,
+                     sell_qty=sell_qty,
+                     exit_price=ltp,
+                     entry_price=entry,
+                     booked_pnl=segment_pnl,
+                     remaining_qty=qty - sell_qty
                  )
-                 notifier.send_message(scale_msg)
                  
                  qty = qty - sell_qty
                  self.active_position['qty'] = qty
@@ -269,7 +285,14 @@ class ZeroToHeroStrategy:
                  pnl_val = (ltp - entry) * qty
                  trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="HARD_FLOOR")
                  
-                 notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "HARD_FLOOR")
+                 notifier.notify_zero_to_hero_exit(
+                     symbol=sym,
+                     pnl=pnl_val,
+                     exit_price=ltp,
+                     entry_price=entry,
+                     reason="HARD_FLOOR",
+                     qty=qty
+                 )
                  break
                  
             # 3. Final Time Exit at 15:10
@@ -283,7 +306,14 @@ class ZeroToHeroStrategy:
                  pnl_val = (ltp - entry) * qty
                  trade_repo.close_trade(trade_id=tid, exit_price=ltp, pnl=pnl_val, exit_reason="EOD_LIQUIDATION")
                  
-                 notifier.notify_trade_exit("ZERO_TO_HERO", sym, pnl_val, "EOD_LIQUIDATION")
+                 notifier.notify_zero_to_hero_exit(
+                     symbol=sym,
+                     pnl=pnl_val,
+                     exit_price=ltp,
+                     entry_price=entry,
+                     reason="EOD_LIQUIDATION",
+                     qty=qty
+                 )
                  break
                  
             time.sleep(5) # Low intensity polling

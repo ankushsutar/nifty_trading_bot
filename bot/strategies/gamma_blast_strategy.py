@@ -737,6 +737,7 @@ class GammaBlastStrategy:
             trade_repo.update_sl_order_id(trade_id, sl_oid)
 
         # CRITICAL FIX: Fully initialize local state tracker before entering monitor loop
+        atr_val = float(self.last_analysis.get('atr', 20.0)) if hasattr(self, 'last_analysis') and self.last_analysis else 20.0
         self.active_position = {
             'id': trade_id,
             'leg': leg,
@@ -745,11 +746,23 @@ class GammaBlastStrategy:
             'qty': qty,
             'entry_price': fill_price,
             'sl_price': sl_price,
-            'sl_order_id': str(sl_oid)
+            'sl_order_id': str(sl_oid),
+            'initial_risk': float(sl_points),
+            'atr': atr_val
         }
 
         # Send Telegram notification
-        notifier.notify_trade_entry("GAMMA_BLAST", symbol, "BUY", qty, fill_price, sl=sl_price)
+        adx_val = self.last_analysis.get('adx', 0) if hasattr(self, 'last_analysis') and self.last_analysis else None
+        notifier.notify_gamma_blast_entry(
+            symbol=symbol,
+            leg=leg,
+            qty=qty,
+            price=fill_price,
+            sl=sl_price,
+            sl_points=sl_points,
+            adx=adx_val,
+            atr=atr_val
+        )
 
         self.monitor_position(symbol, token, qty, sl_price, fill_price, trade_id, sl_oid, leg)
 
@@ -945,7 +958,7 @@ class GammaBlastStrategy:
                         trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason="SL_HIT")
                         
                         pnl = (exit_price - entry_price) * qty
-                        notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, "SL_HIT")
+                        notifier.notify_gamma_blast_exit(symbol, pnl, exit_price=exit_price, entry_price=entry_price, reason="SL_HIT", qty=qty)
                         return True
             
             # Smart-Exit logic: Use LIMIT at SL price if exit_type is LIMIT
@@ -994,13 +1007,13 @@ class GammaBlastStrategy:
                 trade_repo.close_trade(trade_id=trade_id, exit_price=exit_price, exit_reason=reason)
                 
                 pnl = (exit_price - entry_price) * qty
-                notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, reason)
+                notifier.notify_gamma_blast_exit(symbol, pnl, exit_price=exit_price, entry_price=entry_price, reason=reason, qty=qty)
                 return True
             else:
                 trade_repo.close_trade(trade_id=trade_id, exit_reason=reason)
                 
                 pnl = (ltp - entry_price) * qty
-                notifier.notify_trade_exit("GAMMA_BLAST", symbol, pnl, reason)
+                notifier.notify_gamma_blast_exit(symbol, pnl, exit_price=ltp, entry_price=entry_price, reason=reason, qty=qty)
                 return True
 
         except Exception as e:
