@@ -135,54 +135,56 @@ class TelegramNotifier:
         )
         self.send_message(msg)
 
+    @staticmethod
+    def _friendly_reason(reason: str) -> str:
+        mapping = {
+            "SL_HIT": "Stop-Loss Hit",
+            "LADDERED_SL_MARKET": "Trailing Stop-Loss Hit",
+            "LADDERED_SL_LIMIT": "Trailing Stop-Loss Hit",
+            "TIME_KILLSWITCH": "End-of-Day Exit (3:10 PM)",
+            "TIME": "End-of-Day Exit",
+            "EOD_LIQUIDATION": "End-of-Day Exit (3:10 PM)",
+            "HARD_FLOOR": "Stop-Loss Hit",
+            "TARGET": "Target Hit",
+        }
+        return mapping.get(str(reason), str(reason).replace("_", " ").title())
+
     def notify_gamma_blast_entry(self, symbol, leg, qty, price, sl=None, sl_points=None, adx=None, atr=None):
         lot_size = getattr(Config, "NIFTY_LOT_SIZE", 65)
         lots = max(1, qty // lot_size) if lot_size else 1
         risk_per_unit = (price - sl) if sl is not None else (sl_points or 0.0)
         risk_rupees = risk_per_unit * qty
-        risk_pct = (risk_per_unit / price * 100) if price > 0 else 0.0
-        total_outlay = price * qty
-
-        adx_str = f" | ADX: <b>{adx:.1f}</b>" if adx else ""
-        atr_str = f" | ATR: <b>₹{atr:.1f}</b>" if atr else ""
-        sl_val_str = f"₹{sl:.2f}" if sl is not None else "Dynamic"
+        sl_val_str = f"₹{sl:.2f}" if sl is not None else "Auto"
 
         msg = (
-            f"🚀 <b>GAMMA BLAST INITIATED</b> ⚡\n"
-            f"Contract: <b>BUY {leg}</b> | <code>{symbol}</code>\n"
-            f"Entry: <b>₹{price:.2f}</b> | Qty: <b>{qty} units</b> ({lots} lot{'s' if lots > 1 else ''})\n"
-            f"Capital Outlay: <b>₹{total_outlay:,.2f}</b>\n"
-            f"🛡️ Initial SL: <b>{sl_val_str}</b> (Risk: -₹{risk_rupees:,.0f} | -{risk_pct:.1f}%){adx_str}{atr_str}\n"
-            f"🎯 <b>Progression Targets:</b>\n"
-            f"  • Stage 0.5: Breakeven Lock (+1.0 ATR)\n"
-            f"  • Stage 1.0: Profit Floor (+1.5 ATR)\n"
-            f"  • Stage 2.0: 50% Partial Booking (+2.5 ATR)\n"
-            f"  • Stage 3.0+: 1m EMA Runner Mode 🏃"
+            f"🚀 <b>GAMMA BLAST — NEW TRADE</b>\n"
+            f"<b>BUY {qty}</b> <code>{symbol}</code> ({lots} lot{'s' if lots > 1 else ''}) @ <b>₹{price:.2f}</b>\n"
+            f"🛡️ Stop-Loss: <b>{sl_val_str}</b> (Max Risk: ₹{risk_rupees:,.0f})\n"
+            f"📈 Plan: Stop-Loss will automatically trail upward as price rises"
         )
         self.send_message(msg)
 
     def notify_gamma_blast_exit(self, symbol, pnl, exit_price=0.0, entry_price=0.0, reason="EXIT", qty=0):
-        is_profit = pnl > 0
+        is_profit = pnl >= 0
         icon = "🎯" if is_profit else "🛑"
         status = "PROFIT" if is_profit else "LOSS"
-        pnl_sign = "+" if is_profit else ""
-        pnl_str = f"₹{pnl_sign}{pnl:,.2f}"
+        pnl_sign = "+" if pnl > 0 else ""
+        pnl_str = f"{pnl_sign}₹{pnl:,.2f}"
 
         roi_str = ""
-        points_str = ""
+        price_line = ""
         if entry_price > 0 and exit_price > 0:
             roi = ((exit_price - entry_price) / entry_price) * 100
             roi_str = f" ({roi:+.1f}%)"
-            pts = exit_price - entry_price
-            points_str = f"\nExecution: ₹{entry_price:.2f} ➔ <b>₹{exit_price:.2f}</b> ({pts:+.1f}pts)"
+            price_line = f"\nBought @ ₹{entry_price:.2f} ➔ Sold @ <b>₹{exit_price:.2f}</b>"
 
-        qty_str = f" | Qty: {qty} units" if qty > 0 else ""
+        qty_str = f"{qty} " if qty > 0 else ""
+        friendly_reason = self._friendly_reason(reason)
 
         msg = (
-            f"{icon} <b>GAMMA BLAST CLOSED</b>\n"
-            f"Symbol: <code>{symbol}</code>{qty_str}\n"
-            f"Result: <b>{status}</b> | Net P&L: <b>{pnl_str}</b>{roi_str}{points_str}\n"
-            f"Exit Reason: <i>{reason}</i>"
+            f"{icon} <b>GAMMA BLAST — {status} ({pnl_str}{roi_str})</b>\n"
+            f"SOLD {qty_str}<code>{symbol}</code>{price_line}\n"
+            f"Reason: <i>{friendly_reason}</i>"
         )
         self.send_message(msg)
 
@@ -190,97 +192,83 @@ class TelegramNotifier:
         lot_size = getattr(Config, "NIFTY_LOT_SIZE", 65)
         lots = max(1, qty // lot_size) if lot_size else 1
         total_cost = prem * qty
-        sl_str = f"₹{sl_init:.2f}" if sl_init is not None else "Hard Floor"
-        expiry_str = f" | Expiry: <b>{expiry}</b>" if expiry else ""
-        strike_str = f" | Target Strike: <b>{target_strike}</b>" if target_strike else ""
+        sl_str = f"₹{sl_init:.2f}" if sl_init is not None else "Auto"
+        target_3x = prem * 3
 
         msg = (
-            f"🛸 <b>ZERO-TO-HERO WILDCARD ACTIVATED</b> 🚀\n"
-            f"Action: <b>BUY {leg}</b> | <code>{symbol}</code>{expiry_str}\n"
-            f"Entry Premium: <b>₹{prem:.2f}</b> | Qty: <b>{qty} units</b> ({lots} lot{'s' if lots > 1 else ''})\n"
-            f"💰 Capital Outlay: <b>₹{total_cost:,.2f}</b> (Max Risk Capped){strike_str}\n"
-            f"🛡️ Emergency SL: <b>{sl_str}</b>\n"
-            f"🎯 <b>Jackpot Strategy:</b>\n"
-            f"  • Scale 50% at 3x (+200% ROI) to recover 100% capital + profit\n"
-            f"  • Remaining runner holds to EOD with ZERO risk!"
+            f"🛸 <b>ZERO-TO-HERO — NEW TRADE</b>\n"
+            f"<b>BUY {qty}</b> <code>{symbol}</code> ({lots} lot{'s' if lots > 1 else ''}) @ <b>₹{prem:.2f}</b>\n"
+            f"💰 Invested: <b>₹{total_cost:,.0f}</b> | 🛡️ Stop-Loss: <b>{sl_str}</b>\n"
+            f"🎯 Goal: Book 50% at 3x (<b>₹{target_3x:.2f}</b>) &amp; ride rest risk-free"
         )
         self.send_message(msg)
 
     def notify_zero_to_hero_milestone(self, symbol, ltp, entry_price, milestone_desc):
         roi = ((ltp - entry_price) / entry_price * 100) if entry_price > 0 else 0.0
+        target_3x = entry_price * 3
         msg = (
-            f"🚀 <b>ZERO-TO-HERO: {milestone_desc}</b> ⚡\n"
-            f"Symbol: <code>{symbol}</code>\n"
-            f"Current LTP: <b>₹{ltp:.2f}</b> (from ₹{entry_price:.2f} | <b>{roi:+.1f}%</b>)\n"
-            f"Holding position for 3x Jackpot Target scale-out! 🎯"
+            f"🚀 <b>ZERO-TO-HERO — PRICE DOUBLED (2x)</b>\n"
+            f"<code>{symbol}</code> is now <b>₹{ltp:.2f}</b> (<b>+{roi:.0f}%</b>)\n"
+            f"Bought @ ₹{entry_price:.2f} | Holding for 3x target (₹{target_3x:.2f})"
         )
         self.send_message(msg)
 
     def notify_zero_to_hero_scale_out(self, symbol, sell_qty, exit_price, entry_price, booked_pnl, remaining_qty):
         roi = ((exit_price - entry_price) / entry_price * 100) if entry_price > 0 else 200.0
         msg = (
-            f"🔥 <b>JACKPOT SCALE-OUT: ZERO-TO-HERO</b> 💰\n"
-            f"Symbol: <code>{symbol}</code>\n"
-            f"Secured: <b>{sell_qty} units</b> @ <b>₹{exit_price:.2f}</b> (<b>+{roi:.1f}% ROI</b>)\n"
-            f"Booked P&L: <b>+₹{booked_pnl:,.2f}</b> 💵\n"
-            f"🚀 <b>Capital Fully Recovered + 100% Profit!</b>\n"
-            f"Remaining <b>{remaining_qty} units</b> running risk-free to the moon!"
+            f"🔥 <b>ZERO-TO-HERO — HALF PROFIT BOOKED (3x)</b>\n"
+            f"SOLD <b>{sell_qty}</b> <code>{symbol}</code> @ <b>₹{exit_price:.2f}</b> (+{roi:.0f}%)\n"
+            f"💰 Profit Booked: <b>+₹{booked_pnl:,.2f}</b>\n"
+            f"✅ Investment recovered! Remaining <b>{remaining_qty} units</b> are now risk-free."
         )
         self.send_message(msg)
 
     def notify_zero_to_hero_exit(self, symbol, pnl, exit_price=0.0, entry_price=0.0, reason="EXIT", qty=0):
-        is_profit = pnl > 0
-        icon = "🏆" if is_profit else "💀"
-        is_jackpot = exit_price >= (entry_price * 2.5) if (entry_price > 0 and exit_price > 0) else False
-        status = "JACKPOT" if is_jackpot else ("PROFIT" if is_profit else "LOSS")
-        pnl_sign = "+" if is_profit else ""
-        pnl_str = f"₹{pnl_sign}{pnl:,.2f}"
+        is_profit = pnl >= 0
+        icon = "🏆" if is_profit else "🛑"
+        status = "PROFIT" if is_profit else "LOSS"
+        pnl_sign = "+" if pnl > 0 else ""
+        pnl_str = f"{pnl_sign}₹{pnl:,.2f}"
 
         roi_str = ""
-        points_str = ""
+        price_line = ""
         if entry_price > 0 and exit_price > 0:
             roi = ((exit_price - entry_price) / entry_price) * 100
-            mult = exit_price / entry_price
-            roi_str = f" ({roi:+.1f}% | {mult:.1f}x)"
-            pts = exit_price - entry_price
-            points_str = f"\nExecution: ₹{entry_price:.2f} ➔ <b>₹{exit_price:.2f}</b> ({pts:+.1f}pts)"
+            roi_str = f" ({roi:+.0f}%)"
+            price_line = f"\nBought @ ₹{entry_price:.2f} ➔ Sold @ <b>₹{exit_price:.2f}</b>"
 
-        qty_str = f" | Qty: {qty} units" if qty > 0 else ""
+        qty_str = f"{qty} " if qty > 0 else ""
+        friendly_reason = self._friendly_reason(reason)
 
         msg = (
-            f"{icon} <b>ZERO-TO-HERO CLOSED ({status})</b>\n"
-            f"Symbol: <code>{symbol}</code>{qty_str}\n"
-            f"Result: <b>{status}</b> | Final P&L: <b>{pnl_str}</b>{roi_str}{points_str}\n"
-            f"Exit Reason: <i>{reason}</i>"
+            f"{icon} <b>ZERO-TO-HERO — {status} ({pnl_str}{roi_str})</b>\n"
+            f"SOLD {qty_str}<code>{symbol}</code>{price_line}\n"
+            f"Reason: <i>{friendly_reason}</i>"
         )
         self.send_message(msg)
 
     def notify_trailing_sl_modify(self, strategy, symbol, old_sl, new_sl, ltp, stage_name, stage=None, entry_price=0.0, qty=0, extra_note=None):
         sl_change = new_sl - old_sl
-        change_sign = "+" if sl_change >= 0 else ""
-        
-        stage_desc = f"<b>{stage_name}</b>"
-        if stage is not None:
-            stage_desc += f" [Stage {stage}]"
-            
-        floor_text = ""
-        if entry_price > 0 and qty > 0:
-            if new_sl >= entry_price:
-                pts_locked = new_sl - entry_price
-                rupees_locked = pts_locked * qty
-                floor_text = f"\n🔒 <b>Guaranteed Floor: +₹{rupees_locked:,.2f}</b> (+{pts_locked:.1f}pts from entry)"
+        change_str = f" (+{sl_change:.1f} pts)" if sl_change > 0 else ""
+        strat_label = strategy.replace("_", " ")
+
+        if entry_price > 0 and new_sl >= entry_price:
+            header = f"🔒 <b>PROFIT LOCKED — SL MOVED UP ({strat_label})</b>"
+            if qty > 0:
+                rupees_locked = (new_sl - entry_price) * qty
+                status_line = f"\n✅ Min Guaranteed Profit: <b>+₹{rupees_locked:,.2f}</b>"
             else:
-                pts_risk = entry_price - new_sl
-                rupees_risk = pts_risk * qty
-                floor_text = f"\n🛡️ <b>Risk Reduced: Max risk cut to -₹{rupees_risk:,.2f}</b> (-{pts_risk:.1f}pts from entry)"
-                
-        note_text = f"\n{extra_note}" if extra_note else ""
+                status_line = "\n✅ Trade is now in guaranteed profit"
+        else:
+            header = f"🛡️ <b>STOP-LOSS MOVED UP ({strat_label})</b>"
+            status_line = f"\n📌 Phase: {stage_name}"
+
+        note_text = f"\n💰 {extra_note}" if extra_note else ""
 
         msg = (
-            f"📈 <b>TRAILING SL ADVANCED ({strategy})</b> 🛡️\n"
-            f"Symbol: <code>{symbol}</code> | LTP: <b>₹{ltp:.2f}</b>\n"
-            f"Phase: {stage_desc}\n"
-            f"SL Adjusted: ₹{old_sl:.2f} ➔ <b>₹{new_sl:.2f}</b> ({change_sign}{sl_change:.1f}pts ⬆️){floor_text}{note_text}"
+            f"{header}\n"
+            f"<code>{symbol}</code> | Current Price: <b>₹{ltp:.2f}</b>\n"
+            f"Stop-Loss: ₹{old_sl:.2f} ➔ <b>₹{new_sl:.2f}</b>{change_str}{status_line}{note_text}"
         )
         self.send_message(msg)
 

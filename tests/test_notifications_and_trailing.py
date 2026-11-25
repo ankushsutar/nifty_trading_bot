@@ -25,14 +25,12 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("GAMMA BLAST INITIATED", msg)
+        self.assertIn("GAMMA BLAST — NEW TRADE", msg)
         self.assertIn("NIFTY26NOV24350CE", msg)
-        self.assertIn("BUY CE", msg)
+        self.assertIn("BUY 65", msg)
         self.assertIn("₹120.00", msg)
         self.assertIn("₹90.00", msg)
-        self.assertIn("ADX: <b>45.5</b>", msg)
-        self.assertIn("ATR: <b>₹25.0</b>", msg)
-        self.assertIn("Stage 0.5: Breakeven Lock", msg)
+        self.assertIn("Max Risk: ₹1,950", msg)
 
     def test_gamma_blast_exit_notification_profit(self):
         self.notifier.notify_gamma_blast_exit(
@@ -45,11 +43,10 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("GAMMA BLAST CLOSED", msg)
-        self.assertIn("PROFIT", msg)
-        self.assertIn("₹+3,900.00", msg)
+        self.assertIn("GAMMA BLAST — PROFIT", msg)
+        self.assertIn("+₹3,900.00", msg)
         self.assertIn("+50.0%", msg)
-        self.assertIn("LADDERED_SL_MARKET", msg)
+        self.assertIn("Trailing Stop-Loss Hit", msg)
 
     def test_zero_to_hero_entry_notification(self):
         self.notifier.notify_zero_to_hero_entry(
@@ -63,12 +60,11 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("ZERO-TO-HERO WILDCARD ACTIVATED", msg)
+        self.assertIn("ZERO-TO-HERO — NEW TRADE", msg)
         self.assertIn("NIFTY26NOV24500CE", msg)
         self.assertIn("₹12.50", msg)
-        self.assertIn("260 units", msg)
-        self.assertIn("Jackpot Strategy", msg)
-        self.assertIn("26NOV2026", msg)
+        self.assertIn("BUY 260", msg)
+        self.assertIn("Book 50% at 3x", msg)
 
     def test_zero_to_hero_scale_out_notification(self):
         self.notifier.notify_zero_to_hero_scale_out(
@@ -81,11 +77,11 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("JACKPOT SCALE-OUT: ZERO-TO-HERO", msg)
-        self.assertIn("130 units", msg)
-        self.assertIn("+200.0% ROI", msg)
+        self.assertIn("ZERO-TO-HERO — HALF PROFIT BOOKED (3x)", msg)
+        self.assertIn("SOLD <b>130</b>", msg)
+        self.assertIn("+200%", msg)
         self.assertIn("+₹3,250.00", msg)
-        self.assertIn("Capital Fully Recovered", msg)
+        self.assertIn("risk-free", msg)
 
     def test_zero_to_hero_milestone_notification(self):
         self.notifier.notify_zero_to_hero_milestone(
@@ -96,8 +92,8 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("2X DOUBLER REACHED", msg)
-        self.assertIn("+100.0%", msg)
+        self.assertIn("PRICE DOUBLED (2x)", msg)
+        self.assertIn("+100%", msg)
 
     def test_trailing_sl_modify_notification_floor_locked(self):
         self.notifier.notify_trailing_sl_modify(
@@ -114,10 +110,9 @@ class TestTelegramNotifications(unittest.TestCase):
         )
         self.notifier.send_message.assert_called_once()
         msg = self.notifier.send_message.call_args[0][0]
-        self.assertIn("TRAILING SL ADVANCED (GAMMA_BLAST)", msg)
-        self.assertIn("Stage 2", msg)
+        self.assertIn("PROFIT LOCKED — SL MOVED UP (GAMMA BLAST)", msg)
         self.assertIn("₹90.00 ➔ <b>₹135.00</b>", msg)
-        self.assertIn("Guaranteed Floor: +₹975.00", msg)
+        self.assertIn("Min Guaranteed Profit: <b>+₹975.00</b>", msg)
         self.assertIn("Secured 1 lot", msg)
 
 
